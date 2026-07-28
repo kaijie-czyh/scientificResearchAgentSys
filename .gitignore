@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 项目数据（每个科研项目独立目录，含知识库/快照/产出物，不入库）
+projects/
+!projects/.gitkeep
+
+# 配置中的敏感凭据
+.env
+config/secrets.yaml
+
+# 向量库与数据库
+*.db
+*.sqlite
+vectors/
+
+# 实验运行产物
+runs/
+mlruns/
+.dvc/
