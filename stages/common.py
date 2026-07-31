@@ -23,6 +23,9 @@ KNOWLEDGE_STORE = ContextKey[KnowledgeStore]("system.knowledge_store")
 ARTIFACT_MANAGER = ContextKey[ArtifactManager]("system.artifact_manager")
 PROVENANCE_VALIDATOR = ContextKey[ProvenanceValidator]("system.provenance_validator")
 
+# 全局开关：dry_run=True 时不执行真实 LLM 调用，用占位数据返回
+DRY_RUN = ContextKey[bool]("system.dry_run")
+
 
 # ===== research 阶段域键 =====
 RESEARCH_TOPIC = ContextKey[str]("research.topic")
@@ -64,6 +67,9 @@ EXPERIMENT_REVIEW_NOTES = ContextKey[list[dict]]("experiment.review_notes")  # �
 EXPERIMENT_IDS = ContextKey[list[str]]("experiment.experiment_ids")
 EXPERIMENT_ANOMALY_REPORT = ContextKey[str]("experiment.anomaly_report")
 EXPERIMENT_RESULT_ARTIFACT_IDS = ContextKey[list[str]]("experiment.result_artifact_ids")
+# 实验成败评估：{success, verified_claim_ids, refuted_claim_ids, recommendation, summary}
+# 决定是否进入 writing 阶段（实验失败是常态，不应强行写论文）
+EXPERIMENT_OUTCOME = ContextKey[dict]("experiment.outcome")
 
 
 # ===== writing 阶段域键 =====

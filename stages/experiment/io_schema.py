@@ -146,3 +146,47 @@ class ClaimVerifyOutput(NodeOutput):
     """Claim 验证输出：结果 Artifact ID 列表。"""
 
     result_artifact_ids: list[str]
+
+
+# ===== ExperimentOutcomeAssessAgent =====
+
+class ExperimentOutcomeAssessInput(NodeInput):
+    """实验成败评估输入。
+
+    输入：已完成的实验 ID + 待验证的 Claim ID + 异常报告。
+    Agent 据此判断实验结果是否验证了核心 Claim，给出"是否进入 writing"的建议。
+
+    说明：实验失败是科研常态——Claim 被实验反驳是正常、有价值的发现。
+    系统不应在实验失败时强行进入论文写作阶段。
+    """
+
+    # 已完成的实验 ID 列表
+    experiment_ids: list[str]
+    # 待验证的 Claim ID 列表（来自 DESIGN_CLAIM_IDS）
+    claim_ids: list[str]
+    # 异常报告（来自 EXPERIMENT_ANOMALY_REPORT），无异常时为空字符串
+    anomaly_report: str = ""
+
+
+class ExperimentOutcomeAssessOutput(NodeOutput):
+    """实验成败评估输出：写入 EXPERIMENT_OUTCOME 域键。
+
+    outcome 结构（写入 EXPERIMENT_OUTCOME 的 dict）：
+    {
+        "success": bool,                   # 实验是否成功验证了核心 Claim
+        "verified_claim_ids": [...],       # 被实验验证的 Claim
+        "refuted_claim_ids": [...],        # 被实验反驳的 Claim
+        "inconclusive_claim_ids": [...],   # 无法定论的 Claim
+        "recommendation": "proceed_to_writing" / "rollback_to_ideation"
+                         / "retry_experiment" / "abort",
+        "summary": "一句话总结"
+    }
+
+    recommendation 取值说明：
+    - proceed_to_writing：实验验证了核心 Claim，进入论文写作阶段
+    - rollback_to_ideation：Claim 被反驳，回滚到 ideation 重新探讨思路
+    - retry_experiment：实验无法定论但有重试价值，重跑实验阶段
+    - abort：异常严重或多次重试失败，中止当前流程
+    """
+
+    outcome: dict[str, Any]

@@ -96,13 +96,13 @@ class LLMRegistry:
 
         # ===== MiniMax / MiMo / DeepSeek =====
         # 三家均兼容 OpenAI 协议，复用 OpenAIProvider，通过 base_url + api_key 区分。
-        # 任一 provider 只要环境变量配置了 api_key 或 base_url 即注册，便于本地无凭据时跳过。
+        # 只有 api_key 存在才注册（dry_run 模式下无 key 则跳过，节点用占位数据不依赖 provider）。
         from core.llm.providers.openai_provider import OpenAIProvider as _OAIProvider
 
         # MiniMax Token Plan（兼容 OpenAI 协议，用 sk-cp key）
         minimax_key = os.environ.get(config.llm.minimax_api_key_env)
         minimax_url = os.environ.get(config.llm.minimax_base_url_env) or config.llm.minimax_base_url_default
-        if minimax_key or minimax_url:
+        if minimax_key:
             providers["minimax"] = _OAIProvider(
                 api_key=minimax_key,
                 base_url=minimax_url,
@@ -113,7 +113,7 @@ class LLMRegistry:
         # 小米 MiMo（兼容 OpenAI 协议）
         mimo_key = os.environ.get(config.llm.mimo_api_key_env)
         mimo_url = os.environ.get(config.llm.mimo_base_url_env) or config.llm.mimo_base_url_default
-        if mimo_key or mimo_url:
+        if mimo_key:
             providers["mimo"] = _OAIProvider(
                 api_key=mimo_key,
                 base_url=mimo_url,
@@ -124,7 +124,7 @@ class LLMRegistry:
         # DeepSeek（兼容 OpenAI 协议）
         deepseek_key = os.environ.get(config.llm.deepseek_api_key_env)
         deepseek_url = os.environ.get(config.llm.deepseek_base_url_env) or config.llm.deepseek_base_url_default
-        if deepseek_key or deepseek_url:
+        if deepseek_key:
             providers["deepseek"] = _OAIProvider(
                 api_key=deepseek_key,
                 base_url=deepseek_url,

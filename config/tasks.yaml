@@ -3,30 +3,36 @@
 # 每个任务类型（task_type）声明使用哪个 provider + model。
 # stages 中各 Agent 调用 LLM 时，按 task_type 路由，避免硬编码模型。
 #
+# ===== 当前配置策略（2026-07-27，用户只开 MiniMax Plus）=====
+# 全部 task 路由到 minimax provider，model 统一用 MiniMax-M3。
+# 原因：用户只开 MiniMax Plus ¥49/月（6亿+ token/月，1M 上下文，多模态），
+#       M3 能力覆盖编程/推理/写作全场景，单 provider 简化运维。
+#
+# ===== 原推荐多 provider 组合（注释保留，便于后续切换）=====
+#   - 调研/思路/方案/审查：minimax MiniMax-M3（主力）
+#   - 长文档 chunk 摘要/章节撰写：mimo MiMo-V2-Pro（1M 上下文长文档利器）
+#   - 实验代码生成：deepseek deepseek-v4-pro（编程最强）
+#   - 敏感思路推理：local（未公开思路不外流）
+# 切换方法：把对应 task 的 provider/model 改回原推荐值即可。
+#
 # Provider 取值（与 core/llm/registry.py 中注册名一致）：
-#   - minimax: MiniMax Token Plan（兼容 OpenAI 协议，用 sk-cp key，国内推荐主力）
-#   - mimo:    小米 MiMo Token Plan（兼容 OpenAI 协议，无 5h 限制，夜间 8 折）
-#   - deepseek: DeepSeek V4（按量计费，编程/推理极致低价）
+#   - minimax: MiniMax Token Plan（兼容 OpenAI 协议，用 sk-cp key）
+#   - mimo:    小米 MiMo Token Plan（兼容 OpenAI 协议）
+#   - deepseek: DeepSeek V4（按量计费）
 #   - openai:  OpenAI 官方或兼容协议服务
 #   - anthropic: Claude 系列
 #   - local:   本地部署模型（兼容 OpenAI 协议，敏感任务路由）
 #
-# 推荐组合（2026-07 调研结论）：
-#   - 主力：MiniMax Plus ¥49/月（6 亿 token、1M 上下文、多模态）
-#   - 备用/夜间：MiMo Lite ¥39/月（无 5h 限制、夜间 8 折）
-#   - 编程/推理补强：DeepSeek V4-Pro 按量（缓存命中极便宜）
-#   - 敏感任务：local（未公开思路不外流）
-#
-# 凭据从环境变量读取（见 core/config.py 的 LLMConfig）：
+# 凭据从环境变量读取（见 core/config.py 的 LLMConfig 与 .env.example）：
 #   MINIMAX_API_KEY      — MiniMax Token Plan 的 sk-cp key
 #   MIMO_API_KEY         — 小米 MiMo 的 API key
-#   MIMO_BASE_URL        — MiMo 服务端点（默认 https://api.mimo.xiaomi.com/v1）
-#   MINIMAX_BASE_URL     — MiniMax 服务端点（默认 https://api.minimax.io/v1）
+#   MIMO_BASE_URL        — MiMo 服务端点
+#   MINIMAX_BASE_URL     — MiniMax 服务端点
 #   DEEPSEEK_API_KEY     — DeepSeek API key
-#   DEEPSEEK_BASE_URL    — DeepSeek 端点（默认 https://api.deepseek.com/v1）
+#   DEEPSEEK_BASE_URL    — DeepSeek 端点
 #   OPENAI_API_KEY       — OpenAI 官方
 #   ANTHROPIC_API_KEY    — Claude
-#   LOCAL_LLM_BASE_URL   — 本地模型端点（兼容 OpenAI 协议）
+#   LOCAL_LLM_BASE_URL   — 本地模型端点
 
 tasks:
   # ===== 调研阶段 =====
@@ -57,10 +63,11 @@ tasks:
     description: "从论文 PDF/HTML 抽取结构化元数据（标题、作者、年份、摘要、引用）"
 
   paper_chunk_summarize:
-    provider: mimo
-    model: MiMo-V2-Omni
+    # 原推荐 mimo MiMo-V2-Pro（1M 上下文），用户只开 minimax 故用 M3（同样 1M 上下文）
+    provider: minimax
+    model: MiniMax-M3
     temperature: 0.2
-    description: "对论文 chunk 生成摘要用于检索增强（用 MiMo 1M 上下文，长文档利器）"
+    description: "对论文 chunk 生成摘要用于检索增强"
 
   # 交叉验证：借鉴 GPT-Researcher，多源信息冲突时做交叉验证
   research_cross_validate:
@@ -82,12 +89,13 @@ tasks:
     temperature: 0.3
     description: "对思路做可行性、新颖性、贡献度验证"
 
-  # 敏感任务：未公开思路的内部推理，路由到本地
+  # 敏感任务：未公开思路的内部推理
+  # 原推荐 local，用户未部署本地模型时回退到 minimax（注意：思路会经过云端）
   ideation_private_reasoning:
-    provider: local
-    model: qwen2.5-32b-instruct
+    provider: minimax
+    model: MiniMax-M3
     temperature: 0.5
-    description: "未公开思路的内部推演，避免数据外流"
+    description: "思路内部推演（原推荐 local，未部署本地模型时回退 minimax）"
 
   # ===== 方案制定阶段 =====
   # 原子概念分解：借鉴 AI-Researcher，把方法拆为原子概念并建立公式↔代码映射
@@ -112,10 +120,11 @@ tasks:
   # ===== 实验运行阶段 =====
   # 导师-学生迭代：借鉴 AI-Researcher，Code Agent 实现 + Advisor Agent 审查
   experiment_code_generate:
-    provider: deepseek
-    model: deepseek-v4-pro
+    # 原推荐 deepseek deepseek-v4-pro（编程最强），用户只开 minimax 故用 M3
+    provider: minimax
+    model: MiniMax-M3
     temperature: 0.2
-    description: "借鉴 AI-Researcher Code Agent，根据方法生成实验代码（DeepSeek 编程最强）"
+    description: "借鉴 AI-Researcher Code Agent，根据方法生成实验代码"
 
   experiment_code_review:
     provider: minimax
@@ -135,6 +144,13 @@ tasks:
     temperature: 0.2
     description: "分析实验异常（loss spike、NaN、不收敛）并给出处置建议"
 
+  # 实验成败评估：判断 Claim 是否被实验验证，决定是否进入 writing
+  experiment_outcome_assess:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.1
+    description: "评估实验结果是否验证了核心 Claim，决定是否进入论文写作阶段"
+
   # ===== 论文写作阶段 =====
   # 层级式生成：借鉴 AI-Researcher，大纲→填充→校对三阶段
   writing_outline:
@@ -144,10 +160,11 @@ tasks:
     description: "借鉴 AI-Researcher，先确定论文整体大纲与章节结构"
 
   writing_section_draft:
-    provider: mimo
-    model: MiMo-V2-Pro
+    # 原推荐 mimo MiMo-V2-Pro（1M 上下文），用户只开 minimax 故用 M3（同样 1M 上下文）
+    provider: minimax
+    model: MiniMax-M3
     temperature: 0.4
-    description: "按章节逐步撰写（MiMo 1M 上下文，可装载全部 Claim/Experiment 素材）"
+    description: "按章节逐步撰写（M3 1M 上下文，可装载全部 Claim/Experiment 素材）"
 
   writing_review:
     provider: minimax
@@ -163,13 +180,15 @@ tasks:
 
   # 旧 task 保留兼容（writing_draft 等价于 writing_outline + writing_section_draft）
   writing_draft:
-    provider: mimo
-    model: MiMo-V2-Pro
+    provider: minimax
+    model: MiniMax-M3
     temperature: 0.4
     description: "根据 Claim 与实验结果起草论文章节（兼容旧节点）"
 
 # 嵌入模型（独立配置，所有向量检索共用）
-# MiniMax 与 MiMo 暂不提供嵌入 API，嵌入走 OpenAI 或本地
+# 注意：MiniMax 暂不提供嵌入 API。
+# - 用户配置了 OPENAI_API_KEY 时走 OpenAI text-embedding-3-small
+# - 未配置时，Pipeline 会在 dry_run 模式下降级为关键词检索（不阻塞流程）
 embedding:
   provider: openai
   model: text-embedding-3-small

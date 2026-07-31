@@ -11,6 +11,7 @@ from stages.experiment.agents import (
     CodeGenerateAgent,
     CodeReviewAgent,
     ExperimentConfigAgent,
+    ExperimentOutcomeAssessAgent,
     ExperimentRunTool,
 )
 
@@ -26,12 +27,17 @@ def build_experiment_graph() -> Graph:
         → ExperimentRunTool（执行实验，ToolNode）
         → AnomalyCheckAgent（检测异常：loss spike/NaN/不收敛）
         → ClaimVerifyAgent（用实验结果验证 Claim）
+        → ExperimentOutcomeAssessAgent（评估实验成败，决定是否进入 writing）
 
     检查点置于实验运行前（代码审查通过后的关键决策点），便于实验失败回滚到
     代码生成阶段。导师-学生迭代语义：CodeReviewAgent 审查不通过时，理论上应回到
     CodeGenerateAgent 重新生成；由于 graph 是 DAG 不支持环，实际多轮迭代由
     GraphRunner 外部循环驱动（重跑 CodeGenerate→CodeReview 子链），或在
     CodeReviewAgent 内部循环 MAX_REVIEW_ROUNDS 次。
+
+    末尾的 ExperimentOutcomeAssessAgent 是 experiment → writing 阶段切换的决策
+    口：实验失败是科研常态，success=False 时不进入 writing，由 recommendation
+    决定回滚到 ideation 或重试实验。
     """
     graph = Graph(name="experiment", stage=LifecycleStage.EXPERIMENT.value)
 
@@ -43,6 +49,7 @@ def build_experiment_graph() -> Graph:
     graph.add_node(ExperimentRunTool("experiment_run"))
     graph.add_node(AnomalyCheckAgent("anomaly_check"))
     graph.add_node(ClaimVerifyAgent("claim_verify"))
+    graph.add_node(ExperimentOutcomeAssessAgent("experiment_outcome_assess"))
 
     # 边
     graph.add_edge("experiment_config", "code_generate")
@@ -51,6 +58,7 @@ def build_experiment_graph() -> Graph:
     graph.add_edge("cp_before_run", "experiment_run")
     graph.add_edge("experiment_run", "anomaly_check")
     graph.add_edge("anomaly_check", "claim_verify")
+    graph.add_edge("claim_verify", "experiment_outcome_assess")
 
     graph.validate()
     return graph

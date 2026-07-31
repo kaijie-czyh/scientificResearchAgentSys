@@ -115,6 +115,9 @@ class GlobalConfig:
         )
     )
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
+    # dry_run=True 时不执行真实 LLM 调用，全部用占位数据返回（默认 True）
+    # 用户配置好 .env 且确认调用后，设为 False 或设环境变量 SRA_DRY_RUN=false
+    dry_run: bool = True
 
     @classmethod
     def load(cls) -> "GlobalConfig":
@@ -124,6 +127,9 @@ class GlobalConfig:
         env_tasks_path = os.environ.get("SRA_TASKS_CONFIG_PATH")
         if env_tasks_path:
             cfg.llm.tasks_config_path = Path(env_tasks_path)
+        # dry_run 开关：默认 true，设 SRA_DRY_RUN=false 关闭
+        env_dry_run = os.environ.get("SRA_DRY_RUN", "true").strip().lower()
+        cfg.dry_run = env_dry_run not in ("false", "0", "no", "off")
         return cfg
 
 

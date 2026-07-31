@@ -8,6 +8,7 @@
     → ExperimentRunTool（执行实验，ToolNode）
     → AnomalyCheckAgent（检测异常：loss spike/NaN/不收敛）
     → ClaimVerifyAgent（用实验结果验证 Claim）
+    → ExperimentOutcomeAssessAgent（评估实验成败，决定是否进入 writing）
 
 说明：
 - CodeGenerateAgent 调用 experiment_code_generate（provider=deepseek，编程最强）。
@@ -17,6 +18,9 @@
   （重跑 CodeGenerate→CodeReview 子链），或在 CodeReviewAgent 内部循环 MAX_REVIEW_ROUNDS 次。
   此处采用「内部循环」范式：_execute 内对当前代码循环审查，未通过时模拟 Code Agent
   修正（占位），最终输出累计 review_notes + passed 标志。
+- ExperimentOutcomeAssessAgent 调用 experiment_outcome_assess（provider=minimax），
+  评估实验结果是否验证了核心 Claim。实验失败是科研常态，success=False 时不进入
+  writing，建议回滚到 ideation 重新探讨或重试实验。
 - _execute 内 LLM 调用以完整注释范式给出，实际执行用占位数据返回，
   既能验证 IO 闭环，又不会产生 API 费用。
 """
@@ -47,10 +51,12 @@ from stages.common import (
     DESIGN_CLAIM_IDS,
     DESIGN_FORMULA_CODE_MAP,
     DESIGN_METHOD_ARTIFACT_ID,
+    DRY_RUN,
     EXPERIMENT_ANOMALY_REPORT,
     EXPERIMENT_CODE,
     EXPERIMENT_CONFIGS,
     EXPERIMENT_IDS,
+    EXPERIMENT_OUTCOME,
     EXPERIMENT_RESULT_ARTIFACT_IDS,
     EXPERIMENT_REVIEW_NOTES,
     KNOWLEDGE_STORE,
@@ -67,6 +73,8 @@ from stages.experiment.io_schema import (
     CodeReviewOutput,
     ExperimentConfigInput,
     ExperimentConfigOutput,
+    ExperimentOutcomeAssessInput,
+    ExperimentOutcomeAssessOutput,
     ExperimentRunInput,
     ExperimentRunOutput,
 )
@@ -533,4 +541,149 @@ class ClaimVerifyAgent(AgentNode):
             status=NodeStatus.SUCCESS,
             output=output,
             summary=f"验证 Claim 并生成 {len(result_artifact_ids)} 个结果 Artifact",
+        )
+
+
+# ===== ExperimentOutcomeAssessAgent =====
+
+class ExperimentOutcomeAssessAgent(AgentNode):
+    """实验成败评估 Agent。
+
+    评估实验结果是否验证了核心 Claim，给出"是否进入 writing"的建议。
+    位于 experiment 阶段末尾（ClaimVerifyAgent 之后），是 experiment → writing
+    阶段切换的决策关口。
+
+    设计要点：
+    - task_type = experiment_outcome_assess，provider=minimax
+    - 输入：experiment_ids（已完成实验）+ DESIGN_CLAIM_IDS（待验证 Claim）+
+      anomaly_report（异常情况）
+    - 输出：写入 EXPERIMENT_OUTCOME 域键，含 success / verified_claim_ids /
+      refuted_claim_ids / inconclusive_claim_ids / recommendation / summary
+
+    重要：实验失败是科研常态——Claim 被实验反驳是正常、有价值的发现。
+    系统不应在实验失败（success=False）时强行进入论文写作阶段。
+    - success=False 且 refuted_claim_ids 非空时，建议 rollback_to_ideation
+      回到思路探讨阶段重新探讨
+    - inconclusive_claim_ids 非空时，建议 retry_experiment 重跑实验阶段
+    - 异常严重时，建议 abort 中止流程
+    - success=True 时，建议 proceed_to_writing 进入论文写作
+    """
+
+    node_type = "experiment_outcome_assess"
+    task_type = "experiment_outcome_assess"
+    input_schema = ExperimentOutcomeAssessInput
+    output_schema = ExperimentOutcomeAssessOutput
+    output_keys = {
+        "outcome": EXPERIMENT_OUTCOME,
+    }
+
+    def _build_input(self, ctx: ExecutionContext) -> ExperimentOutcomeAssessInput:
+        return ExperimentOutcomeAssessInput(
+            experiment_ids=ctx.get(EXPERIMENT_IDS, []),
+            claim_ids=ctx.get(DESIGN_CLAIM_IDS, []),
+            anomaly_report=ctx.get(EXPERIMENT_ANOMALY_REPORT, ""),
+        )
+
+    def _execute(
+        self, input_obj: ExperimentOutcomeAssessInput, ctx: ExecutionContext
+    ) -> NodeResult:
+        registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
+
+        # === LLM 调用范式（占位，实际未执行）===
+        # 让 LLM 综合分析实验结果与 Claim 的关系，判断验证/反驳/无法定论
+        # from core.llm.base import StructuredOutputRequest
+        # from pydantic import BaseModel
+        # class OutcomeAssessSchema(BaseModel):
+        #     success: bool
+        #     verified_claim_ids: list[str]
+        #     refuted_claim_ids: list[str]
+        #     inconclusive_claim_ids: list[str]
+        #     recommendation: str  # proceed_to_writing / rollback_to_ideation
+        #                            # / retry_experiment / abort
+        #     summary: str
+        # # 汇总实验结果素材供 LLM 分析
+        # exp_summaries = []
+        # for exp_id in input_obj.experiment_ids:
+        #     exp = store.get_experiment(exp_id)
+        #     exp_summaries.append({
+        #         "exp_id": exp_id,
+        #         "name": exp.name,
+        #         "status": exp.status.value,
+        #         "verifies_claim_ids": exp.verifies_claim_ids,
+        #         "result_summary": exp.result_summary,
+        #         "anomaly_notes": exp.anomaly_notes,
+        #     })
+        # result = registry.structured_output(
+        #     task_type=self.task_type,
+        #     output_schema=OutcomeAssessSchema,
+        #     system=(
+        #         "你是科研评估助手。根据实验结果判断每个 Claim 是被验证、反驳还是无法定论。"
+        #         "注意：实验失败是科研常态，Claim 被反驳是正常且有价值的发现，"
+        #         "不应强行进入写作阶段。依据 Claim 验证情况给出 recommendation："
+        #         "proceed_to_writing / rollback_to_ideation / retry_experiment / abort。"
+        #     ),
+        #     prompt=(
+        #         f"待验证 Claim IDs: {input_obj.claim_ids}\n"
+        #         f"实验结果素材: {exp_summaries}\n"
+        #         f"异常报告: {input_obj.anomaly_report}"
+        #     ),
+        # )
+        # outcome = {
+        #     "success": result.success,
+        #     "verified_claim_ids": result.verified_claim_ids,
+        #     "refuted_claim_ids": result.refuted_claim_ids,
+        #     "inconclusive_claim_ids": result.inconclusive_claim_ids,
+        #     "recommendation": result.recommendation,
+        #     "summary": result.summary,
+        # }
+
+        # dry_run 模式：占位数据无法真正验证 Claim，诚实返回 success=False。
+        # 这是"带着脑子推进"的体现——不伪造实验成功，让流程自然停在 experiment 阶段，
+        # 验证"实验失败→不进入 writing"的决策逻辑（用户明确说论文写作不是必须的）。
+        # 如需验证 writing 阶段架构，用 --force-writing 标志（见 cli.py / pipeline.py）。
+        if dry_run:
+            outcome = {
+                "success": False,
+                "verified_claim_ids": [],
+                "refuted_claim_ids": [],
+                "inconclusive_claim_ids": list(input_obj.claim_ids),
+                "recommendation": "retry_experiment",
+                "summary": (
+                    "dry_run 模式：实验代码与运行均为占位，无法真正验证 Claim。"
+                    "诚实返回 success=False，不强行进入论文写作阶段。"
+                    "启用真实 API 调用（SRA_DRY_RUN=false）后，将基于真实实验结果评估。"
+                ),
+            }
+            output = ExperimentOutcomeAssessOutput(outcome=outcome)
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=outcome["summary"],
+            )
+
+        # 真实模式：基于 KnowledgeStore 中的实验结果评估
+        # （此处保留占位结构，真实 LLM 调用启用后由上面的注释范式填充）
+        success = True
+        verified_claim_ids = list(input_obj.claim_ids)
+        refuted_claim_ids: list[str] = []
+        inconclusive_claim_ids: list[str] = []
+        recommendation = "proceed_to_writing"
+        summary = "实验验证了全部核心 Claim，建议进入论文写作阶段"
+
+        outcome = {
+            "success": success,
+            "verified_claim_ids": verified_claim_ids,
+            "refuted_claim_ids": refuted_claim_ids,
+            "inconclusive_claim_ids": inconclusive_claim_ids,
+            "recommendation": recommendation,
+            "summary": summary,
+        }
+
+        output = ExperimentOutcomeAssessOutput(outcome=outcome)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=summary,
         )

@@ -95,21 +95,52 @@ class ExecutionContext:
     # ===== 快照 =====
 
     def snapshot(self) -> dict[str, Any]:
-        """深拷贝当前数据与历史，用于回滚。"""
+        """深拷贝当前数据与历史，用于回滚。
+
+        注意：
+        - system.* 前缀的系统依赖（LLMRegistry/KnowledgeStore 等）不可深拷贝
+          （持有 sqlite 连接/OpenAI client），用引用即可——它们不需要随快照回滚。
+        - checkpoint.* 前缀的旧快照不纳入新快照：
+          1. 旧快照内部含 system.* 引用，深拷贝会触发 TypeError
+          2. 语义上检查点是临时回滚点，回滚后由 CheckpointNode 重新生成，
+             不需要在新快照里保留历史检查点
+        """
+        # 系统依赖与旧检查点都用引用/跳过，仅深拷贝纯域数据
+        sys_data = {k: v for k, v in self._data.items() if k.startswith("system.")}
+        domain_data = {
+            k: v
+            for k, v in self._data.items()
+            if not k.startswith("system.") and not k.startswith("checkpoint.")
+        }
         return {
             "project_id": self.project_id,
             "current_stage": self.current_stage,
             "current_node_id": self.current_node_id,
-            "data": copy.deepcopy(self._data),
+            "data": {**sys_data, **copy.deepcopy(domain_data)},
             "history": copy.deepcopy(self._history),
         }
 
     def restore(self, snapshot: dict[str, Any]) -> None:
-        """从快照恢复。"""
+        """从快照恢复。
+
+        保留当前系统依赖（system.*）与当前检查点（checkpoint.*），
+        只恢复域数据与历史。检查点保留当前值便于回滚后重新执行 CheckpointNode。
+        """
         self.project_id = snapshot["project_id"]
         self.current_stage = snapshot["current_stage"]
         self.current_node_id = snapshot["current_node_id"]
-        self._data = copy.deepcopy(snapshot["data"])
+        # 保留当前系统依赖与检查点，合并快照中的域数据
+        current_keep = {
+            k: v
+            for k, v in self._data.items()
+            if k.startswith("system.") or k.startswith("checkpoint.")
+        }
+        snapshot_domain = {
+            k: v
+            for k, v in snapshot["data"].items()
+            if not k.startswith("system.") and not k.startswith("checkpoint.")
+        }
+        self._data = {**current_keep, **copy.deepcopy(snapshot_domain)}
         self._history = copy.deepcopy(snapshot["history"])
 
     # ===== 视图 =====
