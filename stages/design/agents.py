@@ -12,15 +12,19 @@
 每个概念建立「数学公式 ↔ 代码实现」双向映射，确保论文中的公式与
 实验代码一一对应，避免「论文写一套、代码做一套」。
 
-说明：_execute 内 LLM 调用以完整注释范式给出，实际执行用占位数据返回，
-既能验证 IO 闭环，又不会产生 API 费用。
+执行模式：
+- dry_run=True  ：用占位数据返回，不调用 LLM（默认，验证架构用）
+- dry_run=False ：真实调用 MiniMax M3，真实入库 Claim/Artifact
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
+from pydantic import BaseModel, Field
+
 from core.artifacts import ArtifactManager
-from core.knowledge import Artifact, ArtifactType, Claim, ClaimStatus, KnowledgeStore
+from core.knowledge import Artifact, ArtifactType, Claim, ClaimStatus, KnowledgeStore, Paper
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -40,9 +44,11 @@ from stages.common import (
     DESIGN_FORMULA_CODE_MAP,
     DESIGN_METHOD_ARTIFACT_ID,
     DESIGN_METHOD_CONTENT,
+    DRY_RUN,
     IDEATION_VALIDATED_IDEA_IDS,
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
+    RESEARCH_PAPER_IDS,
 )
 from stages.design.io_schema import (
     AtomDecomposeInput,
@@ -56,6 +62,53 @@ from stages.design.io_schema import (
     MethodReviewOutput,
 )
 
+logger = logging.getLogger(__name__)
+
+
+# ===== 结构化输出 Schema =====
+
+class AtomConceptSchema(BaseModel):
+    """原子概念 schema。"""
+
+    concept_name: str = Field(description="概念名（snake_case）")
+    description: str = Field(description="概念描述")
+    formula_latex: str = Field(description="对应数学公式（LaTeX）")
+    code_stub: str = Field(description="对应代码骨架（Python stub）")
+    dependencies: list[str] = Field(default_factory=list, description="依赖的其他 concept_name")
+
+
+class FormulaCodeMapItem(BaseModel):
+    """公式↔代码映射项。"""
+
+    concept: str
+    formula_latex: str
+    code_stub: str
+    status: str = "mapped"  # mapped / pending / mismatched
+
+
+class AtomDecomposeSchema(BaseModel):
+    """原子概念分解输出 schema。"""
+
+    atom_concepts: list[AtomConceptSchema]
+    formula_code_map: list[FormulaCodeMapItem]
+
+
+class ClaimExtractItem(BaseModel):
+    """单条 Claim 抽取项。"""
+
+    statement: str = Field(description="一句话可验证陈述")
+    role: str = Field(default="contribution", description="contribution/method/assumption/result")
+    evidence_paper_ids: list[str] = Field(
+        default_factory=list,
+        description="关联的 Paper ID（来自调研阶段入库的论文）",
+    )
+
+
+class ClaimBatchSchema(BaseModel):
+    """Claim 批量抽取 schema。"""
+
+    claims: list[ClaimExtractItem]
+
 
 # ===== AtomDecomposeAgent（借鉴 AI-Researcher）=====
 
@@ -67,14 +120,9 @@ class AtomDecomposeAgent(AgentNode):
 
     设计要点：
     - 原子概念应互相正交，每个可独立验证（便于实验阶段逐概念实现与测试）
-    - 每个概念同时给出 formula_latex（论文中将出现的公式）与 code_stub
-      （实验代码骨架），确保论文公式与代码一一对应
-    - dependencies 标注概念间依赖，形成 DAG，便于实验阶段按序实现
-    - formula_code_map 显式记录映射状态（mapped/pending/mismatched），
-      status=mismatched 时需人工介入对齐公式与代码
-
-    输入：ideation 阶段传入的 validated idea（IDEATION_VALIDATED_IDEA_IDS）
-    输出：原子概念列表（DESIGN_ATOM_CONCEPTS）+ 公式↔代码映射表（DESIGN_FORMULA_CODE_MAP）
+    - 每个概念同时给出 formula_latex 与 code_stub，确保论文公式与代码一一对应
+    - dependencies 标注概念间依赖，形成 DAG
+    - formula_code_map 显式记录映射状态
     """
 
     node_type = "design_atom_decompose"
@@ -94,42 +142,69 @@ class AtomDecomposeAgent(AgentNode):
         self, input_obj: AtomDecomposeInput, ctx: ExecutionContext
     ) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # 借鉴 AI-Researcher：让 LLM 把方法分解为原子概念并建立公式↔代码双向映射
-        # from pydantic import BaseModel, Field
-        # class AtomConceptSchema(BaseModel):
-        #     concept_name: str
-        #     description: str
-        #     formula_latex: str
-        #     code_stub: str
-        #     dependencies: list[str] = Field(default_factory=list)
-        # class FormulaCodeMapItem(BaseModel):
-        #     concept: str
-        #     formula_latex: str
-        #     code_stub: str
-        #     status: str  # mapped / pending / mismatched
-        # class AtomDecomposeSchema(BaseModel):
-        #     atom_concepts: list[AtomConceptSchema]
-        #     formula_code_map: list[FormulaCodeMapItem]
-        # result = registry.structured_output(
-        #     task_type=self.task_type,
-        #     output_schema=AtomDecomposeSchema,
-        #     system=(
-        #         "你是科研方法设计助手。借鉴 AI-Researcher 的原子概念分解思想，"
-        #         "把方法拆为最小可独立验证的原子概念，每个概念必须同时给出"
-        #         "数学公式（LaTeX）与代码实现骨架（Python stub），并标注概念间依赖。"
-        #         "确保公式与代码一一对应（status=mapped），避免「论文写一套、代码做一套」。"
-        #     ),
-        #     prompt=(
-        #         f"基于以下 validated idea 分解原子概念：\n"
-        #         f"idea_ids: {input_obj.idea_ids}"
-        #     ),
-        # )
-        # atom_concepts = [ac.model_dump() for ac in result.atom_concepts]
-        # formula_code_map = [m.model_dump() for m in result.formula_code_map]
+        # 加载 idea 正文作为 prompt 素材
+        idea_summaries: list[str] = []
+        if store is not None:
+            for iid in input_obj.idea_ids:
+                try:
+                    idea = store.get_idea(iid)
+                    idea_summaries.append(f"- {idea.text}\n  约束: {idea.constraints}")
+                except Exception:
+                    pass
 
-        # 占位数据：3 个原子概念，覆盖 embedding → attention → aggregation 链路
+        if not dry_run and registry is not None and idea_summaries:
+            try:
+                result = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=AtomDecomposeSchema,
+                    system=(
+                        "你是科研方法设计助手。借鉴 AI-Researcher 的原子概念分解思想，"
+                        "把方法拆为 3-6 个最小可独立验证的原子概念，每个概念必须同时给出"
+                        "数学公式（LaTeX）与代码实现骨架（Python stub），并标注概念间依赖。"
+                        "确保公式与代码一一对应（status=mapped），避免「论文写一套、代码做一套」。"
+                    ),
+                    prompt=(
+                        f"基于以下 validated idea 分解原子概念：\n"
+                        + "\n".join(idea_summaries)
+                    ),
+                )
+                atom_concepts = [ac.model_dump() for ac in result.atom_concepts]
+                formula_code_map = [m.model_dump() for m in result.formula_code_map]
+                # 兜底：若 LLM 漏给映射表，自动从 atom_concepts 构造
+                if not formula_code_map and atom_concepts:
+                    formula_code_map = [
+                        {
+                            "concept": ac["concept_name"],
+                            "formula_latex": ac["formula_latex"],
+                            "code_stub": ac["code_stub"],
+                            "status": "mapped",
+                        }
+                        for ac in atom_concepts
+                    ]
+            except Exception as e:
+                logger.warning("AtomDecompose 真实调用失败，回退占位: %s", e)
+                atom_concepts, formula_code_map = self._placeholder()
+        else:
+            atom_concepts, formula_code_map = self._placeholder()
+
+        output = AtomDecomposeOutput(
+            atom_concepts=atom_concepts,
+            formula_code_map=formula_code_map,
+        )
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=(
+                f"原子概念分解完成：{len(atom_concepts)} 个概念，"
+                f"{len(formula_code_map)} 条公式↔代码映射"
+            ),
+        )
+
+    @staticmethod
+    def _placeholder() -> tuple[list[dict], list[dict]]:
         atom_concepts = [
             {
                 "concept_name": "input_embedding",
@@ -153,7 +228,6 @@ class AtomDecomposeAgent(AgentNode):
                 "dependencies": ["attention_weight"],
             },
         ]
-        # 公式↔代码映射表：与原子概念一一对应，均标记为 mapped
         formula_code_map = [
             {
                 "concept": ac["concept_name"],
@@ -163,19 +237,7 @@ class AtomDecomposeAgent(AgentNode):
             }
             for ac in atom_concepts
         ]
-
-        output = AtomDecomposeOutput(
-            atom_concepts=atom_concepts,
-            formula_code_map=formula_code_map,
-        )
-        return NodeResult(
-            status=NodeStatus.SUCCESS,
-            output=output,
-            summary=(
-                f"原子概念分解完成：{len(atom_concepts)} 个概念，"
-                f"{len(formula_code_map)} 条公式↔代码映射"
-            ),
-        )
+        return atom_concepts, formula_code_map
 
 
 # ===== MethodFormalizeAgent =====
@@ -183,13 +245,7 @@ class AtomDecomposeAgent(AgentNode):
 class MethodFormalizeAgent(AgentNode):
     """方法形式化 Agent。
 
-    基于原子概念与公式↔代码映射，调用 design_method_formalize 整合为
-    完整方法文档（含数学公式与算法伪代码）。
-
-    设计要点：
-    - 整合原子概念为连贯的方法叙述（动机→定义→算法→复杂度）
-    - 保留公式↔代码映射，便于写作与实验阶段溯源到具体概念
-    - 输出 method_content 供后续用户审核与 Claim 抽取
+    基于原子概念与公式↔代码映射，整合为完整方法文档（含数学公式与算法伪代码）。
     """
 
     node_type = "design_method_formalize"
@@ -211,31 +267,55 @@ class MethodFormalizeAgent(AgentNode):
         self, input_obj: MethodFormalizeInput, ctx: ExecutionContext
     ) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # 借鉴 AI-Researcher：基于原子概念与公式↔代码映射，整合为完整方法文档
-        # resp = registry.complete(
-        #     task_type=self.task_type,
-        #     system=(
-        #         "你是科研方法形式化助手。基于已分解的原子概念与公式↔代码映射，"
-        #         "整合为完整的方法文档（含数学公式与算法伪代码），"
-        #         "保持公式与代码的对应关系。"
-        #     ),
-        #     prompt=(
-        #         f"Idea IDs: {input_obj.idea_ids}\n"
-        #         f"原子概念：\n{input_obj.atom_concepts}\n"
-        #         f"公式↔代码映射：\n{input_obj.formula_code_map}"
-        #     ),
-        # )
-        # method_content = resp.text
+        # 加载 idea 正文
+        idea_text = ""
+        if store is not None and input_obj.idea_ids:
+            try:
+                idea_text = store.get_idea(input_obj.idea_ids[0]).text
+            except Exception:
+                pass
 
-        # 占位数据：将原子概念整合为方法文档
+        if not dry_run and registry is not None:
+            try:
+                resp = registry.complete(
+                    task_type=self.task_type,
+                    system=(
+                        "你是科研方法形式化助手。基于已分解的原子概念与公式↔代码映射，"
+                        "整合为完整的方法文档（含数学公式与算法伪代码），"
+                        "结构：动机 → 核心概念定义 → 算法伪代码 → 复杂度分析。"
+                        "保持公式与代码的对应关系，输出 Markdown 格式。"
+                    ),
+                    prompt=(
+                        f"原始 idea：{idea_text}\n\n"
+                        f"原子概念：\n{input_obj.atom_concepts}\n\n"
+                        f"公式↔代码映射：\n{input_obj.formula_code_map}"
+                    ),
+                )
+                method_content = resp.text
+            except Exception as e:
+                logger.warning("MethodFormalize 真实调用失败，回退占位: %s", e)
+                method_content = self._placeholder(input_obj)
+        else:
+            method_content = self._placeholder(input_obj)
+
+        output = MethodFormalizeOutput(method_content=method_content)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary="方法形式化完成（基于原子概念整合）",
+        )
+
+    @staticmethod
+    def _placeholder(input_obj: MethodFormalizeInput) -> str:
         concept_lines = "\n".join(
             f"- **{c.get('concept_name', '?')}**: {c.get('description', '')} "
             f"$${c.get('formula_latex', '')}$$"
             for c in input_obj.atom_concepts
         ) or "(无原子概念)"
-        method_content = (
+        return (
             "## 方法\n\n"
             "### 动机\n基于 validated idea 形式化方法。\n\n"
             "### 核心概念\n"
@@ -249,13 +329,6 @@ class MethodFormalizeAgent(AgentNode):
             "```\n"
         )
 
-        output = MethodFormalizeOutput(method_content=method_content)
-        return NodeResult(
-            status=NodeStatus.SUCCESS,
-            output=output,
-            summary="方法形式化完成（基于原子概念整合）",
-        )
-
 
 # ===== MethodReviewHuman =====
 
@@ -263,8 +336,6 @@ class MethodReviewHuman(HumanNode):
     """用户审核方法。
 
     呈现方法内容（含原子概念与公式↔代码映射），用户确认或提出修改意见。
-    借鉴 AI-Researcher：在进入实验阶段前给用户最后干预机会，
-    确保方法形式化与用户预期一致。
     """
 
     node_type = "design_method_review"
@@ -329,45 +400,63 @@ class ClaimEvidenceLinkAgent(AgentNode):
     ) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # 借鉴 AI-Researcher：从形式化方法中抽取 Claim 并关联证据
-        # from pydantic import BaseModel, Field
-        # class ClaimExtractSchema(BaseModel):
-        #     statement: str
-        #     role: str  # contribution / method / assumption / result
-        #     evidence_refs: list[dict[str, str]] = Field(default_factory=list)
-        # class ClaimBatchSchema(BaseModel):
-        #     claims: list[ClaimExtractSchema]
-        # result = registry.structured_output(
-        #     task_type=self.task_type,
-        #     output_schema=ClaimBatchSchema,
-        #     system=(
-        #         "你是科研方法分析助手。从形式化方法中抽取可验证的 Claim，"
-        #         "并为每个 Claim 关联 Paper/Experiment 证据。"
-        #         "每条 evidence_ref 形如 {\"type\": \"paper\"/\"experiment\", \"id\": \"...\"}。"
-        #     ),
-        #     prompt=(
-        #         f"方法内容：\n{input_obj.method_content}\n"
-        #         f"原子概念：\n{input_obj.atom_concepts}"
-        #     ),
-        # )
-        # claim_ids = []
-        # for c in result.claims:
-        #     claim_id = KnowledgeStore.new_id()
-        #     claim = Claim(
-        #         claim_id=claim_id,
-        #         statement=c.statement,
-        #         role=c.role,
-        #         evidence_refs=c.evidence_refs,
-        #         status=ClaimStatus.EVIDENCE_LINKED,
-        #         source_stage="design",
-        #     )
-        #     store.save_claim(claim)
-        #     claim_ids.append(claim_id)
+        # 获取可用的 Paper IDs 作为证据候选
+        available_paper_ids: list[str] = ctx.get(RESEARCH_PAPER_IDS, [])
 
-        # 占位数据：从方法中抽取 3 个 Claim，用 new_id 生成合法 ID
-        claim_ids = [KnowledgeStore.new_id() for _ in range(3)]
+        if not dry_run and registry is not None and store is not None:
+            try:
+                result = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=ClaimBatchSchema,
+                    system=(
+                        "你是科研方法分析助手。从形式化方法中抽取 2-4 个可验证的 Claim，"
+                        "每个 Claim 用一句话陈述，可被实验或证据验证/反驳。"
+                        "为每个 Claim 关联 Paper 证据（从给定的 paper_ids 列表中选取最相关的），"
+                        "若无可关联的 Paper，evidence_paper_ids 留空。"
+                        "Claim 角色：contribution（核心贡献）/ method（方法特性）/ assumption（假设）/ result（预期结果）。"
+                    ),
+                    prompt=(
+                        f"方法内容：\n{input_obj.method_content}\n\n"
+                        f"原子概念：\n{input_obj.atom_concepts}\n\n"
+                        f"可用 paper_ids: {available_paper_ids}"
+                    ),
+                )
+
+                claim_ids: list[str] = []
+                for c in result.claims:
+                    claim_id = KnowledgeStore.new_id()
+                    # 构造 evidence_refs（非 DRAFT 状态必须有）
+                    evidence_refs = [
+                        {"type": "paper", "id": pid}
+                        for pid in c.evidence_paper_ids
+                    ]
+                    # 若无证据，则保持 DRAFT 状态（避免违反硬约束）
+                    status = ClaimStatus.EVIDENCE_LINKED if evidence_refs else ClaimStatus.DRAFT
+                    claim = Claim(
+                        claim_id=claim_id,
+                        statement=c.statement,
+                        role=c.role,
+                        evidence_refs=evidence_refs,
+                        status=status,
+                        source_stage="design",
+                    )
+                    try:
+                        store.save_claim(claim)
+                        claim_ids.append(claim_id)
+                    except Exception as e:
+                        logger.warning("Claim 入库失败: %s", e)
+
+                # 兜底：若 LLM 未抽取出 Claim，用占位
+                if not claim_ids:
+                    claim_ids = self._placeholder_claims(store, available_paper_ids)
+            except Exception as e:
+                logger.warning("ClaimEvidenceLink 真实调用失败，回退占位: %s", e)
+                claim_ids = self._placeholder_claims(store, available_paper_ids)
+        else:
+            # 占位：用 new_id 生成合法 ID（不真实入库）
+            claim_ids = [KnowledgeStore.new_id() for _ in range(3)]
 
         output = ClaimEvidenceLinkOutput(claim_ids=claim_ids)
         return NodeResult(
@@ -375,6 +464,35 @@ class ClaimEvidenceLinkAgent(AgentNode):
             output=output,
             summary=f"抽取 {len(claim_ids)} 个 Claim 并关联证据",
         )
+
+    @staticmethod
+    def _placeholder_claims(
+        store: Optional[KnowledgeStore], paper_ids: list[str]
+    ) -> list[str]:
+        """占位 Claim：用 new_id 生成合法 ID；若 store 可用则真实入库。"""
+        claim_ids = []
+        for i in range(3):
+            claim_id = KnowledgeStore.new_id()
+            # 用第一个 paper 作为证据（若有）
+            evidence_refs = (
+                [{"type": "paper", "id": paper_ids[0]}] if paper_ids else []
+            )
+            status = ClaimStatus.EVIDENCE_LINKED if evidence_refs else ClaimStatus.DRAFT
+            claim = Claim(
+                claim_id=claim_id,
+                statement=f"占位 Claim {i + 1}：所提方法在标准评测下优于 baseline。",
+                role="contribution",
+                evidence_refs=evidence_refs,
+                status=status,
+                source_stage="design",
+            )
+            if store is not None:
+                try:
+                    store.save_claim(claim)
+                except Exception:
+                    pass
+            claim_ids.append(claim_id)
+        return claim_ids
 
 
 # ===== MethodArtifactAgent =====
@@ -404,24 +522,38 @@ class MethodArtifactAgent(AgentNode):
         self, input_obj: MethodArtifactInput, ctx: ExecutionContext
     ) -> NodeResult:
         manager: Optional[ArtifactManager] = ctx.get(ARTIFACT_MANAGER)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === Artifact 创建范式（占位，实际未执行）===
-        # artifact: Artifact = manager.create_artifact(
-        #     artifact_type=ArtifactType.METHOD_DOC,
-        #     title="方法文档",
-        #     content=input_obj.method_content,
-        #     cites_claim_ids=input_obj.claim_ids,
-        #     source_stage="design",
-        #     created_by="design_method_artifact",
-        # )
-        # method_artifact_id = artifact.artifact_id
+        if dry_run or manager is None:
+            # 占位：用 new_id 生成合法 ID（不真实创建 Artifact）
+            method_artifact_id = KnowledgeStore.new_id()
+            output = MethodArtifactOutput(method_artifact_id=method_artifact_id)
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=f"[dry_run] 创建方法 Artifact: {method_artifact_id[:8]}（占位 ID）",
+            )
 
-        # 占位数据：用 new_id 生成合法 ID（静态方法，无需 DB 实例）
-        method_artifact_id = KnowledgeStore.new_id()
-
-        output = MethodArtifactOutput(method_artifact_id=method_artifact_id)
-        return NodeResult(
-            status=NodeStatus.SUCCESS,
-            output=output,
-            summary=f"创建方法 Artifact: {method_artifact_id[:8]}",
-        )
+        # 真实创建 Artifact
+        try:
+            artifact: Artifact = manager.create_artifact(
+                artifact_type=ArtifactType.METHOD_DOC,
+                title="方法文档",
+                content=input_obj.method_content,
+                cites_claim_ids=input_obj.claim_ids,
+                source_stage="design",
+                created_by="design_method_artifact",
+            )
+            method_artifact_id = artifact.artifact_id
+            output = MethodArtifactOutput(method_artifact_id=method_artifact_id)
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=f"创建方法 Artifact: {method_artifact_id[:8]}（v1）",
+            )
+        except Exception as e:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error=f"方法 Artifact 创建失败: {e}",
+                summary=f"方法 Artifact 创建失败: {e}",
+            )

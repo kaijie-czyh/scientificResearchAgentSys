@@ -107,6 +107,13 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_id);
 CREATE INDEX IF NOT EXISTS idx_rel_target ON relations(target_id);
 CREATE INDEX IF NOT EXISTS idx_rel_type ON relations(relation_type);
+
+-- 通用 KV 表：项目级报告/元数据持久化（cross_validation_report、discovery_summary 等）
+CREATE TABLE IF NOT EXISTS kv_store (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -403,6 +410,55 @@ class KnowledgeStore:
                 )
                 for r in rows
             ]
+
+    # ===== 通用 KV 存储（项目级报告/元数据）=====
+
+    def save_kv(self, key: str, value: Any) -> None:
+        """持久化项目级报告/元数据。
+
+        用于存储 cross_validation_report、discovery_summary、
+        materials_cross_validation_report 等结构化产出，便于前端展示与 resume 恢复。
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO kv_store (key, value, updated_at) "
+                "VALUES (?, ?, ?)",
+                (key, json.dumps(value, ensure_ascii=False, default=str),
+                 __import__("datetime").datetime.utcnow().isoformat()),
+            )
+
+    def get_kv(self, key: str, default: Any = None) -> Any:
+        """读取 KV 值。不存在则返回 default。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM kv_store WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return default
+            try:
+                return json.loads(row["value"])
+            except (json.JSONDecodeError, TypeError):
+                return default
+
+    def list_kv(self) -> dict[str, Any]:
+        """列出所有 KV 键值对。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM kv_store ORDER BY key"
+            ).fetchall()
+            result: dict[str, Any] = {}
+            for r in rows:
+                try:
+                    result[r["key"]] = json.loads(r["value"])
+                except (json.JSONDecodeError, TypeError):
+                    result[r["key"]] = r["value"]
+            return result
+
+    def delete_kv(self, key: str) -> bool:
+        """删除 KV。返回是否实际删除了。"""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
+            return cur.rowcount > 0
 
     # ===== 工具 =====
 

@@ -26,6 +26,11 @@ PROVENANCE_VALIDATOR = ContextKey[ProvenanceValidator]("system.provenance_valida
 # 全局开关：dry_run=True 时不执行真实 LLM 调用，用占位数据返回
 DRY_RUN = ContextKey[bool]("system.dry_run")
 
+# 项目根目录与项目目录（供 ExperimentRunTool 写入并执行实验代码）
+# 类型为 pathlib.Path，运行时由 Pipeline 注入
+PROJECT_ROOT = ContextKey[object]("system.project_root")
+PROJECT_DIR = ContextKey[object]("system.project_dir")
+
 
 # ===== research 阶段域键 =====
 RESEARCH_TOPIC = ContextKey[str]("research.topic")
@@ -80,6 +85,19 @@ WRITING_SECTIONS = ContextKey[list[dict]]("writing.sections")  # [{title, conten
 WRITING_DRAFT_CONTENT = ContextKey[str]("writing.draft_content")
 WRITING_REVIEW_NOTES = ContextKey[str]("writing.review_notes")
 WRITING_PAPER_DRAFT_ARTIFACT_ID = ContextKey[str]("writing.paper_draft_artifact_id")
+
+
+# ===== discovery 阶段域键（路线 A：构效关系发现）=====
+# 候选构效关系假设（搜索种子）：[{hypothesis, variables, target_property, rationale, gap_ref}]
+DISCOVERY_HYPOTHESES = ContextKey[list[dict]]("discovery.hypotheses")
+# 搜索空间定义：{variables:[{name, range, unit, type}], target_property, constraints, literature_points:[...]}
+DISCOVERY_SEARCH_SPACE = ContextKey[dict]("discovery.search_space")
+# LLM 引导搜索产出的候选构效关系：[{config, predicted_property, plausibility, mechanism, novelty}]
+DISCOVERY_CANDIDATES = ContextKey[list[dict]]("discovery.candidates")
+# 验证后的构效关系发现：[{relationship, evidence_refs, novelty, mechanism, confidence}]
+DISCOVERY_RELATIONSHIPS = ContextKey[list[dict]]("discovery.relationships")
+# 构效关系发现报告 Artifact ID
+DISCOVERY_REPORT_ARTIFACT_ID = ContextKey[str]("discovery.report_artifact_id")
 
 
 class StageCheckpoint(CheckpointNode):

@@ -39,3 +39,8 @@ vectors/
 runs/
 mlruns/
 .dvc/
+
+# 临时运行日志（smoke test / real run 产物）
+realrun*.txt
+run_log.txt
+_test_api.py

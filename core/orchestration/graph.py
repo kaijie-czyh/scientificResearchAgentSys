@@ -188,6 +188,9 @@ class GraphRunner:
             self._state.completed_nodes.add(node.node_id)
             self._record_result(node, result)
             self._advance()
+            # 关键：继续执行后续节点（_advance 只前进一步，
+            # 必须接着 _step 循环跑完剩余节点，否则人工节点后的图会被截断）
+            self._step()
         elif result.status == NodeStatus.FAILED:
             self._state.failed_nodes.add(node.node_id)
             self._handle_failure(node, result)

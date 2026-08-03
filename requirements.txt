@@ -18,6 +18,10 @@ anthropic>=0.21.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
 
+# 文献检索（research 阶段真实调用）
+arxiv>=2.1.0
+requests>=2.31.0
+
 # 实验运行阶段（后续启用）
 # mlflow>=2.10.0
 # dvc>=3.40.0

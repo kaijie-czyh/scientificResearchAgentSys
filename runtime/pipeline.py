@@ -29,6 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+import logging
+
 from core.artifacts import ArtifactContentStore, ArtifactManager, ProvenanceValidator
 from core.config import GlobalConfig, get_config
 from core.knowledge import KnowledgeStore
@@ -41,17 +43,30 @@ from core.state.session import ProjectSession
 
 from stages.common import (
     ARTIFACT_MANAGER,
+    DISCOVERY_CANDIDATES,
+    DISCOVERY_HYPOTHESES,
+    DISCOVERY_RELATIONSHIPS,
+    DISCOVERY_REPORT_ARTIFACT_ID,
+    DISCOVERY_SEARCH_SPACE,
     DRY_RUN,
     EXPERIMENT_OUTCOME,
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
+    PROJECT_DIR,
+    PROJECT_ROOT,
     PROVENANCE_VALIDATOR,
+    RESEARCH_CROSS_VALIDATION_REPORT,
+    RESEARCH_FILTERED_PAPER_METAS,
+    RESEARCH_PAPER_IDS,
+    RESEARCH_PAPER_METAS,
     RESEARCH_TOPIC,
 )
 
 
 # 人工回调类型：(HumanRequest) -> HumanResponse
 HumanCallback = Callable[[HumanRequest], HumanResponse]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -126,6 +141,8 @@ class Pipeline:
         ctx.set(ARTIFACT_MANAGER, artifact_manager)
         ctx.set(PROVENANCE_VALIDATOR, provenance_validator)
         ctx.set(DRY_RUN, self.config.dry_run)
+        ctx.set(PROJECT_ROOT, self.paths.root)
+        ctx.set(PROJECT_DIR, self.paths.project_dir(project_id))
 
         # 设置研究主题
         ctx.set(RESEARCH_TOPIC, topic)
@@ -144,7 +161,67 @@ class Pipeline:
         ctx.set(ARTIFACT_MANAGER, ArtifactManager(store, content_store))
         ctx.set(PROVENANCE_VALIDATOR, ProvenanceValidator(store))
         ctx.set(DRY_RUN, self.config.dry_run)
+        ctx.set(PROJECT_ROOT, self.paths.root)
+        ctx.set(PROJECT_DIR, self.paths.project_dir(project_id))
         return session, ctx
+
+    def _restore_research_outputs(
+        self, ctx: ExecutionContext, project_id: str, topic: str
+    ) -> None:
+        """resume 模式下从 KnowledgeStore 恢复 research 阶段产出。
+
+        session 只持久化 stage_states，不持久化 ctx 域数据（paper_ids、
+        cross_validation_report 等）。discovery 子图依赖这些产出，需手动恢复。
+        """
+        store: KnowledgeStore = ctx.get(KNOWLEDGE_STORE)  # type: ignore[assignment]
+        if store is None:
+            return
+        try:
+            papers = store.list_papers()
+            paper_ids = [p.paper_id for p in papers]
+            paper_metas = [
+                {
+                    "title": p.title,
+                    "authors": p.authors,
+                    "year": p.year,
+                    "abstract": p.abstract or "",
+                    "arxiv_id": p.arxiv_id,
+                    "doi": p.doi,
+                    "venue": p.venue,
+                    "source_subquery": (p.metadata or {}).get("source_subquery", ""),
+                    "relevance_score": (p.metadata or {}).get("relevance_score", 0.7),
+                }
+                for p in papers
+            ]
+            ctx.set(RESEARCH_TOPIC, topic)
+            ctx.set(RESEARCH_PAPER_IDS, paper_ids)
+            ctx.set(RESEARCH_PAPER_METAS, paper_metas)
+            ctx.set(RESEARCH_FILTERED_PAPER_METAS, paper_metas)
+            # 优先从 KV 表恢复完整 cross_validation_report（含 Research Gaps）
+            cv_report = store.get_kv("cross_validation_report")
+            if cv_report and (cv_report.get("gaps") or cv_report.get("consensus")):
+                ctx.set(RESEARCH_CROSS_VALIDATION_REPORT, cv_report)
+                logger.info(
+                    "resume 模式：从 KV 恢复完整 cross_validation_report（gaps=%d, consensus=%d）",
+                    len(cv_report.get("gaps", [])),
+                    len(cv_report.get("consensus", [])),
+                )
+            else:
+                # KV 无记录时设为简化版（兼容旧项目）
+                ctx.set(
+                    RESEARCH_CROSS_VALIDATION_REPORT,
+                    {
+                        "gaps": [],
+                        "conflicts": [],
+                        "consensus": ["(resume 模式，跳过交叉验证)"],
+                        "overall_confidence": 0.5,
+                    },
+                )
+            logger.info(
+                "resume 模式：从 KnowledgeStore 恢复 %d 篇论文产出", len(paper_ids)
+            )
+        except Exception as e:
+            logger.warning("resume 模式恢复 research 产出失败: %s", e)
 
     # ===== 阶段图构建 =====
 
@@ -364,4 +441,112 @@ class Pipeline:
         # 全部阶段完成
         result.status = "completed"
         result.summary = "全流程完成：调研→思路→方案→实验→写作"
+        return result
+
+    # ===== 路线 A：构效关系发现 =====
+
+    def run_discovery(
+        self,
+        project_id: str,
+        topic: str,
+        human_callback: Optional[HumanCallback] = None,
+        resume: bool = False,
+    ) -> PipelineResult:
+        """运行构效关系发现（路线 A）。
+
+        流程：research 阶段（文献调研，产出 Research Gap + 论文）
+              → discovery 子图（假设种子→搜索空间→LLM 引导搜索→验证→报告）
+
+        discovery 不属于标准 5 阶段生命周期，作为 research 之后的可选扩展，
+        专用于材料科学构效关系发现。复用 research 阶段的产出（论文 + 交叉验证报告）。
+
+        Args:
+            project_id: 项目 ID
+            topic: 研究主题（如「热电材料的构效关系与性能优化」）
+            human_callback: 人工节点回调
+            resume: 是否从已有项目恢复（复用已完成的 research 阶段）
+
+        Returns:
+            PipelineResult，summary 含发现概览，node_history 含 discovery 节点历史
+        """
+        if resume:
+            session, ctx = self.resume_project(project_id)
+        else:
+            session, ctx = self.start_project(project_id, topic)
+
+        result = PipelineResult(project_id=project_id, status="running")
+
+        # 1. 先跑 research 阶段（若未完成）
+        if not session.is_stage_done(LifecycleStage.RESEARCH):
+            research_result = self.run_stage(
+                session, ctx, LifecycleStage.RESEARCH, human_callback
+            )
+            result.node_history = research_result.node_history
+            if research_result.status == "pending_human":
+                result.status = "pending_human"
+                result.summary = research_result.summary
+                return result
+            if research_result.status in ("failed", "aborted"):
+                result.status = research_result.status
+                result.summary = f"research 阶段{research_result.status}: {research_result.summary}"
+                return result
+            result.completed_stages.append(LifecycleStage.RESEARCH)
+        else:
+            result.completed_stages.append(LifecycleStage.RESEARCH)
+            # resume 模式：research 已完成但 ctx 是全新的，需从 KnowledgeStore 恢复 research 产出
+            # （session 只持久化 stage_states，不持久化 ctx 域数据）
+            self._restore_research_outputs(ctx, project_id, topic)
+
+        # 2. 运行 discovery 子图
+        from stages.discovery.graph import build_discovery_graph
+
+        graph = build_discovery_graph()
+        runner = GraphRunner(graph, ctx)
+        ctx.current_stage = "discovery"
+
+        if session.status_of(LifecycleStage.RESEARCH) == StageStatus.NOT_STARTED:
+            session.start_stage(LifecycleStage.RESEARCH, triggered_by="pipeline")
+
+        runner.start()
+
+        # 处理人工节点阻塞
+        while runner.is_pending_human():
+            if human_callback is None:
+                req = runner.pending_human_request()
+                result.status = "pending_human"
+                result.summary = "discovery 阶段等待人工输入"
+                return result
+            req = runner.pending_human_request()
+            resp = human_callback(req)
+            runner.resume_after_human(resp)
+
+        if runner.is_aborted():
+            result.status = "aborted"
+            result.summary = "discovery 阶段被中止"
+            result.node_history = ctx.history()
+            return result
+
+        final = runner.final_result()
+        if final is not None and final.status == NodeStatus.FAILED:
+            result.status = "failed"
+            result.summary = final.summary or "discovery 阶段失败"
+            result.node_history = ctx.history()
+            return result
+
+        # 3. 收集 discovery 产出
+        hypotheses = ctx.get(DISCOVERY_HYPOTHESES, []) or []
+        candidates = ctx.get(DISCOVERY_CANDIDATES, []) or []
+        relationships = ctx.get(DISCOVERY_RELATIONSHIPS, []) or []
+        report_id = ctx.get(DISCOVERY_REPORT_ARTIFACT_ID, "") or ""
+        n_novel = sum(1 for r in relationships if r.get("novelty") == "novel")
+
+        result.status = "completed"
+        result.current_stage = None
+        result.summary = (
+            f"构效关系发现完成：{len(hypotheses)} 个假设 → "
+            f"{len(candidates)} 个搜索候选 → {len(relationships)} 条验证发现"
+            f"（{n_novel} 条 novel），报告 Artifact {report_id[:8] if report_id else '无'}"
+        )
+        result.node_history = ctx.history()
+        result.recommendation = "discovery_completed"
         return result
