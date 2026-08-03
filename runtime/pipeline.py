@@ -269,8 +269,15 @@ class Pipeline:
         runner = GraphRunner(graph, ctx)
 
         # 启动阶段（状态机流转）
-        if session.status_of(stage) == StageStatus.NOT_STARTED:
+        current_status = session.status_of(stage)
+        if current_status == StageStatus.NOT_STARTED:
             session.start_stage(stage, triggered_by="pipeline")
+        elif current_status == StageStatus.BLOCKED:
+            # 之前运行中节点失败导致 blocked，重新运行前先解除阻塞
+            session.unblock(
+                reason=f"重新运行阶段 {stage.value}（从 blocked 恢复）",
+                triggered_by="pipeline",
+            )
 
         ctx.current_stage = stage.value
         runner.start()
@@ -360,6 +367,12 @@ class Pipeline:
         # 初始化或恢复
         if resume:
             session, ctx = self.resume_project(project_id)
+            # resume 模式下 ctx 是全新的，需恢复 topic 与 research 阶段产出，
+            # 否则下游阶段（ideation/design/...）读不到 paper_ids / cross_validation_report，
+            # 导致 brainstorm 拿到空输入、生成与主题无关的占位思路（串主题根因）
+            ctx.set(RESEARCH_TOPIC, topic)
+            if session.is_stage_done(LifecycleStage.RESEARCH):
+                self._restore_research_outputs(ctx, project_id, topic)
         else:
             session, ctx = self.start_project(project_id, topic)
 

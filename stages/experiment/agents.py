@@ -37,11 +37,15 @@ from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
     AgentNode,
+    HumanNode,
+    HumanResponse,
+    NodeInput,
+    NodeOutput,
     NodeResult,
     NodeStatus,
     ToolNode,
 )
-from core.tools import check_syntax, run_python_code
+from core.tools import check_syntax, is_remote_mode, run_python_code, run_python_code_remote
 
 from stages.common import (
     ARTIFACT_MANAGER,
@@ -340,24 +344,38 @@ class CodeGenerateAgent(AgentNode):
         """从 LLM 返回中提取 Python 代码。
 
         处理：
-        1. ```python ... ``` 代码块
+        1. ```python ... ``` 代码块（可在文本任意位置）
         2. ``` ... ``` 代码块
-        3. 无代码块包裹的纯代码（兜底返回原文）
+        3. 无代码块包裹的纯代码（兜底：尝试跳过明显的非代码行）
         """
         if not text:
             return ""
         stripped = text.strip()
-        # ```python ... ``` 或 ``` ... ```
-        if stripped.startswith("```"):
-            lines = stripped.splitlines()
-            if len(lines) >= 2:
-                # 跳过首行（```python 或 ```）
-                body = lines[1:]
-                # 去尾行 ```（若存在）
-                if body and body[-1].strip().startswith("```"):
-                    body = body[:-1]
-                return "\n".join(body)
-        return ""
+
+        # 优先用正则搜索 ```python ... ``` 或 ``` ... ``` 代码块（可在任意位置）
+        import re
+        patterns = [
+            r"```python\s*\n(.*?)```",
+            r"```\s*\n(.*?)```",
+            r"```python\s*(.*?)```",
+            r"```(.*?)```",
+        ]
+        for pat in patterns:
+            match = re.search(pat, stripped, re.DOTALL)
+            if match:
+                code = match.group(1).strip()
+                if code:
+                    return code
+
+        # 兜底：若整体看起来像纯代码（无大量自然语言），直接返回
+        # 启发式：若首行以 Python 关键字/注释/导入开头，认为是纯代码
+        first_line = stripped.splitlines()[0].strip() if stripped.splitlines() else ""
+        code_indicators = ("import ", "from ", "#", "def ", "class ", "if ", "try:", "\"\"\"", "'''", "@", "import\t")
+        if first_line.startswith(code_indicators):
+            return stripped
+
+        # 最后兜底：返回原文（让语法检查拦截）
+        return stripped
 
     @staticmethod
     def _placeholder(input_obj: CodeGenerateInput) -> dict:
@@ -511,6 +529,100 @@ class CodeReviewAgent(AgentNode):
         )
 
 
+# ===== ExperimentReviewHuman（实验前人工审核）=====
+
+class ExperimentReviewHuman(HumanNode):
+    """实验运行前人工审核节点。
+
+    呈现实验配置 + 生成代码预览 + 语法检查结果，用户决定是否运行。
+    实验可能对硬件/数据集/环境有特殊要求，不盲目运行。
+    """
+
+    node_type = "experiment_review_human"
+    input_schema = NodeInput
+    output_schema = NodeOutput
+    output_keys: dict = {}
+
+    def _build_input(self, ctx: ExecutionContext) -> NodeInput:
+        return NodeInput()
+
+    def _render_prompt(self, ctx: ExecutionContext) -> str:
+        configs = ctx.get(EXPERIMENT_CONFIGS, []) or []
+        code = ctx.get(EXPERIMENT_CODE, {}) or {}
+        code_content = code.get("content", "")
+        code_preview = code_content[:800] if code_content else "(空)"
+        if len(code_content) > 800:
+            code_preview += "\n... (截断，完整代码见 experiments/run_exp.py)"
+
+        # 语法检查
+        syntax_ok = "通过"
+        if code_content:
+            ok, err = check_syntax(code_content)
+            syntax_ok = "通过" if ok else f"失败: {err}"
+
+        # 配置摘要
+        config_lines = []
+        for i, cfg in enumerate(configs):
+            hp = cfg.get("hyperparams", {})
+            config_lines.append(
+                f"  [{i+1}] {cfg.get('name', '?')}\n"
+                f"      数据集: {cfg.get('dataset', '?')}\n"
+                f"      基线: {cfg.get('baseline', '?')}\n"
+                f"      超参: {json.dumps(hp, ensure_ascii=False)[:200]}\n"
+                f"      验证 Claim: {cfg.get('verifies_claim_ids', [])}"
+            )
+        config_str = "\n".join(config_lines) or "(无配置)"
+
+        return (
+            "实验即将运行，请审核以下内容后决定：\n\n"
+            f"【实验配置】（{len(configs)} 个实验）\n{config_str}\n\n"
+            f"【代码语法检查】{syntax_ok}\n\n"
+            f"【代码预览】\n```\n{code_preview}\n```\n\n"
+            "请选择操作：\n"
+            "  - 输入 'approve' 确认运行实验\n"
+            "  - 或输入修改意见（将回滚到代码生成阶段）\n"
+            "  - 或选择「中止」终止流程"
+        )
+
+    def _build_output_from_response(
+        self, response: HumanResponse, ctx: ExecutionContext
+    ) -> Optional[NodeOutput]:
+        text = (response.text or "").strip()
+        approved = text.lower() in ("approve", "通过", "ok", "y", "yes", "run", "运行")
+        return NodeOutput(extra={"approved": approved, "comments": "" if approved else text})
+
+    def continue_after_human(
+        self, response: HumanResponse, ctx: ExecutionContext
+    ) -> NodeResult:
+        if response.action == "abort":
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error="用户中止实验",
+                summary="用户中止实验运行",
+            )
+        if response.action == "rollback":
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error="用户回滚，要求修改实验代码",
+                summary="用户回滚到代码生成阶段",
+            )
+        # continue：检查是否 approve
+        text = (response.text or "").strip()
+        approved = text.lower() in ("approve", "通过", "ok", "y", "yes", "run", "运行")
+        if not approved:
+            # 用户提了修改意见 → 视为回滚到代码生成
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error=f"用户要求修改代码: {text[:200]}",
+                summary=f"用户要求修改实验代码，回滚到代码生成阶段",
+            )
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=self._build_output_from_response(response, ctx),
+            summary="用户确认运行实验",
+        )
+
+
 # ===== ExperimentRunTool =====
 
 class ExperimentRunTool(ToolNode):
@@ -562,6 +674,33 @@ class ExperimentRunTool(ToolNode):
                 summary="实验运行失败：代码为空",
             )
 
+        # 语法检查门控：不运行有语法错误的代码
+        ok, err = check_syntax(code_content)
+        if not ok:
+            logger.warning("实验代码语法检查失败，跳过运行: %s", err)
+            experiment_ids: list[str] = []
+            for cfg in input_obj.configs:
+                exp_id = KnowledgeStore.new_id()
+                exp = Experiment(
+                    experiment_id=exp_id,
+                    name=cfg.get("name", f"exp_{len(experiment_ids) + 1}"),
+                    verifies_claim_ids=cfg.get("verifies_claim_ids", []),
+                    config=cfg,
+                    status=ExperimentStatus.FAILED,
+                )
+                exp.anomaly_notes = f"代码语法错误，未执行: {err}"
+                exp.result_summary = f"语法错误跳过: {err}"
+                exp.started_at = datetime.now()
+                store.save_experiment(exp)
+                experiment_ids.append(exp_id)
+            output = ExperimentRunOutput(experiment_ids=experiment_ids)
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error=f"代码语法错误: {err}",
+                output=output,
+                summary=f"实验跳过：代码语法错误 ({err})",
+            )
+
         # 选择运行目录：优先 PROJECT_DIR，回退 PROJECT_ROOT
         run_dir = Path(project_dir) if project_dir else (
             Path(project_root) if project_root else Path.cwd()
@@ -584,12 +723,13 @@ class ExperimentRunTool(ToolNode):
 
             # 标记 RUNNING
             exp.status = ExperimentStatus.RUNNING
-            exp.started_at = datetime.utcnow()
+            exp.started_at = datetime.now()
             store.save_experiment(exp)
 
-            # 真实运行代码
+            # 真实运行代码（自动检测本地/远程 SSH 模式）
             try:
-                run_result = run_python_code(
+                run_fn = run_python_code_remote if is_remote_mode() else run_python_code
+                run_result = run_fn(
                     code=code_content,
                     project_dir=run_dir,
                     code_path=code_path,
@@ -614,7 +754,7 @@ class ExperimentRunTool(ToolNode):
                 exp.anomaly_notes = f"运行异常: {type(e).__name__}: {e}"
                 exp.result_summary = f"运行异常: {e}"
 
-            exp.completed_at = datetime.utcnow()
+            exp.completed_at = datetime.now()
             store.save_experiment(exp)
             experiment_ids.append(exp_id)
 
@@ -784,7 +924,7 @@ class ClaimVerifyAgent(AgentNode):
                     if exp_id not in existing_exp_ids:
                         claim.evidence_refs.append({"type": "experiment", "id": exp_id})
                     claim.status = ClaimStatus.VERIFIED
-                    claim.verified_at = datetime.utcnow()
+                    claim.verified_at = datetime.now()
                     store.save_claim(claim)
                 except Exception as e:
                     logger.warning("Claim %s 验证失败: %s", claim_id, e)

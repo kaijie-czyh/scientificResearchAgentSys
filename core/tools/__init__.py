@@ -12,7 +12,14 @@
 from __future__ import annotations
 
 from core.tools.arxiv_search import ArxivPaper, search_arxiv
-from core.tools.code_runner import RunResult, check_syntax, run_python_code
+from core.tools.code_runner import (
+    RunResult,
+    check_syntax,
+    get_execution_mode,
+    is_remote_mode,
+    run_python_code,
+    run_python_code_remote,
+)
 from core.tools.materials_project import (
     CrossValidationReport,
     CrossValidationResult,
@@ -56,7 +63,10 @@ __all__ = [
     "split_into_chunks",
     "RunResult",
     "run_python_code",
+    "run_python_code_remote",
     "check_syntax",
+    "get_execution_mode",
+    "is_remote_mode",
     "LiteraturePoint",
     "MCTSSearcher",
     "SearchCandidate",

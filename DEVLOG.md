@@ -5,6 +5,132 @@
 
 ---
 
+## 2026-08-03 第十轮：串主题根因修复 + blocked 阶段恢复 + claim 主题对齐 + prompt 结构化渲染
+
+### 目标
+1. 修复 pipeline 串主题：resume 模式下 topic 与 research 产出丢失，导致 ideation brainstorm 拿到空输入、生成与主题无关的占位思路
+2. 修复 ideation 阶段 blocked 后无法 complete："阶段 ideation 当前状态 blocked，无法 complete" 异常
+3. 修复 claim 不知所云：BrainstormAgent / ClaimDraftAgent / IdeaValidateAgent 的 LLM prompt 未包含研究主题
+4. 优化人工节点 prompt 展示：从纯文本 div 改为结构化渲染（编号列表/项目符号/标题行识别）
+5. 优化冲突结论渲染：避免 JSON.stringify 回退，新增 positions 双方立场列表
+
+### 改动清单
+
+#### 1. `runtime/pipeline.py` — resume 模式恢复 topic + 解除 blocked
+- **`run_pipeline` resume 分支**（L361-368）：新增 `ctx.set(RESEARCH_TOPIC, topic)` + 若 research 已完成则调用 `_restore_research_outputs(ctx, project_id, topic)`
+  - **根因**：`resume_project` 创建全新 ctx，不携带 topic 与 research 产出（paper_ids / cross_validation_report）。此前仅 `run_discovery` 调用 `_restore_research_outputs`，`run_pipeline` 从未调用 → ideation brainstorm 读到空 gaps/conflicts/consensus/paper_ids → 回退到与主题无关的通用占位
+- **`run_stage` blocked 处理**（L272-280）：新增 `elif current_status == StageStatus.BLOCKED: session.unblock(...)`
+  - **根因**：节点失败后 `mark_blocked` 将阶段置为 BLOCKED。再次运行时 `complete_stage` 检查状态，BLOCKED 不在 (PENDING_REVIEW, IN_PROGRESS) 中 → 抛 TransitionError。修复后重新运行前先 unblock → IN_PROGRESS → 正常 complete
+
+#### 2. `stages/ideation/agents.py` — 三 Agent prompt 加入研究主题
+- `BrainstormAgent._execute`：新增 `topic = ctx.get(RESEARCH_TOPIC, "")`，LLM prompt 首行加入 `研究主题：{topic}`，system prompt 追加"所有思路必须紧扣给定的研究主题，不得偏离"
+- `BrainstormAgent._placeholder_drafts`：签名新增 `topic` 参数，所有占位思路文本均嵌入主题
+- `IdeaValidateAgent._execute`：prompt 加入 `研究主题：{topic}`，system prompt 追加"评估须紧扣研究主题"
+- `ClaimDraftAgent._execute`：prompt 加入 `研究主题：{topic}`，system prompt 追加"且紧扣研究主题"，占位 claim 文本嵌入主题
+- `IdeaDiscussHuman._render_prompt`：prompt 首行加入 `研究主题：{topic}`，让用户在人工节点看到主题上下文
+- **根因**：此前 ideation 全部 4 个 Agent 均不读取 `RESEARCH_TOPIC`，LLM 不知道研究主题是什么 → 生成的 idea / claim 脱离主题、"不知所云"
+
+#### 3. `web/static/app.js` — prompt 结构化渲染 + 冲突结论优化
+- **新增 `renderPromptStructured(text)`**（L2592-2641）：将多行 prompt 文本解析为结构化 DOM
+  - 编号列表（`1. xxx` / `1、xxx` / `1) xxx`）→ `<ol><li>`
+  - 项目符号（`- xxx` / `• xxx`）→ `<ul><li>`
+  - 以冒号结尾的短行（≤40 char）→ `.prompt-heading`（蓝色加粗标题）
+  - 其他行 → `.prompt-text`
+  - 替换 `renderHuman` 中原来的 `el("div", {class:"request-prompt"}, pending.prompt)` 纯文本渲染
+- **冲突结论渲染优化**（L1867-1916）：
+  - 新增 `positions` / `sides` 字段提取 → 渲染为 `<ul class="conflict-positions">` 双方立场列表
+  - `summary` 回退链新增 `c.topic || c.claim`
+  - 终极回退从 `JSON.stringify(c)` 改为遍历对象 key-value 拼成可读文本（避免 raw JSON 展示）
+
+#### 4. `web/static/style.css` — 结构化 prompt 样式
+- 新增 `.request-prompt-structured`（左边框 warning 色 + sans-serif 字体）
+- 新增 `.prompt-heading` / `.prompt-text` / `.prompt-ol` / `.prompt-ul` / `.prompt-li` 样式
+- 新增 `.conflict-positions` 双方立场列表样式
+
+### 验证
+1. **dry_run 全流程**（test_fix_002）：research → ideation → design → experiment 全部完成，experiment_failed（dry_run 预期）✓
+2. **topic 传递**：`store.list_ideas()` 返回的 idea 文本均以"针对主题「联邦学习场景下的公平激励机制设计」"开头 ✓
+3. **blocked 恢复**（test_fix_005）：
+   - 首次运行 stop_before=IDEATION → research done
+   - 手动 `mark_blocked` → ideation = blocked
+   - resume 运行 → ideation unblocked → done → pipeline 继续到 experiment ✓
+4. **Python 语法**：pipeline.py / ideation/agents.py 均通过 `ast.parse` ✓
+5. **JS 诊断**：app.js `GetDiagnostics` 返回 0 错误 ✓
+
+### 问题与修复
+- **串主题根因**：`resume_project` 不设置 `RESEARCH_TOPIC`，`run_pipeline` resume 分支不调用 `_restore_research_outputs`。ideation 的 BrainstormAgent 从 ctx 读 `RESEARCH_PAPER_IDS` 得到 []、`RESEARCH_CROSS_VALIDATION_REPORT` 得到 {} → `_placeholder_drafts` 生成"基于 0 篇调研论文的扩展研究方向"等与主题无关的占位。修复后 resume 时恢复 topic + paper_ids + cross_validation_report
+- **blocked 根因**：`run_stage` 只处理 NOT_STARTED → start_stage，未处理 BLOCKED。`complete_stage` 拒绝 BLOCKED 状态 → TransitionError。修复后 BLOCKED → unblock → IN_PROGRESS → 正常 complete
+- **claim 不知所云根因**：ideation 全部 Agent 的 LLM prompt 不包含 topic，占位文本也不含 topic。修复后 4 个 Agent 均在 prompt 首行加入 `研究主题：{topic}`
+
+### 下一步
+- 真实 API 模式下验证 topic 对齐效果（dry_run 下占位文本已嵌入主题，真实模式预期 LLM 生成更贴合主题的 idea/claim）
+- 视用户反馈继续优化前端展示
+
+---
+
+## 2026-08-03 第九轮：关键产出下载 + 证据跳转 + 文件上传 + URL 补全 + UI 优化
+
+### 目标
+1. 关键产出可下载（调研报告/发现报告/实验代码/方法文档/论文稿/Claim 汇总）
+2. 证据可跳转：Claim 与发现的 `evidence_refs` 从 JSON 文本块改为可点击卡片，跳转到论文/实验页
+3. 论文 URL 内容缺失修复：`arxiv_id`/`doi` 自动构造外链
+4. 客户端文件上传：PDF/TXT/MD 文献入库 + 主题描述文件覆盖
+5. UI 文字排版优化：去除 CLI 风格的 `<pre>JSON</pre>`，统一为证据卡片
+
+### 改动清单
+
+#### 1. `web/api.py` — 新增 3 个端点 + 1 个 Bug 修复
+- `GET /download/{artifact_type}`：支持 6 类产出下载（research-report / discovery-report / experiment-code / method-doc / paper-draft / claims-summary），返回带 `Content-Disposition: attachment` 的文件流
+- `POST /upload-paper`：PDF/TXT/MD 上传入库为 Paper 实体，txt/md 自动切分为 PaperChunk
+- `POST /upload-topic`：上传主题描述文件覆盖当前研究主题
+- `GET /papers`：自动构造 `url`（arxiv_id → https://arxiv.org/abs/...）与 `doi_url`（doi → https://doi.org/...）
+- **Bug 修复**：`upload_paper` 的 `title` 参数改为 `Form(None)`，否则 FastAPI 默认按 query 处理，前端 FormData 传不进来（表现为 title 总是回退到文件名）
+
+#### 2. `web/static/app.js` — 前端下载/上传/跳转/UI 优化
+- **下载栏**：`renderDownloadBar` + `downloadFile`（blob 触发 `<a download>`），置于 Dashboard 快速操作区
+- **上传卡片**：`renderUploadCard` 同时置于「新建项目」页与「论文浏览」页，上传成功后调用 `renderPage()` 刷新列表
+- **证据跳转**：新增可复用 `buildEvidenceList(refs)`，统一渲染证据卡片（📄paper/🔬experiment 图标 + 类型 + 可点击 ID + chunk 标注）
+  - 替换 `renderClaimItem` 中 50 行内联证据块
+  - 替换 `renderRelationships`（发现概览页）的 `<pre>JSON</pre>` CLI 风格块
+  - 替换 `renderRelationshipsDetail`（发现详情页）的静态文本证据溯源链
+- **证据跳转目标**：`state.pendingPaperId` 字段 + `renderPapers` 自动展开匹配条目并 `scrollIntoView`
+- **散点图数据点**：`renderLiteratureScatter` 的 paper_id 徽章改为可点击，跳转到论文页
+- 论文列表空状态文案：「可使用上方表单上传，或启动 research 阶段自动检索」
+
+#### 3. `web/static/style.css` — 新增样式类
+- `.download-bar` / `.download-bar-label` / `.download-divider`
+- `.upload-section` / `.upload-input`
+- `.evidence-list` / `.evidence-item` / `.evidence-icon` / `.evidence-type` / `.evidence-link` / `.evidence-chunk`
+
+### 验证（本地启动 + 接口测试）
+```bash
+python -m web.api  # 启动后访问 http://localhost:8000
+```
+
+接口测试结果：
+1. **下载**：`GET /download/claims-summary` → 200, `text/markdown`, body 以 `# Claim 汇总` 开头 ✓
+2. **上传**：`POST /upload-paper`（带 title 表单字段）→ 200, 返回 `title: "Test Paper Title"`（Form 修复生效）✓
+3. **URL 补全**：保存 `arxiv_id=2401.12345, doi=10.1000/xyz` 的 Paper，`GET /papers` 返回 `url=https://arxiv.org/abs/2401.12345`, `doi_url=https://doi.org/10.1000/xyz` ✓
+4. **路由注册**：`/download/{artifact_type}`、`/upload-paper`、`/upload-topic` 三端点均出现在 `app.routes` ✓
+5. **前端语法**：`GetDiagnostics` 对 app.js 返回 0 错误 ✓
+
+### 用户操作流程
+1. 新建项目 → 输入主题 → 启动发现
+2. Dashboard → 快速操作区点击下载按钮 → 浏览器自动下载对应 .md/.py 文件
+3. 论文浏览页 → 顶部上传卡 → 选择 PDF/TXT/MD → 输入标题 → 上传 → 列表自动刷新
+4. Claim 列表 / 发现概览 / 发现详情页 → 点击展开 → 证据卡片中的 paper_id 可点击 → 自动跳转论文页并展开滚动到对应条目
+5. 散点图数据点 → 点击 paper_id 徽章 → 跳转论文页
+
+### 问题与修复
+- **title 参数丢失**：FastAPI 在 `UploadFile` 场景下，未声明 `Form()` 的简单类型参数默认按 query 解析，FormData 字段被忽略。改为 `title: Optional[str] = Form(None)` 修复
+- **JSON `<pre>` CLI 风格**：原 `renderRelationships` 用 `JSON.stringify(r.evidence_refs, null, 2)` 渲染证据，可读性差且不可交互。统一替换为 `buildEvidenceList` 卡片
+
+### 下一步
+- 视用户反馈继续优化可视化细节
+- 准备参赛材料（演示视频 + 说明文档）
+
+---
+
 ## 2026-07-31 第三轮：writing 阶段启用 + 端到端真实运行 + 4 个关键 Bug 修复
 
 ### 目标

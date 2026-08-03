@@ -28,9 +28,9 @@ from runtime.cli import _load_env  # noqa: E402
 
 _load_env()
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.responses import FileResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
@@ -47,6 +47,10 @@ from runtime.pipeline import Pipeline, PipelineResult  # noqa: E402
 
 class CreateProjectRequest(BaseModel):
     topic: str
+
+
+class RunProjectRequest(BaseModel):
+    force_writing: bool = False
 
 
 class NoteRequest(BaseModel):
@@ -86,7 +90,7 @@ class HumanCallbackBridge:
                 "options": list(req.options) if req.options else [],
                 "allow_free_text": req.allow_free_text,
                 "context": dict(req.context) if req.context else {},
-                "appeared_at": datetime.utcnow().isoformat(),
+                "appeared_at": datetime.now().isoformat(),
             }
             with self._lock:
                 self._pending[project_id] = payload
@@ -160,7 +164,7 @@ _LOCK = threading.Lock()
 # ===== Pipeline 工作线程 =====
 
 
-def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
+def _run_pipeline_thread(project_id: str, topic: str, resume: bool, force_writing: bool = False) -> None:
     """工作线程函数：执行 Pipeline 并更新项目状态。"""
     state = _PROJECTS.get(project_id)
     if state is None:
@@ -175,6 +179,7 @@ def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
             topic=topic,
             human_callback=human_cb,
             resume=resume,
+            force_writing=force_writing,
         )
         state.last_result = result
         state.status = result.status
@@ -275,11 +280,30 @@ def create_project(req: CreateProjectRequest) -> dict:
     state = ProjectState(
         project_id=project_id,
         topic=topic,
-        created_at=datetime.utcnow().isoformat(),
+        created_at=datetime.now().isoformat(),
     )
     with _LOCK:
         _PROJECTS[project_id] = state
     return {"project_id": project_id, "topic": topic, "created_at": state.created_at}
+
+
+@app.get("/api/projects")
+def list_projects() -> dict:
+    """列出所有项目（供前端刷新后恢复）。"""
+    with _LOCK:
+        items = [
+            {
+                "project_id": s.project_id,
+                "topic": s.topic,
+                "created_at": s.created_at,
+                "status": s.status,
+                "summary": s.summary,
+            }
+            for s in _PROJECTS.values()
+        ]
+    # 按创建时间降序
+    items.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"projects": items}
 
 
 @app.get("/api/projects/{project_id}/status")
@@ -326,8 +350,11 @@ def get_status(project_id: str) -> dict:
 
 
 @app.post("/api/projects/{project_id}/run")
-def run_project(project_id: str) -> dict:
-    """启动/继续 pipeline（异步执行，立即返回）。"""
+def run_project(project_id: str, req: Optional[RunProjectRequest] = None) -> dict:
+    """启动/继续 pipeline（异步执行，立即返回）。
+
+    可选 body: {"force_writing": true} —— 实验失败后强制进入论文写作阶段。
+    """
     state = _require_project(project_id)
     if state.status == "running":
         raise HTTPException(status_code=409, detail="pipeline 正在运行中")
@@ -337,15 +364,19 @@ def run_project(project_id: str) -> dict:
             detail="当前等待人工响应，请先提交 human-response 或中止",
         )
     resume = state.status not in ("created",)
+    force_writing = (req.force_writing if req else False)
     thread = threading.Thread(
         target=_run_pipeline_thread,
-        args=(project_id, state.topic, resume),
+        args=(project_id, state.topic, resume, force_writing),
         daemon=True,
     )
     state.thread = thread
     state.error = None
     thread.start()
-    return {"project_id": project_id, "message": "pipeline 已启动", "resumed": resume}
+    msg = "pipeline 已启动"
+    if force_writing:
+        msg = "pipeline 已启动（强制写作模式：绕过实验成败判断）"
+    return {"project_id": project_id, "message": msg, "resumed": resume, "force_writing": force_writing}
 
 
 @app.post("/api/projects/{project_id}/run-discovery")
@@ -418,8 +449,11 @@ def list_papers(project_id: str) -> dict:
                 "year": p.year,
                 "venue": p.venue,
                 "arxiv_id": p.arxiv_id,
+                "doi": p.doi,
                 "abstract": p.abstract,
-                "url": p.url,
+                "url": p.url or (f"https://arxiv.org/abs/{p.arxiv_id}" if p.arxiv_id else None),
+                "doi_url": (f"https://doi.org/{p.doi}" if p.doi else None),
+                "pdf_path": p.pdf_path,
                 "created_at": p.created_at.isoformat() if p.created_at else None,
                 "source_stage": p.source_stage,
             }
@@ -491,7 +525,7 @@ def add_note(project_id: str, req: NoteRequest) -> dict:
     note = {
         "note_id": uuid.uuid4().hex,
         "text": text,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now().isoformat(),
     }
     state.notes.append(note)
     return {"note": note}
@@ -745,6 +779,46 @@ def get_dashboard(project_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"error": f"读取失败: {e}"}
 
+    # 方法对齐摘要（公式数）
+    method_alignment_summary = {"total_formulas": 0}
+    try:
+        from core.artifacts import ArtifactManager as _AM
+        from core.knowledge import ArtifactType
+        am = _AM(_CONFIG.paths.project_db(project_id))
+        # 统计 FORMULA + METHOD_DOC 类型产出
+        total_formulas = 0
+        for at in (ArtifactType.FORMULA, ArtifactType.METHOD_DOC):
+            try:
+                arts = am.list_artifacts(artifact_type=at)
+                for a in arts:
+                    content = a.content or {}
+                    if isinstance(content, dict):
+                        formulas = content.get("formula_code_map") or content.get("formulas") or []
+                        total_formulas += len(formulas) if isinstance(formulas, list) else 0
+                    else:
+                        total_formulas += 1
+            except Exception:  # noqa: BLE001
+                pass
+        method_alignment_summary["total_formulas"] = total_formulas
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 论文写作摘要
+    writing_summary = {"artifact_count": 0}
+    try:
+        from core.artifacts import ArtifactManager as _AM
+        from core.knowledge import ArtifactType
+        am = _AM(_CONFIG.paths.project_db(project_id))
+        art_count = 0
+        for wt in (ArtifactType.PAPER_DRAFT, ArtifactType.REVIEW_NOTE):
+            try:
+                art_count += len(am.list_artifacts(artifact_type=wt))
+            except Exception:  # noqa: BLE001
+                pass
+        writing_summary["artifact_count"] = art_count
+    except Exception:  # noqa: BLE001
+        pass
+
     # 阶段状态
     stage_statuses: dict[str, str] = {}
     current_stage = ""
@@ -778,8 +852,240 @@ def get_dashboard(project_id: str) -> dict:
             "overall_confidence": materials_cv.get("overall_confidence", 0),
             "source": materials_cv.get("source", ""),
         },
+        "method_alignment_summary": method_alignment_summary,
+        "writing_summary": writing_summary,
         "pending_human": _BRIDGE.get_pending(project_id),
     }
+
+
+# ===== 产出物下载 =====
+
+
+@app.get("/api/projects/{project_id}/download/{artifact_type}")
+def download_artifact(project_id: str, artifact_type: str):
+    """下载关键产出物。
+
+    支持类型：
+    - research-report：文献调研报告（Markdown）
+    - discovery-report：构效关系发现报告（Markdown）
+    - experiment-code：实验代码（Python）
+    - method-doc：方法文档（Markdown）
+    - paper-draft：论文稿（Markdown）
+    - claims-summary：Claim 汇总（Markdown）
+    """
+    _require_project(project_id)
+    store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+
+    if artifact_type == "research-report":
+        report = store.get_kv("cross_validation_report") or {}
+        md = _build_research_report_md(report)
+        return _make_download(md, f"research_report.md", "text/markdown")
+
+    elif artifact_type == "discovery-report":
+        content = store.get_kv("discovery_report_content") or ""
+        if not content:
+            # 兜底：从 discovery_summary 构建
+            summary = store.get_kv("discovery_summary") or {}
+            content = f"# 构效关系发现报告\n\n{json.dumps(summary, ensure_ascii=False, indent=2)}"
+        return _make_download(content, "discovery_report.md", "text/markdown")
+
+    elif artifact_type == "experiment-code":
+        # 从实验目录读取代码
+        exp_dir = _CONFIG.paths.project_dir(project_id) / "experiments"
+        code_path = exp_dir / "run_exp.py"
+        if code_path.exists():
+            code = code_path.read_text(encoding="utf-8")
+        else:
+            # 兜底：从 experiments 表读
+            exps = store.list_experiments()
+            code = f"# 无 run_exp.py，共有 {len(exps)} 条实验记录"
+        return _make_download(code, "run_exp.py", "text/x-python")
+
+    elif artifact_type == "method-doc":
+        try:
+            from core.artifacts import ArtifactManager
+            from core.knowledge import ArtifactType
+            am = ArtifactManager(_CONFIG.paths.project_db(project_id))
+            arts = am.list_artifacts(artifact_type=ArtifactType.METHOD_DOC)
+            if arts:
+                content = am.read_content(arts[0]) or str(arts[0].content or "")
+            else:
+                content = "# 无方法文档"
+        except Exception:
+            content = "# 无方法文档"
+        return _make_download(content, "method_doc.md", "text/markdown")
+
+    elif artifact_type == "paper-draft":
+        try:
+            from core.artifacts import ArtifactManager
+            from core.knowledge import ArtifactType
+            am = ArtifactManager(_CONFIG.paths.project_db(project_id))
+            arts = am.list_artifacts(artifact_type=ArtifactType.PAPER_DRAFT)
+            if arts:
+                content = am.read_content(arts[0]) or str(arts[0].content or "")
+            else:
+                content = "# 无论文稿"
+        except Exception:
+            content = "# 无论文稿"
+        return _make_download(content, "paper_draft.md", "text/markdown")
+
+    elif artifact_type == "claims-summary":
+        claims = store.list_claims()
+        md = "# Claim 汇总\n\n"
+        for c in claims:
+            md += f"## {c.claim_id}\n\n"
+            md += f"**陈述**: {c.statement}\n\n"
+            md += f"**状态**: {c.status.value}\n\n"
+            md += f"**角色**: {c.role}\n\n"
+            if c.evidence_refs:
+                md += "**证据**:\n"
+                for ref in c.evidence_refs:
+                    md += f"- {ref.get('type', '?')}: {ref.get('id', '?')}"
+                    if ref.get("chunk_id"):
+                        md += f" (chunk: {ref['chunk_id']})"
+                    md += "\n"
+            md += "\n"
+        return _make_download(md, "claims_summary.md", "text/markdown")
+
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的下载类型: {artifact_type}")
+
+
+def _build_research_report_md(report: dict) -> str:
+    """把 cross_validation_report 转为 Markdown。"""
+    md = "# 文献调研报告\n\n"
+    md += f"**综合置信度**: {report.get('overall_confidence', 0):.2f}\n\n"
+
+    gaps = report.get("gaps", [])
+    if gaps:
+        md += "## Research Gaps\n\n"
+        for i, g in enumerate(gaps, 1):
+            md += f"{i}. {g}\n"
+        md += "\n"
+
+    consensus = report.get("consensus", [])
+    if consensus:
+        md += "## 共识\n\n"
+        for i, c in enumerate(consensus, 1):
+            md += f"{i}. {c}\n"
+        md += "\n"
+
+    conflicts = report.get("conflicts", [])
+    if conflicts:
+        md += "## 冲突结论\n\n"
+        for c in conflicts:
+            if isinstance(c, dict):
+                md += f"- **{c.get('topic', '?')}**: {c.get('description', '')}\n"
+                if c.get("positions"):
+                    for pos in c["positions"]:
+                        md += f"  - {pos}\n"
+            else:
+                md += f"- {c}\n"
+        md += "\n"
+
+    return md
+
+
+def _make_download(content: str, filename: str, media_type: str) -> Response:
+    """构造文件下载响应。"""
+    return Response(
+        content=content.encode("utf-8"),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ===== 文件上传 =====
+
+
+@app.post("/api/projects/{project_id}/upload-paper")
+async def upload_paper(
+    project_id: str,
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+):
+    """上传 PDF/文本文献，入库为 Paper 实体。
+
+    支持 .pdf / .txt / .md 文件。PDF 仅存储元信息（不做 OCR），
+    txt/md 直接作为摘要与 chunk 素材。
+    """
+    _require_project(project_id)
+    store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+
+    # 读取文件内容
+    raw = await file.read()
+    filename = file.filename or "uploaded.txt"
+    ext = Path(filename).suffix.lower()
+
+    paper_id = f"paper_{uuid.uuid4().hex[:12]}"
+    abstract = ""
+    pdf_path = None
+
+    if ext == ".pdf":
+        # PDF：保存到项目目录，元信息入库
+        upload_dir = _CONFIG.paths.project_dir(project_id) / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = upload_dir / filename
+        pdf_path.write_bytes(raw)
+        abstract = f"(PDF 文件已上传: {filename}，需手动提取文本)"
+    elif ext in (".txt", ".md"):
+        abstract = raw.decode("utf-8", errors="replace")[:5000]
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
+
+    from core.knowledge import Paper
+    paper = Paper(
+        paper_id=paper_id,
+        title=title or filename,
+        authors=[],
+        abstract=abstract,
+        url=None,
+        pdf_path=str(pdf_path) if pdf_path else None,
+        source_stage="upload",
+    )
+    store.save_paper(paper)
+
+    # txt/md 内容切分为 chunk
+    chunk_count = 0
+    if ext in (".txt", ".md") and abstract:
+        from core.tools import split_into_chunks
+        from core.knowledge import PaperChunk
+        text_chunks = split_into_chunks(abstract, max_tokens=500, overlap_tokens=50)
+        paper_chunks = [
+            PaperChunk(
+                chunk_id=f"{paper_id}_c{tc.index}",
+                paper_id=paper_id,
+                chunk_index=tc.index,
+                text=tc.text,
+            )
+            for tc in text_chunks
+        ]
+        if paper_chunks:
+            store.save_paper_chunks(paper_chunks)
+            chunk_count = len(paper_chunks)
+
+    return {
+        "paper_id": paper_id,
+        "title": paper.title,
+        "filename": filename,
+        "chunks": chunk_count,
+        "message": "文献上传成功",
+    }
+
+
+@app.post("/api/projects/{project_id}/upload-topic")
+async def upload_topic(
+    project_id: str,
+    file: UploadFile = File(...),
+):
+    """上传主题描述文件（.txt/.md），覆盖项目主题。"""
+    state = _require_project(project_id)
+    raw = await file.read()
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    state.topic = text
+    return {"project_id": project_id, "topic": text, "message": "主题已更新"}
 
 
 # ===== 辅助 =====
