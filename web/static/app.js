@@ -89,9 +89,10 @@
         }, 2400);
     }
 
-    function downloadFile(artifactType, filename) {
+    function downloadFile(artifactType, filename, format) {
         if (!state.currentProjectId) return;
-        const url = `/api/projects/${state.currentProjectId}/download/${artifactType}`;
+        const fmt = format || "md";
+        const url = `/api/projects/${state.currentProjectId}/download/${artifactType}?format=${fmt}`;
         fetch(url)
             .then(resp => {
                 if (!resp.ok) throw new Error("下载失败");
@@ -100,12 +101,16 @@
             .then(blob => {
                 const a = document.createElement("a");
                 a.href = URL.createObjectURL(blob);
-                a.download = filename;
+                // 根据格式调整扩展名
+                const dotIdx = filename.lastIndexOf(".");
+                const baseName = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
+                const ext = fmt === "docx" ? ".docx" : fmt === "pdf" ? ".pdf" : (dotIdx > 0 ? filename.substring(dotIdx) : ".md");
+                a.download = baseName + ext;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(a.href);
-                showToast("已下载 " + filename, "success");
+                showToast("已下载 " + a.download, "success");
             })
             .catch(e => showToast("下载失败: " + e.message, "error"));
     }
@@ -114,11 +119,28 @@
         const bar = el("div", { class: "download-bar" }, [
             el("span", { class: "download-bar-label" }, "下载产出："),
         ]);
+
+        // 格式选择器
+        const fmtSelect = el("select", { class: "download-format-select" });
+        [
+            { v: "md", t: "Markdown (.md)" },
+            { v: "docx", t: "Word (.docx)" },
+            { v: "pdf", t: "PDF (.pdf)" },
+        ].forEach(o => {
+            const opt = el("option", { value: o.v, text: o.t });
+            fmtSelect.appendChild(opt);
+        });
+        bar.appendChild(fmtSelect);
+
         items.forEach(it => {
             bar.appendChild(el("button", {
                 class: "btn btn-secondary btn-sm",
                 text: it.label,
-                onclick: () => downloadFile(it.type, it.filename),
+                onclick: () => {
+                    const fmt = fmtSelect.value;
+                    const ext = fmt === "docx" ? ".docx" : fmt === "pdf" ? ".pdf" : ".md";
+                    downloadFile(it.type, it.filename, fmt);
+                },
             }));
         });
         return bar;
@@ -720,12 +742,15 @@
         // 下载区
         card.appendChild(el("div", { class: "download-divider" }));
         card.appendChild(renderDownloadBar([
+            { type: "full-report", label: "全流程报告", filename: "full_report.md" },
             { type: "research-report", label: "调研报告", filename: "research_report.md" },
-            { type: "discovery-report", label: "发现报告", filename: "discovery_report.md" },
-            { type: "experiment-code", label: "实验代码", filename: "run_exp.py" },
+            { type: "ideas-summary", label: "思路汇总", filename: "ideas_summary.md" },
             { type: "method-doc", label: "方法文档", filename: "method_doc.md" },
-            { type: "paper-draft", label: "论文稿", filename: "paper_draft.md" },
+            { type: "experiment-code", label: "实验代码", filename: "run_exp.py" },
+            { type: "experiment-results", label: "实验结果", filename: "experiment_results.md" },
             { type: "claims-summary", label: "Claim 汇总", filename: "claims_summary.md" },
+            { type: "discovery-report", label: "发现报告", filename: "discovery_report.md" },
+            { type: "paper-draft", label: "论文稿", filename: "paper_draft.md" },
         ]));
         return card;
     }
@@ -1493,7 +1518,30 @@
             content.appendChild(el("div", { class: "page-header" }, [
                 el("h2", { class: "page-title" }, "构效关系发现"),
                 el("p", { class: "page-desc" },
-                    "路线 A：调研 → 假设生成 → 搜索空间 → LLM 引导搜索 → 验证 → 汇报。下方展示发现工作流的产出与节点执行状态。"),
+                    "面向材料科学领域的文献驱动科学发现：从调研文献中提取构效关系假设，用 MCTS + LLM 融合搜索验证，产出含证据链的新颖发现。"),
+            ]));
+
+            // 功能说明卡片
+            content.appendChild(el("div", { class: "card" }, [
+                el("div", { class: "card-title" }, "功能说明"),
+                el("div", { class: "info-list" }, [
+                    el("p", { class: "small mb-0" }, [
+                        el("strong", {}, "适用场景："),
+                        "材料科学、化学、药物设计等领域，需从文献中发现「结构-性能」关系（如热电材料 ZT 值优化、合金强度预测等）。",
+                    ]),
+                    el("p", { class: "small mb-0" }, [
+                        el("strong", {}, "与主 Pipeline 的关系："),
+                        "发现工作流复用调研阶段的文献产出（论文 + 交叉验证报告），独立执行 5 步发现流程，产出构效关系发现报告。不依赖 ideation/design/experiment 阶段。",
+                    ]),
+                    el("p", { class: "small mb-0" }, [
+                        el("strong", {}, "发现流程："),
+                        "① 假设生成（从 Research Gap 提取构效关系种子）→ ② 搜索空间定义（材料变量 + 性能目标 + 文献数据点）→ ③ MCTS + LLM 引导搜索（核心创新）→ ④ 验证（文献交叉验证 + 新颖性评估）→ ⑤ 报告生成（含物理机制解释）。",
+                    ]),
+                    el("p", { class: "small mb-0" }, [
+                        el("strong", {}, "产出："),
+                        "验证通过的构效关系发现（含 novel/partially_known/known 新颖性标签）、文献证据链、交叉验证报告、发现报告（可下载）。",
+                    ]),
+                ]),
             ]));
 
             // 运行模式提示

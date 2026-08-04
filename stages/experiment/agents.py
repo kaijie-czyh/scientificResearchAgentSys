@@ -300,8 +300,13 @@ class CodeGenerateAgent(AgentNode):
                         "你是实验代码工程师。根据实验配置与公式↔代码映射，"
                         "生成完整可运行的实验代码。每个公式必须落地为对应代码片段，"
                         "不得遗漏或简化。代码须包含：数据加载、模型定义、训练循环、"
-                        "评估指标输出。代码末尾打印 JSON 格式结果（含 metrics 字段），"
-                        "便于下游解析。代码必须自包含、可独立运行（不依赖外部数据集时用合成数据）。"
+                        "评估指标输出。代码必须自包含、可独立运行（不依赖外部数据集时用合成数据）。"
+                        "\n\n结果输出约定（必须遵守）："
+                        "代码末尾必须将结果写入文件 experiments/results.json，格式："
+                        '{"experiments": [{"name": "exp_name", "metrics": {"accuracy": 0.85, "loss": 0.12}, '
+                        '"verified_claims": ["claim_id1"], "status": "success"}]}'
+                        "。每个实验配置对应一条 experiments 记录，name 与配置中的 name 一致；"
+                        "status 取 success/failed/placeholder。同时打印相同 JSON 到 stdout（最后一行为该 JSON），便于下游兜底解析。"
                         "\n\n输出格式：仅返回一个 ```python ... ``` 代码块，不要任何额外说明。"
                     ),
                     prompt=(
@@ -382,6 +387,20 @@ class CodeGenerateAgent(AgentNode):
         stubs = [m.get("code_stub", "") for m in input_obj.formula_code_map if m.get("code_stub")]
         if not stubs:
             stubs = ["# placeholder: no formula_code_map available"]
+        # 占位结果：每个 config 一条 experiments 记录，写入 results.json
+        configs_for_results = input_obj.configs or [{"name": "exp_1"}]
+        placeholder_experiments = [
+            {
+                "name": c.get("name", f"exp_{i + 1}"),
+                "metrics": {"accuracy": 0.9, "loss": 0.1},
+                "verified_claims": c.get("verifies_claim_ids", []),
+                "status": "placeholder",
+            }
+            for i, c in enumerate(configs_for_results)
+        ]
+        results_literal = json.dumps(
+            {"experiments": placeholder_experiments}, ensure_ascii=False
+        )
         content_lines = [
             '"""Auto-generated experiment code (placeholder)."""',
             "import torch",
@@ -406,8 +425,12 @@ class CodeGenerateAgent(AgentNode):
             "if __name__ == '__main__':",
             "    cfg = {'lr': 1e-3, 'epochs': 10}",
             "    result = train(cfg)",
-            "    import json",
-            "    print(json.dumps(result))",
+            "    import json, os",
+            f"    results = {results_literal}",
+            "    os.makedirs('experiments', exist_ok=True)",
+            "    with open('experiments/results.json', 'w') as f:",
+            "        json.dump(results, f, ensure_ascii=False, indent=2)",
+            "    print(json.dumps(results, ensure_ascii=False))",
         ])
         return {
             "path": "experiments/run_exp.py",
@@ -727,6 +750,7 @@ class ExperimentRunTool(ToolNode):
             store.save_experiment(exp)
 
             # 真实运行代码（自动检测本地/远程 SSH 模式）
+            run_result = None
             try:
                 run_fn = run_python_code_remote if is_remote_mode() else run_python_code
                 run_result = run_fn(
@@ -753,6 +777,43 @@ class ExperimentRunTool(ToolNode):
                 exp.status = ExperimentStatus.FAILED
                 exp.anomaly_notes = f"运行异常: {type(e).__name__}: {e}"
                 exp.result_summary = f"运行异常: {e}"
+
+            # 收集结构化结果：优先读取 experiments/results.json，兜底解析 stdout 末行 JSON
+            result_metrics: dict = {}
+            results_file = run_dir / "experiments" / "results.json"
+            if results_file.exists():
+                try:
+                    all_results = json.loads(results_file.read_text(encoding="utf-8"))
+                    exp_results = all_results.get("experiments", [])
+                    # 按 name 匹配当前实验
+                    for r in exp_results:
+                        if r.get("name") == exp_name:
+                            result_metrics = r.get("metrics", {}) or {}
+                            if r.get("status") == "success":
+                                exp.status = ExperimentStatus.COMPLETED
+                            break
+                except Exception as e:
+                    logger.warning("解析 results.json 失败: %s", e)
+            # 兜底：若文件未命中 metrics，尝试从 stdout 末行解析 JSON
+            if not result_metrics and run_result is not None and run_result.success:
+                try:
+                    stdout_json = json.loads(run_result.stdout.strip().split('\n')[-1])
+                    result_metrics = stdout_json.get("metrics", stdout_json) or {}
+                except Exception:
+                    pass
+            # 把 metrics 写回 experiment
+            if result_metrics:
+                exp.metrics = result_metrics
+                exp.result_summary = (
+                    f"metrics: {json.dumps(result_metrics, ensure_ascii=False)}\n"
+                    f"{exp.result_summary or ''}"
+                ).strip()
+            elif "未产生结构化结果文件" not in (exp.anomaly_notes or ""):
+                # 文件与 stdout 均无结构化结果 → 记录缺失（不覆盖已有异常根因）
+                exp.anomaly_notes = (
+                    f"{exp.anomaly_notes}\n未产生结构化结果文件"
+                    if exp.anomaly_notes else "未产生结构化结果文件"
+                )
 
             exp.completed_at = datetime.now()
             store.save_experiment(exp)
@@ -1027,19 +1088,35 @@ class ExperimentOutcomeAssessAgent(AgentNode):
 
         # 收集实验素材
         exp_summaries: list[dict] = []
+        exp_result_lines: list[str] = []
         for exp_id in input_obj.experiment_ids:
             try:
                 exp = store.get_experiment(exp_id)
+                # 提取 metrics：优先 metrics 字段，兜底从 result_summary 解析
+                exp_metrics = exp.metrics
+                if exp_metrics is None:
+                    exp_metrics = self._extract_metrics_from_summary(
+                        exp.result_summary or ""
+                    )
                 exp_summaries.append({
                     "exp_id": exp_id,
                     "name": exp.name,
                     "status": exp.status.value,
                     "verifies_claim_ids": exp.verifies_claim_ids,
+                    "metrics": exp_metrics,
                     "result_summary": (exp.result_summary or "")[:500],
                     "anomaly_notes": exp.anomaly_notes,
                 })
+                exp_result_lines.append(
+                    f"- 实验 {exp.name}: metrics="
+                    f"{json.dumps(exp_metrics, ensure_ascii=False)}, status={exp.status.value}"
+                )
             except Exception:
                 pass
+        results_text = (
+            "实验结果：\n" + "\n".join(exp_result_lines)
+            if exp_result_lines else "实验结果：(无)"
+        )
 
         # 收集 Claim 验证状态
         claim_statuses: list[dict] = []
@@ -1105,10 +1182,12 @@ class ExperimentOutcomeAssessAgent(AgentNode):
         #             system=(
         #                 "你是科研评估助手。根据实验结果判断每个 Claim 是被验证、反驳还是无法定论。"
         #                 "实验失败是科研常态，不应强行进入写作阶段。"
+        #                 "请结合 metrics 量化数据与 Claim 语义判断验证结论。"
         #             ),
         #             prompt=(
         #                 f"待验证 Claim: {claim_statuses}\n"
-        #                 f"实验结果: {exp_summaries}\n"
+        #                 f"{results_text}\n"
+        #                 f"实验明细: {exp_summaries}\n"
         #                 f"异常报告: {input_obj.anomaly_report}"
         #             ),
         #         )
@@ -1136,3 +1215,33 @@ class ExperimentOutcomeAssessAgent(AgentNode):
             output=output,
             summary=summary,
         )
+
+    @staticmethod
+    def _extract_metrics_from_summary(result_summary: str) -> dict:
+        """从 result_summary 中提取 metrics。
+
+        result_summary 形如 "metrics: {...}\n..."，提取首个完整 JSON 对象。
+        """
+        if not result_summary:
+            return {}
+        idx = result_summary.find("metrics:")
+        if idx == -1:
+            return {}
+        start = idx + len("metrics:")
+        while start < len(result_summary) and result_summary[start] in " \t":
+            start += 1
+        if start >= len(result_summary) or result_summary[start] != '{':
+            return {}
+        depth = 0
+        for i in range(start, len(result_summary)):
+            ch = result_summary[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(result_summary[start:i + 1])
+                    except Exception:
+                        return {}
+        return {}

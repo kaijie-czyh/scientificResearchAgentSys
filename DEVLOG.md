@@ -5,6 +5,189 @@
 
 ---
 
+## 2026-08-03 第十二轮：赛题方向三对齐 — MinerU 集成 + 结构化材料知识抽取 + 赛题分析
+
+### 目标
+1. 仔细阅读赛题三说明 PDF（36 页），确定参赛方向与路线
+2. 集成赛题推荐工具 MinerU（开源文档解析引擎，PDF→结构化内容）
+3. 增强知识抽取：赛题基本任务要求从文献中提取材料成分/结构/性能/合成条件等结构化信息
+4. 确认 Materials Project 交叉验证已集成（赛题加分项）
+
+### 赛题分析结论
+
+**参赛方向**：算法赛题 → 方向三：材料科学文献驱动的科学发现智能体 → 路线A：构效关系发现
+
+**赛题结构**：
+- 基本任务（50%）：文献调研Agent — 检索筛选、知识抽取、Research Gap 识别、调研报告
+- 路线A（50%）：构效关系发现 — MCTS+LLM 融合搜索、新颖性评估、证据链、交叉验证
+- 加分项：材料数据库验证结果
+
+**赛题推荐工具**：
+- Sciverse（2500万+篇论文，语义检索）✅ 已集成
+- MinerU（开源PDF解析引擎）❌ → 本次集成
+- Materials Project（材料数据库交叉验证）✅ 已集成
+- Hugging Face Sci-Base（2500万+篇论文）⚠️ 待后续集成
+
+**提交要求**：
+- 初赛(8.16)：方案说明文档、技术路线概述
+- 复赛(9.3)：可运行代码仓库、实验结果报告、依赖披露
+- 决赛(9.22)：海报/路演、现场展示、最终代码
+
+### 改动清单
+
+#### 1. `core/tools/mineru_parser.py` — MinerU 文档解析引擎集成（新建）
+- **ParsedDocument** dataclass：markdown / tables / formulas / chunks / source / raw_json
+- **is_available()**：检查 MinerU Python API 或 CLI 是否可用
+- **parse_pdf(pdf_path)**：三级解析策略
+  1. Python API（`from mineru import DocumentParser`）— 最优，直接获取结构化结果
+  2. CLI（`mineru -p input.pdf -o output_dir`）— 读取输出的 .md/.json 文件
+  3. 降级 PyMuPDF 纯文本提取 — 无 MinerU 时的兜底
+- **_extract_tables_from_md** / **_extract_formulas_from_md**：从 Markdown 中提取 HTML 表格与 LaTeX 公式
+
+#### 2. `core/tools/__init__.py` — 导出 MinerU 函数
+- 新增 `ParsedDocument` / `mineru_is_available` / `mineru_parse_pdf` 到导出列表
+
+#### 3. `stages/research/io_schema.py` — 新增 MaterialKnowledgeSchema
+- 赛题基本任务要求：从文献中提取材料成分、结构、性能、模拟方法、合成条件等结构化信息
+- 字段：compositions / crystal_structures / properties / synthesis_methods / synthesis_conditions / measurement_techniques / key_findings
+
+#### 4. `stages/research/agents.py` — PaperIngestAgent 增强
+- 导入 mineru_is_available / mineru_parse_pdf / MaterialKnowledgeSchema
+- **_execute 增强**：
+  - 检查 MinerU 可用性并记录到日志
+  - 每篇论文调用 `_extract_material_knowledge` 进行结构化材料知识抽取
+  - 抽取结果存入 `paper.metadata["material_knowledge"]`
+  - summary 报告材料知识抽取成功数与 MinerU 状态
+- **新增 _extract_material_knowledge 方法**：
+  - 用 LLM structured_output + MaterialKnowledgeSchema 从论文摘要抽取结构化材料知识
+  - system prompt 要求「只提取文中明确提及的信息，不得编造」
+  - try/except 优雅降级（抽取失败不阻塞入库）
+
+#### 5. `web/api.py` — upload-paper 端点集成 MinerU
+- PDF 上传时优先使用 MinerU 深度解析为结构化 Markdown（含表格 HTML、公式 LaTeX）
+- 无 MinerU 时降级为 PyMuPDF 纯文本提取
+- 解析后全文（非仅 abstract）切分为 chunk 入库
+- 返回值新增 parse_source / tables / formulas 字段
+
+#### 6. `config/tasks.yaml` — 新增 paper_material_extract 任务路由
+- task_type: paper_material_extract → minimax / MiniMax-M3 / temperature=0.0
+- 描述：赛题基本任务：从文献中抽取结构化材料知识
+
+### 验证
+1. **Python 语法**：5 文件全部通过 `ast.parse` ✓
+2. **MinerU 导入**：`from core.tools import mineru_is_available, mineru_parse_pdf` 成功（available=False，未安装但优雅降级）✓
+3. **dry_run 全流程**：5 阶段完成，24 节点 success，exit_code=0 ✓
+
+### 赛题对齐自检
+
+| 赛题要求 | 我们现状 | 对齐 |
+|----------|----------|------|
+| 文献检索与筛选 | PaperFetchAgent（arxiv+S2+Sciverse）+ PaperRelevanceFilterAgent | ✅ |
+| 知识抽取（成分/结构/性能/合成条件） | PaperIngestAgent + MaterialKnowledgeSchema + LLM 抽取 | ✅ |
+| Research Gap 识别 | CrossValidateAgent（gaps/conflicts/consensus） | ✅ |
+| 调研报告生成 | CrossValidateAgent 输出结构化报告 | ✅ |
+| MCTS+LLM 融合搜索 | MCTSSearcher + LLMGuidedSearchAgent | ✅ |
+| LLM 深度参与搜索 | LLM 生成候选/评估中间结果/引导剪枝 | ✅ |
+| 文献证据链 | evidence_refs 关联 paper_id + chunk_id | ✅ |
+| 新颖性评估 | novel/partially_known/known 三级标签 | ✅ |
+| Materials Project 交叉验证 | materials_project.py（MP API + 规则双路） | ✅ |
+| MinerU 文档解析 | mineru_parser.py（Python API/CLI/降级） | ✅ |
+| Sciverse API 接入 | sciverse_search.py（agentic_search + meta_search） | ✅ |
+| 物理机制解释 | DiscoveryReportAgent 生成含机制解释的报告 | ✅ |
+
+### 下一步
+- 安装 MinerU（`pip install mineru`）并验证 PDF 解析效果
+- 准备初赛方案说明文档（8.16 截止）
+- 用真实材料科学主题（如「热电材料 ZT 优化」）跑完整 discovery 流程
+- 考虑集成 Hugging Face Sci-Base 数据集
+
+---
+
+## 2026-08-03 第十一轮：多格式导出 + discovery 功能说明 + 方法符号体系 + 实验结果落地
+
+### 目标
+1. 各阶段产出支持 word/docx、md、pdf 三种格式导出
+2. 构效关系发现功能说明明确化（适用场景、与主 Pipeline 关系、发现流程、产出）
+3. 方法机制生成优化：成体系的符号定义表 + 问题形式化 + 核心公式设计 + 算法伪代码 + 复杂度分析
+4. 实验运行结果落地：强制写 results.json + ExperimentRunTool 收集结构化 metrics + 避免直接 exit 无产出
+
+### 改动清单
+
+#### 1. `web/api.py` — 多格式导出 + 3 类新产出
+- **download 端点新增 `format` 查询参数**：支持 `md` / `docx` / `pdf`，默认 `md`
+- **新增 `_md_to_docx_response`**：用 python-docx 将 Markdown 转为 Word 文档（标题/列表/代码块/段落识别）
+- **新增 `_md_to_pdf_response`**：用 fpdf2 + Windows 中文字体（msyh.ttc/simhei.ttf）将 Markdown 转为 PDF
+- **新增 3 类产出**：
+  - `ideas-summary`：研究思路汇总（含状态/约束/来源论文/验证笔记）
+  - `experiment-results`：实验结果汇总（含 metrics/status/异常/验证 Claim）
+  - `full-report`：全流程综合报告（调研+思路+Claim+方法+实验+论文 六部分合一）
+- **新增构建函数**：`_build_claims_summary_md` / `_build_ideas_summary_md` / `_build_experiment_results_md` / `_build_full_report_md`
+
+#### 2. `web/static/app.js` — 前端格式选择器 + discovery 说明
+- **下载栏新增格式选择器**：`<select>` 下拉支持 Markdown / Word / PDF，按选择调整文件扩展名
+- **下载项从 6 个扩展到 9 个**：新增全流程报告、思路汇总、实验结果
+- **discovery 页面新增功能说明卡片**：4 条说明（适用场景、与主 Pipeline 关系、发现流程、产出）
+
+#### 3. `web/static/style.css` — 新增样式
+- `.download-format-select`：格式选择器样式
+- `.info-list` / `.info-list p` / `.info-list strong`：discovery 功能说明卡片样式
+
+#### 4. `stages/design/agents.py` — 方法符号体系重构（核心修复）
+- **AtomDecomposeAgent**：
+  - 新增 `topic = ctx.get(RESEARCH_TOPIC, "")` 注入
+  - system prompt 首行加入研究主题，追加「所有原子概念必须紧扣研究主题」
+  - `_placeholder` 接受 `topic` 参数，4 个原子概念全部围绕主题（problem_formulation/representation_layer/core_operator/objective_loss）
+- **MethodFormalizeAgent**（核心修复）：
+  - 新增 `topic = ctx.get(RESEARCH_TOPIC, "")` 注入
+  - system prompt 重构为 5 章强制结构：
+    1. 问题定义与符号表（表格形式：符号/含义/取值范围）
+    2. 方法概述
+    3. 核心公式设计（LaTeX + 设计动机 + 逻辑递进）
+    4. Algorithm 风格伪代码
+    5. 复杂度分析（时间/空间）
+  - system prompt 追加「所有符号必须在符号表中定义后使用，不得突兀」
+  - `_placeholder` 重写为完整 5 章结构化文档：7 行符号表（N/K/θ/α/β/λ/D）、问题形式化、方法概述（围绕主题）、核心公式（从原子概念动态生成）、Algorithm 风格伪代码（11 行带行号）、复杂度分析
+
+#### 5. `stages/experiment/agents.py` — 实验结果落地（核心修复）
+- **CodeGenerateAgent**：
+  - system prompt 新增「结果输出约定」：强制写 `experiments/results.json`（`{"experiments": [{"name", "metrics", "verified_claims", "status"}]}`），同时打印 JSON 到 stdout
+  - `_placeholder` 重写：按 configs 生成 experiments 记录、`os.makedirs('experiments')` 后 `json.dump` 写入 `results.json`
+- **ExperimentRunTool._execute**：
+  - 运行后检查 `{run_dir}/experiments/results.json`，按 `name` 匹配当前实验，提取 `metrics`
+  - 若 `status=="success"` 则置 `exp.status = COMPLETED`
+  - 文件未命中时兜底从 stdout 末行解析 JSON
+  - 命中 metrics 写入 `exp.metrics` 并前置到 `exp.result_summary`
+  - 文件与 stdout 均无结构化结果：追加「未产生结构化结果文件」到 `exp.anomaly_notes`
+- **ExperimentOutcomeAssessAgent**：
+  - 收集实验素材时提取 `exp.metrics`（兜底用 `_extract_metrics_from_summary` 从 `result_summary` 解析）
+  - 构建 `results_text` 注入 LLM prompt，含 `实验 {name}: metrics={...}, status={...}`
+  - 新增静态方法 `_extract_metrics_from_summary`：从 `result_summary` 的 `metrics: {...}` 前缀做花括号匹配解析
+
+#### 6. `core/knowledge/schema.py` — Experiment 模型新增字段
+- `Experiment` 新增 `metrics: Optional[dict[str, Any]] = None`：存储由 results.json 解析的结构化指标
+
+### 验证
+1. **Python 语法**：web/api.py / stages/design/agents.py / stages/experiment/agents.py / core/knowledge/schema.py 均通过 `ast.parse` ✓
+2. **JS 诊断**：app.js 0 错误 ✓
+3. **dry_run 全流程**：5 阶段完成，24 节点 success，exit_code=0 ✓
+4. **格式转换**：docx 36710 bytes（正确 media_type）、pdf 11759 bytes（含中文字体）✓
+5. **实验占位代码**：exit=0，results.json 正确生成 `{"experiments": [{"name": "exp_1", "metrics": {"accuracy": 0.9, "loss": 0.1}, ...}]}`
+✓
+
+### 问题与修复
+- **导出只有 md**：`_make_download` 只返回 text/markdown。修复后新增 docx/pdf 转换函数，前端加格式选择器
+- **方法无符号体系**：MethodFormalizeAgent prompt 只要求「动机→概念→伪代码→复杂度」，无符号定义表与问题形式化。修复后 prompt 强制 5 章结构，含符号表
+- **方法串主题**：AtomDecomposeAgent / MethodFormalizeAgent 的 prompt 未注入 RESEARCH_TOPIC。修复后两个 Agent 均读取并注入主题
+- **实验无结果**：CodeGenerateAgent prompt 未强制写结果文件，ExperimentRunTool 只捕获 stdout 不收集结构化结果。修复后强制写 results.json + 运行后收集 metrics
+- **discovery 不明确**：页面只有一句话描述。修复后新增 4 条功能说明（适用场景/与 Pipeline 关系/发现流程/产出）
+
+### 下一步
+- 真实 API 模式下验证方法符号体系生成效果
+- 真实模式验证实验 results.json 收集链路
+- 视用户反馈继续优化导出排版（如 docx 表格/公式渲染）
+
+---
+
 ## 2026-08-03 第十轮：串主题根因修复 + blocked 阶段恢复 + claim 主题对齐 + prompt 结构化渲染
 
 ### 目标

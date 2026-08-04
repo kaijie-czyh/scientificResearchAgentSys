@@ -8,6 +8,7 @@
 - code_runner: 沙盒代码运行（experiment 阶段执行 LLM 生成的代码）
 - materials_search: 构效关系搜索（路线 A：MCTS + 文献代理模型 + LLM 融合）
 - materials_project: Materials Project API 交叉验证（赛题路线 A 公开数据库交叉验证要求）
+- mineru_parser: MinerU 文档解析引擎（赛题推荐，PDF→结构化内容）
 """
 from __future__ import annotations
 
@@ -37,6 +38,11 @@ from core.tools.materials_search import (
     build_literature_points,
     build_search_variables,
     perturb_config,
+)
+from core.tools.mineru_parser import (
+    ParsedDocument,
+    is_available as mineru_is_available,
+    parse_pdf as mineru_parse_pdf,
 )
 from core.tools.sciverse_search import (
     SciverseEvidence,
@@ -81,5 +87,8 @@ __all__ = [
     "mp_is_available",
     "mp_query_material",
     "mp_report_to_dict",
+    "ParsedDocument",
+    "mineru_is_available",
+    "mineru_parse_pdf",
 ]
 

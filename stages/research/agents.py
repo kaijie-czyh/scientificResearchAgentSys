@@ -35,6 +35,8 @@ from core.orchestration.node import (
     NodeStatus,
 )
 from core.tools import (
+    mineru_is_available,
+    mineru_parse_pdf,
     sciverse_agentic_search,
     sciverse_is_available,
     search_arxiv,
@@ -59,6 +61,7 @@ from stages.common import (
 from stages.research.io_schema import (
     CrossValidateInput,
     CrossValidateOutput,
+    MaterialKnowledgeSchema,
     PaperFetchInput,
     PaperFetchOutput,
     PaperIngestInput,
@@ -629,8 +632,14 @@ class PaperIngestAgent(AgentNode):
                 summary="论文入库失败：KnowledgeStore 未注入",
             )
 
+        # 检查 MinerU 可用性（赛题推荐工具）
+        mineru_ok = mineru_is_available()
+        if mineru_ok:
+            logger.info("MinerU 文档解析引擎可用，PDF 文件将使用 MinerU 深度解析")
+
         # 真实入库
         paper_ids: list[str] = []
+        material_knowledge_count = 0
         for meta in input_obj.paper_metas:
             try:
                 paper_id = KnowledgeStore.new_id()
@@ -651,6 +660,15 @@ class PaperIngestAgent(AgentNode):
                         "citation_count": meta.get("citation_count", 0),
                     },
                 )
+
+                # 结构化材料知识抽取（赛题基本任务要求）
+                material_knowledge = self._extract_material_knowledge(
+                    registry, meta, dry_run=False,
+                )
+                if material_knowledge:
+                    paper.metadata["material_knowledge"] = material_knowledge
+                    material_knowledge_count += 1
+
                 store.save_paper(paper)
 
                 # 切分 chunk（按 abstract 切，有 PDF 时可扩展）
@@ -673,12 +691,52 @@ class PaperIngestAgent(AgentNode):
                 logger.warning("论文入库失败（title=%r）: %s", meta.get("title"), e)
                 continue
 
+        mineru_status = f"，MinerU={'可用' if mineru_ok else '未安装（降级为纯文本）'}"
         output = PaperIngestOutput(paper_ids=paper_ids)
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary=f"入库 {len(paper_ids)} 篇论文（含 chunk）",
+            summary=(
+                f"入库 {len(paper_ids)} 篇论文（含 chunk），"
+                f"结构化材料知识抽取 {material_knowledge_count}/{len(paper_ids)} 篇"
+                f"{mineru_status}"
+            ),
         )
+
+    def _extract_material_knowledge(
+        self, registry: Optional[LLMRegistry], meta: dict, dry_run: bool = False,
+    ) -> Optional[dict]:
+        """用 LLM 从论文摘要/全文中抽取结构化材料知识。
+
+        赛题基本任务要求：从文献中提取材料成分、结构、性能、模拟方法、合成条件等结构化信息。
+        """
+        if registry is None:
+            return None
+
+        text = meta.get("abstract") or ""
+        if len(text) < 50:
+            return None
+
+        try:
+            result = registry.structured_output(
+                task_type="paper_material_extract",
+                output_schema=MaterialKnowledgeSchema,
+                system=(
+                    "你是材料科学文献知识抽取助手。从论文摘要中提取结构化材料知识，"
+                    "包括：材料化学成分/化学式、晶体结构、性能指标（含数值与条件）、"
+                    "合成方法、合成条件、表征方法、关键发现。"
+                    "只提取文中明确提及的信息，不得编造。无相关信息时返回空列表。"
+                ),
+                prompt=(
+                    f"论文标题：{meta.get('title', '')}\n\n"
+                    f"论文摘要：\n{text}\n\n"
+                    "请提取结构化材料知识。"
+                ),
+            )
+            return result.model_dump()
+        except Exception as e:
+            logger.warning("材料知识抽取失败（title=%r）: %s", meta.get("title"), e)
+            return None
 
 
 # ===== CrossValidateAgent（借鉴 GPT-Researcher）=====

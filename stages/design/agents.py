@@ -49,6 +49,7 @@ from stages.common import (
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
     RESEARCH_PAPER_IDS,
+    RESEARCH_TOPIC,
 )
 from stages.design.io_schema import (
     AtomDecomposeInput,
@@ -144,6 +145,7 @@ class AtomDecomposeAgent(AgentNode):
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         dry_run: bool = ctx.get(DRY_RUN, True)
+        topic = ctx.get(RESEARCH_TOPIC, "") or ""
 
         # 加载 idea 正文作为 prompt 素材
         idea_summaries: list[str] = []
@@ -161,12 +163,15 @@ class AtomDecomposeAgent(AgentNode):
                     task_type=self.task_type,
                     output_schema=AtomDecomposeSchema,
                     system=(
+                        f"研究主题：{topic}\n"
                         "你是科研方法设计助手。借鉴 AI-Researcher 的原子概念分解思想，"
                         "把方法拆为 3-6 个最小可独立验证的原子概念，每个概念必须同时给出"
                         "数学公式（LaTeX）与代码实现骨架（Python stub），并标注概念间依赖。"
                         "确保公式与代码一一对应（status=mapped），避免「论文写一套、代码做一套」。"
+                        "所有原子概念必须紧扣上述研究主题，不得偏离。"
                     ),
                     prompt=(
+                        f"研究主题：{topic}\n\n"
                         f"基于以下 validated idea 分解原子概念：\n"
                         + "\n".join(idea_summaries)
                     ),
@@ -186,9 +191,9 @@ class AtomDecomposeAgent(AgentNode):
                     ]
             except Exception as e:
                 logger.warning("AtomDecompose 真实调用失败，回退占位: %s", e)
-                atom_concepts, formula_code_map = self._placeholder()
+                atom_concepts, formula_code_map = self._placeholder(topic)
         else:
-            atom_concepts, formula_code_map = self._placeholder()
+            atom_concepts, formula_code_map = self._placeholder(topic)
 
         output = AtomDecomposeOutput(
             atom_concepts=atom_concepts,
@@ -204,28 +209,46 @@ class AtomDecomposeAgent(AgentNode):
         )
 
     @staticmethod
-    def _placeholder() -> tuple[list[dict], list[dict]]:
+    def _placeholder(topic: str = "") -> tuple[list[dict], list[dict]]:
+        topic_label = topic.strip() or "(未指定研究主题)"
         atom_concepts = [
             {
-                "concept_name": "input_embedding",
-                "description": "将输入 token 映射到高维向量空间",
-                "formula_latex": r"\mathbf{x} = W_e \, \text{onehot}(t)",
-                "code_stub": "x = embedding_layer(token_ids)",
+                "concept_name": "problem_formulation",
+                "description": (
+                    f"针对研究主题「{topic_label}」形式化输入/输出与目标函数，"
+                    f"定义样本空间与待估参数 θ。"
+                ),
+                "formula_latex": r"\hat{\theta} = \arg\min_{\theta} \mathcal{L}(\theta; \mathcal{D})",
+                "code_stub": "theta = optimize(loss_fn, dataset, init_theta)",
                 "dependencies": [],
             },
             {
-                "concept_name": "attention_weight",
-                "description": "计算 query 与 key 的相似度并归一化为注意力权重",
-                "formula_latex": r"\alpha = \mathrm{softmax}\!\left(\frac{Q K^{\top}}{\sqrt{d_k}}\right)",
-                "code_stub": "alpha = softmax(Q @ K.T / sqrt(d_k))",
-                "dependencies": ["input_embedding"],
+                "concept_name": "representation_layer",
+                "description": (
+                    f"将「{topic_label}」中的原始输入映射到可计算的高维表征空间。"
+                ),
+                "formula_latex": r"\mathbf{x} = f_{\theta_e}(u),\quad u \in \mathcal{U}",
+                "code_stub": "x = encoder(input=u)",
+                "dependencies": ["problem_formulation"],
             },
             {
-                "concept_name": "context_vector",
-                "description": "按注意力权重加权求和 value 得到上下文向量",
-                "formula_latex": r"\mathbf{c} = \sum_{i} \alpha_i \, V_i",
-                "code_stub": "c = alpha @ V",
-                "dependencies": ["attention_weight"],
+                "concept_name": "core_operator",
+                "description": (
+                    f"针对「{topic_label}」的核心算子（如注意力/聚合/匹配），"
+                    f"在表征空间上建模关键交互。"
+                ),
+                "formula_latex": r"\mathbf{z} = g_{\theta_c}\!\left(\mathbf{x}_1, \dots, \mathbf{x}_N\right)",
+                "code_stub": "z = core_operator([x_1, ..., x_N])",
+                "dependencies": ["representation_layer"],
+            },
+            {
+                "concept_name": "objective_loss",
+                "description": (
+                    f"为「{topic_label}」设计的任务损失，融合主任务目标与正则项。"
+                ),
+                "formula_latex": r"\mathcal{L} = \ell_{\text{task}} + \lambda \, \Omega(\theta)",
+                "code_stub": "loss = task_loss(y, pred) + lam * reg(theta)",
+                "dependencies": ["core_operator"],
             },
         ]
         formula_code_map = [
@@ -269,6 +292,7 @@ class MethodFormalizeAgent(AgentNode):
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         dry_run: bool = ctx.get(DRY_RUN, True)
+        topic = ctx.get(RESEARCH_TOPIC, "") or ""
 
         # 加载 idea 正文
         idea_text = ""
@@ -283,23 +307,39 @@ class MethodFormalizeAgent(AgentNode):
                 resp = registry.complete(
                     task_type=self.task_type,
                     system=(
+                        f"研究主题：{topic}\n"
                         "你是科研方法形式化助手。基于已分解的原子概念与公式↔代码映射，"
-                        "整合为完整的方法文档（含数学公式与算法伪代码），"
-                        "结构：动机 → 核心概念定义 → 算法伪代码 → 复杂度分析。"
-                        "保持公式与代码的对应关系，输出 Markdown 格式。"
+                        "整合为完整的方法文档（Markdown 格式），必须严格包含以下 5 个章节：\n"
+                        "## 1. 问题定义与符号表\n"
+                        "- 明确定义所有数学符号（如 N, K, θ, α, β 等）\n"
+                        "- 用表格形式列出「符号 | 含义 | 取值范围」\n"
+                        "- 形式化描述问题（输入、输出、约束）\n"
+                        "## 2. 方法概述\n"
+                        "- 一段话概述方法核心思想，紧扣上述研究主题\n"
+                        "## 3. 核心公式设计\n"
+                        "- 逐个给出关键公式（LaTeX，用 $$ ... $$ 包裹），每个公式前有文字说明设计动机\n"
+                        "- 公式之间有逻辑递进关系\n"
+                        "## 4. 算法伪代码\n"
+                        "- 用 Algorithm 风格的伪代码描述完整流程\n"
+                        "## 5. 复杂度分析\n"
+                        "- 时间复杂度与空间复杂度分析\n"
+                        "保持公式与代码的对应关系，每个公式都能在原子概念中找到对应实现。\n"
+                        "所有符号必须在符号表中定义后使用，不得突兀。"
                     ),
                     prompt=(
-                        f"原始 idea：{idea_text}\n\n"
+                        f"研究主题：{topic}\n\n"
+                        f"原始 idea：\n{idea_text}\n\n"
                         f"原子概念：\n{input_obj.atom_concepts}\n\n"
-                        f"公式↔代码映射：\n{input_obj.formula_code_map}"
+                        f"公式↔代码映射：\n{input_obj.formula_code_map}\n\n"
+                        "请按上述结构生成完整方法文档。"
                     ),
                 )
                 method_content = resp.text
             except Exception as e:
                 logger.warning("MethodFormalize 真实调用失败，回退占位: %s", e)
-                method_content = self._placeholder(input_obj)
+                method_content = self._placeholder(input_obj, topic)
         else:
-            method_content = self._placeholder(input_obj)
+            method_content = self._placeholder(input_obj, topic)
 
         output = MethodFormalizeOutput(method_content=method_content)
         return NodeResult(
@@ -309,24 +349,109 @@ class MethodFormalizeAgent(AgentNode):
         )
 
     @staticmethod
-    def _placeholder(input_obj: MethodFormalizeInput) -> str:
+    def _placeholder(input_obj: MethodFormalizeInput, topic: str = "") -> str:
+        topic_label = topic.strip() or "(未指定研究主题)"
+        concepts = input_obj.atom_concepts or []
+        fcm = input_obj.formula_code_map or []
+
+        # 符号表：从原子概念抽取常见符号，叠加固定保留符号
+        symbol_rows = [
+            "| 符号 | 含义 | 取值范围 |",
+            "|---|---|---|",
+            "| $N$ | 样本数量 | $N \\in \\mathbb{N}^+$ |",
+            "| $K$ | 类别/输出维度 | $K \\in \\mathbb{N}^+$ |",
+            "| $\\theta$ | 模型参数 | $\\theta \\in \\mathbb{R}^d$ |",
+            "| $\\alpha$ | 学习率 | $\\alpha \\in (0, 1)$ |",
+            "| $\\beta$ | 正则权重 | $\\beta \\in [0, 1]$ |",
+            "| $\\lambda$ | 正则系数 | $\\lambda \\geq 0$ |",
+            "| $\\mathcal{D}$ | 训练数据集 | $\\{(u_i, y_i)\\}_{i=1}^N$ |",
+        ]
+
+        # 核心公式：来自原子概念，缺失时给主题相关兜底
+        if concepts:
+            formula_lines = []
+            for c in concepts:
+                name = c.get("concept_name", "?")
+                desc = c.get("description", "")
+                latex = c.get("formula_latex", "")
+                formula_lines.append(
+                    f"**{name}**：{desc}\n\n"
+                    f"动机：在「{topic_label}」场景下需要该算子支撑后续建模。\n\n"
+                    f"$${latex}$$\n"
+                )
+            formula_section = "\n".join(formula_lines)
+        else:
+            formula_section = (
+                f"**问题形式化**：针对「{topic_label}」建模主任务目标。\n\n"
+                f"动机：将研究主题转化为可优化的目标函数。\n\n"
+                f"$$\\hat{{\\theta}} = \\arg\\min_{{\\theta}} \\mathcal{{L}}(\\theta; \\mathcal{{D}})$$\n\n"
+                f"**正则项**：约束参数复杂度以提升泛化。\n\n"
+                f"$$\\mathcal{{L}} = \\ell_{{\\text{{task}}}}(\\theta) + \\lambda \\, \\Omega(\\theta)$$\n"
+            )
+
+        # 原子概念对应表
         concept_lines = "\n".join(
             f"- **{c.get('concept_name', '?')}**: {c.get('description', '')} "
-            f"$${c.get('formula_latex', '')}$$"
-            for c in input_obj.atom_concepts
-        ) or "(无原子概念)"
+            f"`{c.get('code_stub', '')}`"
+            for c in concepts
+        ) or f"- (无原子概念，使用主题「{topic_label}」的默认形式化方案)"
+
+        # 公式↔代码映射表
+        map_rows = ["| 概念 | 公式 | 代码 | 状态 |", "|---|---|---|---|"]
+        if fcm:
+            for m in fcm:
+                map_rows.append(
+                    f"| {m.get('concept', '?')} | `{m.get('formula_latex', '')}` | "
+                    f"`{m.get('code_stub', '')}` | {m.get('status', 'mapped')} |"
+                )
+        else:
+            map_rows.append("| (无映射) | - | - | pending |")
+
         return (
-            "## 方法\n\n"
-            "### 动机\n基于 validated idea 形式化方法。\n\n"
-            "### 核心概念\n"
+            f"## 1. 问题定义与符号表\n\n"
+            f"研究主题：**{topic_label}**\n\n"
+            "### 问题形式化\n"
+            f"- 输入：样本 $u \\in \\mathcal{{U}}$（来自「{topic_label}」的观测空间）\n"
+            "- 输出：预测 $\\hat{y} = h_\\theta(u) \\in \\mathcal{Y}$\n"
+            "- 约束：参数范数有界 $\\|\\theta\\|_2 \\leq R$，训练样本数 $N$ 固定\n"
+            "- 目标：最小化经验风险与正则项之和\n\n"
+            "### 符号表\n\n"
+            + "\n".join(symbol_rows)
+            + "\n\n"
+            "## 2. 方法概述\n\n"
+            f"针对「{topic_label}」，本方法以原子概念分解为基础，"
+            f"将研究问题拆为若干可独立验证的算子，"
+            f"在每个算子上同时给出数学公式与代码实现，"
+            f"再以端到端目标函数统一优化，确保论文公式与实验代码一一对应。\n\n"
+            "## 3. 核心公式设计\n\n"
+            f"{formula_section}\n\n"
+            "### 原子概念与公式↔代码映射\n\n"
             f"{concept_lines}\n\n"
-            "### 算法伪代码\n```\n"
-            "for batch in dataloader:\n"
-            "    x = embedding_layer(batch.tokens)\n"
-            "    alpha = softmax(Q @ K.T / sqrt(d_k))\n"
-            "    c = alpha @ V\n"
-            "    output = output_layer(c)\n"
+            + "\n".join(map_rows)
+            + "\n\n"
+            "## 4. 算法伪代码\n\n"
             "```\n"
+            "Algorithm: Method for " + topic_label + "\n"
+            "Input:  dataset D = {(u_i, y_i)}_{i=1}^N, hyper-params alpha, lambda, K\n"
+            "Output: trained parameters theta\n"
+            " 1: initialize theta ~ N(0, sigma^2)\n"
+            " 2: for epoch = 1 to E do\n"
+            " 3:   for each mini-batch B subset D do\n"
+            " 4:     x <- encoder(u)                       // representation_layer\n"
+            " 5:     z <- core_operator({x_1, ..., x_|B|})  // core_operator\n"
+            " 6:     pred <- head(z)\n"
+            " 7:     L <- task_loss(y, pred) + lambda * reg(theta)\n"
+            " 8:     theta <- theta - alpha * grad(L, theta)\n"
+            " 9:   end for\n"
+            "10: end for\n"
+            "11: return theta\n"
+            "```\n\n"
+            "## 5. 复杂度分析\n\n"
+            "- 时间复杂度：$O(E \\cdot N \\cdot T_\\text{op})$，"
+            "其中 $E$ 为训练轮数，$N$ 为样本数，$T_\\text{op}$ 为单样本核心算子耗时"
+            "（与原子概念中 `core_operator` 的实现复杂度一致）。\n"
+            "- 空间复杂度：$O(d + N_\\text{batch} \\cdot d_\\text{hidden})$，"
+            "其中 $d$ 为参数规模，$N_\\text{batch}$ 为批量大小，$d_\\text{hidden}$ 为表征维度。\n"
         )
 
 

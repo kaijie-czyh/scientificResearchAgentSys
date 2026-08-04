@@ -862,44 +862,50 @@ def get_dashboard(project_id: str) -> dict:
 
 
 @app.get("/api/projects/{project_id}/download/{artifact_type}")
-def download_artifact(project_id: str, artifact_type: str):
-    """下载关键产出物。
+def download_artifact(project_id: str, artifact_type: str, format: str = "md"):
+    """下载关键产出物，支持 md / docx / pdf 三种格式。
 
     支持类型：
-    - research-report：文献调研报告（Markdown）
-    - discovery-report：构效关系发现报告（Markdown）
-    - experiment-code：实验代码（Python）
-    - method-doc：方法文档（Markdown）
-    - paper-draft：论文稿（Markdown）
-    - claims-summary：Claim 汇总（Markdown）
+    - research-report：文献调研报告
+    - discovery-report：构效关系发现报告
+    - experiment-code：实验代码（仅 md/py 格式）
+    - experiment-results：实验结果（含 metrics）
+    - method-doc：方法文档
+    - paper-draft：论文稿
+    - claims-summary：Claim 汇总
+    - ideas-summary：研究思路汇总
+    - full-report：全流程综合报告
     """
     _require_project(project_id)
     store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
 
-    if artifact_type == "research-report":
-        report = store.get_kv("cross_validation_report") or {}
-        md = _build_research_report_md(report)
-        return _make_download(md, f"research_report.md", "text/markdown")
-
-    elif artifact_type == "discovery-report":
-        content = store.get_kv("discovery_report_content") or ""
-        if not content:
-            # 兜底：从 discovery_summary 构建
-            summary = store.get_kv("discovery_summary") or {}
-            content = f"# 构效关系发现报告\n\n{json.dumps(summary, ensure_ascii=False, indent=2)}"
-        return _make_download(content, "discovery_report.md", "text/markdown")
-
-    elif artifact_type == "experiment-code":
-        # 从实验目录读取代码
+    # 实验代码仅支持原文下载（py 格式）
+    if artifact_type == "experiment-code":
         exp_dir = _CONFIG.paths.project_dir(project_id) / "experiments"
         code_path = exp_dir / "run_exp.py"
         if code_path.exists():
             code = code_path.read_text(encoding="utf-8")
         else:
-            # 兜底：从 experiments 表读
             exps = store.list_experiments()
             code = f"# 无 run_exp.py，共有 {len(exps)} 条实验记录"
-        return _make_download(code, "run_exp.py", "text/x-python")
+        return _make_download(code, "run_exp.py", "text/x-python", "md")
+
+    # 其余类型先统一生成 Markdown 内容
+    md_content = ""
+    base_filename = ""
+
+    if artifact_type == "research-report":
+        report = store.get_kv("cross_validation_report") or {}
+        md_content = _build_research_report_md(report)
+        base_filename = "research_report"
+
+    elif artifact_type == "discovery-report":
+        content = store.get_kv("discovery_report_content") or ""
+        if not content:
+            summary = store.get_kv("discovery_summary") or {}
+            content = f"# 构效关系发现报告\n\n{json.dumps(summary, ensure_ascii=False, indent=2)}"
+        md_content = content
+        base_filename = "discovery_report"
 
     elif artifact_type == "method-doc":
         try:
@@ -908,12 +914,12 @@ def download_artifact(project_id: str, artifact_type: str):
             am = ArtifactManager(_CONFIG.paths.project_db(project_id))
             arts = am.list_artifacts(artifact_type=ArtifactType.METHOD_DOC)
             if arts:
-                content = am.read_content(arts[0]) or str(arts[0].content or "")
+                md_content = am.read_content(arts[0]) or str(arts[0].content or "")
             else:
-                content = "# 无方法文档"
+                md_content = "# 无方法文档"
         except Exception:
-            content = "# 无方法文档"
-        return _make_download(content, "method_doc.md", "text/markdown")
+            md_content = "# 无方法文档"
+        base_filename = "method_doc"
 
     elif artifact_type == "paper-draft":
         try:
@@ -922,33 +928,40 @@ def download_artifact(project_id: str, artifact_type: str):
             am = ArtifactManager(_CONFIG.paths.project_db(project_id))
             arts = am.list_artifacts(artifact_type=ArtifactType.PAPER_DRAFT)
             if arts:
-                content = am.read_content(arts[0]) or str(arts[0].content or "")
+                md_content = am.read_content(arts[0]) or str(arts[0].content or "")
             else:
-                content = "# 无论文稿"
+                md_content = "# 无论文稿"
         except Exception:
-            content = "# 无论文稿"
-        return _make_download(content, "paper_draft.md", "text/markdown")
+            md_content = "# 无论文稿"
+        base_filename = "paper_draft"
 
     elif artifact_type == "claims-summary":
-        claims = store.list_claims()
-        md = "# Claim 汇总\n\n"
-        for c in claims:
-            md += f"## {c.claim_id}\n\n"
-            md += f"**陈述**: {c.statement}\n\n"
-            md += f"**状态**: {c.status.value}\n\n"
-            md += f"**角色**: {c.role}\n\n"
-            if c.evidence_refs:
-                md += "**证据**:\n"
-                for ref in c.evidence_refs:
-                    md += f"- {ref.get('type', '?')}: {ref.get('id', '?')}"
-                    if ref.get("chunk_id"):
-                        md += f" (chunk: {ref['chunk_id']})"
-                    md += "\n"
-            md += "\n"
-        return _make_download(md, "claims_summary.md", "text/markdown")
+        md_content = _build_claims_summary_md(store)
+        base_filename = "claims_summary"
+
+    elif artifact_type == "ideas-summary":
+        md_content = _build_ideas_summary_md(store)
+        base_filename = "ideas_summary"
+
+    elif artifact_type == "experiment-results":
+        md_content = _build_experiment_results_md(store, project_id)
+        base_filename = "experiment_results"
+
+    elif artifact_type == "full-report":
+        md_content = _build_full_report_md(store, project_id)
+        base_filename = "full_report"
 
     else:
         raise HTTPException(status_code=400, detail=f"不支持的下载类型: {artifact_type}")
+
+    # 按格式转换
+    fmt = (format or "md").lower()
+    if fmt == "docx":
+        return _md_to_docx_response(md_content, base_filename)
+    elif fmt == "pdf":
+        return _md_to_pdf_response(md_content, base_filename)
+    else:
+        return _make_download(md_content, f"{base_filename}.md", "text/markdown", "md")
 
 
 def _build_research_report_md(report: dict) -> str:
@@ -986,12 +999,273 @@ def _build_research_report_md(report: dict) -> str:
     return md
 
 
-def _make_download(content: str, filename: str, media_type: str) -> Response:
+def _make_download(content: str, filename: str, media_type: str, fmt: str = "md") -> Response:
     """构造文件下载响应。"""
     return Response(
         content=content.encode("utf-8"),
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _build_claims_summary_md(store: KnowledgeStore) -> str:
+    """构建 Claim 汇总 Markdown。"""
+    claims = store.list_claims()
+    md = "# Claim 汇总\n\n"
+    for c in claims:
+        md += f"## {c.claim_id}\n\n"
+        md += f"**陈述**: {c.statement}\n\n"
+        md += f"**状态**: {c.status.value}\n\n"
+        md += f"**角色**: {c.role}\n\n"
+        if c.evidence_refs:
+            md += "**证据**:\n"
+            for ref in c.evidence_refs:
+                md += f"- {ref.get('type', '?')}: {ref.get('id', '?')}"
+                if ref.get("chunk_id"):
+                    md += f" (chunk: {ref['chunk_id']})"
+                md += "\n"
+        md += "\n"
+    return md
+
+
+def _build_ideas_summary_md(store: KnowledgeStore) -> str:
+    """构建研究思路汇总 Markdown。"""
+    ideas = store.list_ideas()
+    md = "# 研究思路汇总\n\n"
+    md += f"共 {len(ideas)} 个思路\n\n---\n\n"
+    for idea in ideas:
+        md += f"## {idea.idea_id}\n\n"
+        md += f"**状态**: {idea.status}\n\n"
+        md += f"**思路**: {idea.text}\n\n"
+        if idea.constraints:
+            md += f"**约束**: {'; '.join(idea.constraints)}\n\n"
+        if idea.source_paper_ids:
+            md += f"**来源论文**: {', '.join(idea.source_paper_ids)}\n\n"
+        if idea.validation_notes:
+            md += f"**验证**: {json.dumps(idea.validation_notes, ensure_ascii=False)}\n\n"
+        md += "---\n\n"
+    return md
+
+
+def _build_experiment_results_md(store: KnowledgeStore, project_id: str) -> str:
+    """构建实验结果 Markdown（含 metrics）。"""
+    experiments = store.list_experiments()
+    md = "# 实验结果汇总\n\n"
+    md += f"共 {len(experiments)} 个实验\n\n---\n\n"
+    for exp in experiments:
+        md += f"## {exp.name or exp.experiment_id}\n\n"
+        md += f"**状态**: {exp.status.value if hasattr(exp.status, 'value') else exp.status}\n\n"
+        if hasattr(exp, 'metrics') and exp.metrics:
+            md += f"**Metrics**: {json.dumps(exp.metrics, ensure_ascii=False, indent=2)}\n\n"
+        if exp.result_summary:
+            md += f"**结果摘要**:\n```\n{exp.result_summary[:3000]}\n```\n\n"
+        if exp.anomaly_notes:
+            md += f"**异常**: {exp.anomaly_notes[:1000]}\n\n"
+        if exp.verifies_claim_ids:
+            md += f"**验证 Claim**: {', '.join(exp.verifies_claim_ids)}\n\n"
+        md += "---\n\n"
+    return md
+
+
+def _build_full_report_md(store: KnowledgeStore, project_id: str) -> str:
+    """构建全流程综合报告 Markdown。"""
+    parts: list[str] = []
+
+    # 标题
+    topic = store.get_kv("research_topic") or "(未设置主题)"
+    parts.append(f"# 科研项目全流程报告\n\n**研究主题**: {topic}\n\n**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n---\n\n")
+
+    # 1. 调研报告
+    report = store.get_kv("cross_validation_report") or {}
+    if report:
+        parts.append("---\n\n# 第一部分：文献调研\n\n")
+        parts.append(_build_research_report_md(report))
+
+    # 2. 研究思路
+    ideas = store.list_ideas()
+    if ideas:
+        parts.append("\n\n---\n\n# 第二部分：研究思路\n\n")
+        parts.append(_build_ideas_summary_md(store))
+
+    # 3. Claim 汇总
+    claims = store.list_claims()
+    if claims:
+        parts.append("\n\n---\n\n# 第三部分：Claim 汇总\n\n")
+        parts.append(_build_claims_summary_md(store))
+
+    # 4. 方法文档
+    try:
+        from core.artifacts import ArtifactManager
+        from core.knowledge import ArtifactType
+        am = ArtifactManager(_CONFIG.paths.project_db(project_id))
+        arts = am.list_artifacts(artifact_type=ArtifactType.METHOD_DOC)
+        if arts:
+            content = am.read_content(arts[0]) or str(arts[0].content or "")
+            parts.append("\n\n---\n\n# 第四部分：方法设计\n\n")
+            parts.append(content)
+    except Exception:
+        pass
+
+    # 5. 实验结果
+    experiments = store.list_experiments()
+    if experiments:
+        parts.append("\n\n---\n\n# 第五部分：实验结果\n\n")
+        parts.append(_build_experiment_results_md(store, project_id))
+
+    # 6. 论文稿
+    try:
+        from core.artifacts import ArtifactManager
+        from core.knowledge import ArtifactType
+        am = ArtifactManager(_CONFIG.paths.project_db(project_id))
+        arts = am.list_artifacts(artifact_type=ArtifactType.PAPER_DRAFT)
+        if arts:
+            content = am.read_content(arts[0]) or str(arts[0].content or "")
+            parts.append("\n\n---\n\n# 第六部分：论文稿\n\n")
+            parts.append(content)
+    except Exception:
+        pass
+
+    return "".join(parts) if parts else "# 全流程报告\n\n（暂无产出）"
+
+
+# ===== 格式转换：Markdown → DOCX / PDF =====
+
+
+def _md_to_docx_response(md_content: str, base_filename: str) -> Response:
+    """将 Markdown 转为 DOCX 并返回下载响应。"""
+    import io
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    # 设置默认字体
+    style = doc.styles["Normal"]
+    style.font.size = Pt(11)
+
+    in_code_block = False
+    for line in md_content.split("\n"):
+        stripped = line.strip()
+
+        # 代码块
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            p = doc.add_paragraph(line)
+            p.style = doc.styles["Normal"]
+            run = p.runs[0] if p.runs else p.add_run("")
+            run.font.name = "Consolas"
+            run.font.size = Pt(9)
+            continue
+
+        # 标题
+        if stripped.startswith("### "):
+            doc.add_heading(stripped[4:], level=3)
+        elif stripped.startswith("## "):
+            doc.add_heading(stripped[3:], level=2)
+        elif stripped.startswith("# "):
+            doc.add_heading(stripped[2:], level=1)
+        elif stripped.startswith("---"):
+            doc.add_paragraph("─" * 40)
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            doc.add_paragraph(stripped[2:], style="List Bullet")
+        elif stripped and stripped[0].isdigit() and ". " in stripped[:5]:
+            idx = stripped.index(". ")
+            doc.add_paragraph(stripped[idx + 2:], style="List Number")
+        elif stripped:
+            doc.add_paragraph(stripped)
+        # 空行跳过
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{base_filename}.docx"'},
+    )
+
+
+def _md_to_pdf_response(md_content: str, base_filename: str) -> Response:
+    """将 Markdown 转为 PDF 并返回下载响应。
+
+    使用 fpdf2 + Windows 系统中文字体（Microsoft YaHei / SimHei）。
+    """
+    import io
+    from fpdf import FPDF
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # 注册中文字体（Windows 系统字体）
+    font_name = "chinese"
+    font_paths = [
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
+    ]
+    font_loaded = False
+    for fp in font_paths:
+        if os.path.exists(fp):
+            try:
+                pdf.add_font(font_name, "", fp, uni=True)
+                font_loaded = True
+                break
+            except Exception:
+                continue
+    if not font_loaded:
+        # 兜底：用内置字体（不支持中文，但不会崩溃）
+        font_name = "Helvetica"
+
+    pdf.set_font(font_name, size=11)
+
+    in_code_block = False
+    for line in md_content.split("\n"):
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            pdf.set_font(font_name, size=8)
+            # 截断超长行
+            safe = stripped[:120] if len(stripped) > 120 else stripped
+            pdf.multi_cell(0, 5, safe)
+            pdf.set_font(font_name, size=11)
+            continue
+
+        if stripped.startswith("### "):
+            pdf.set_font(font_name, size=13)
+            pdf.ln(3)
+            pdf.multi_cell(0, 7, stripped[4:])
+            pdf.set_font(font_name, size=11)
+        elif stripped.startswith("## "):
+            pdf.set_font(font_name, size=15)
+            pdf.ln(5)
+            pdf.multi_cell(0, 8, stripped[3:])
+            pdf.set_font(font_name, size=11)
+        elif stripped.startswith("# "):
+            pdf.set_font(font_name, size=18)
+            pdf.ln(8)
+            pdf.multi_cell(0, 10, stripped[2:])
+            pdf.set_font(font_name, size=11)
+        elif stripped.startswith("---"):
+            pdf.ln(3)
+            pdf.multi_cell(0, 5, "=" * 60)
+            pdf.ln(2)
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            pdf.multi_cell(0, 6, f"  • {stripped[2:]}")
+        elif stripped:
+            pdf.multi_cell(0, 6, stripped)
+        else:
+            pdf.ln(3)
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{base_filename}.pdf"'},
     )
 
 
@@ -1006,8 +1280,9 @@ async def upload_paper(
 ):
     """上传 PDF/文本文献，入库为 Paper 实体。
 
-    支持 .pdf / .txt / .md 文件。PDF 仅存储元信息（不做 OCR），
-    txt/md 直接作为摘要与 chunk 素材。
+    支持 .pdf / .txt / .md 文件。
+    - PDF：优先使用 MinerU（赛题推荐）深度解析为结构化 Markdown，无 MinerU 时降级为 PyMuPDF 纯文本
+    - txt/md：直接作为摘要与 chunk 素材
     """
     _require_project(project_id)
     store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
@@ -1020,16 +1295,45 @@ async def upload_paper(
     paper_id = f"paper_{uuid.uuid4().hex[:12]}"
     abstract = ""
     pdf_path = None
+    parsed_markdown = ""
+    parsed_tables: list[str] = []
+    parsed_formulas: list[str] = []
+    parse_source = ""
 
     if ext == ".pdf":
-        # PDF：保存到项目目录，元信息入库
+        # PDF：保存到项目目录
         upload_dir = _CONFIG.paths.project_dir(project_id) / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = upload_dir / filename
         pdf_path.write_bytes(raw)
-        abstract = f"(PDF 文件已上传: {filename}，需手动提取文本)"
+
+        # 使用 MinerU 解析 PDF（赛题推荐工具）
+        from core.tools import mineru_is_available, mineru_parse_pdf
+        if mineru_is_available():
+            try:
+                parsed_doc = mineru_parse_pdf(pdf_path)
+                parsed_markdown = parsed_doc.markdown
+                parsed_tables = parsed_doc.tables
+                parsed_formulas = parsed_doc.formulas
+                parse_source = parsed_doc.source
+                abstract = parsed_markdown[:5000] if parsed_markdown else f"(MinerU 解析为空: {filename})"
+            except Exception as e:
+                abstract = f"(MinerU 解析失败: {e}，PDF 已保存: {filename})"
+        else:
+            # 降级：用 PyMuPDF 提取纯文本
+            try:
+                import fitz
+                doc = fitz.open(str(pdf_path))
+                text_parts = [page.get_text() for page in doc]
+                doc.close()
+                parsed_markdown = "\n\n".join(text_parts)
+                abstract = parsed_markdown[:5000] if parsed_markdown else f"(PDF 文本提取为空: {filename})"
+                parse_source = "fallback"
+            except Exception:
+                abstract = f"(PDF 文件已上传: {filename}，需安装 MinerU 或 PyMuPDF 提取文本)"
     elif ext in (".txt", ".md"):
         abstract = raw.decode("utf-8", errors="replace")[:5000]
+        parsed_markdown = abstract
     else:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
 
@@ -1042,15 +1346,21 @@ async def upload_paper(
         url=None,
         pdf_path=str(pdf_path) if pdf_path else None,
         source_stage="upload",
+        metadata={
+            "parse_source": parse_source,
+            "table_count": len(parsed_tables),
+            "formula_count": len(parsed_formulas),
+        },
     )
     store.save_paper(paper)
 
-    # txt/md 内容切分为 chunk
+    # 切分为 chunk（优先使用解析后的全文，而非仅 abstract）
     chunk_count = 0
-    if ext in (".txt", ".md") and abstract:
+    chunk_source = parsed_markdown if parsed_markdown else abstract
+    if chunk_source and len(chunk_source) > 50:
         from core.tools import split_into_chunks
         from core.knowledge import PaperChunk
-        text_chunks = split_into_chunks(abstract, max_tokens=500, overlap_tokens=50)
+        text_chunks = split_into_chunks(chunk_source, max_tokens=500, overlap_tokens=50)
         paper_chunks = [
             PaperChunk(
                 chunk_id=f"{paper_id}_c{tc.index}",
@@ -1069,7 +1379,10 @@ async def upload_paper(
         "title": paper.title,
         "filename": filename,
         "chunks": chunk_count,
-        "message": "文献上传成功",
+        "parse_source": parse_source or ("mineru" if mineru_is_available() else "text"),
+        "tables": len(parsed_tables),
+        "formulas": len(parsed_formulas),
+        "message": "文献上传成功" + (f"（MinerU 解析: {len(parsed_tables)} 表格, {len(parsed_formulas)} 公式）" if parse_source == "mineru" else ""),
     }
 
 

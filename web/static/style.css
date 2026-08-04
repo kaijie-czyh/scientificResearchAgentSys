@@ -1367,6 +1367,23 @@ body {
     margin-right: 4px;
 }
 
+.download-format-select {
+    padding: 4px 8px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius);
+    font-size: 12px;
+    background: #fff;
+    color: var(--color-text);
+    cursor: pointer;
+    margin-right: 6px;
+}
+
+.download-format-select:focus {
+    outline: none;
+    border-color: var(--color-primary-light);
+    box-shadow: 0 0 0 2px rgba(44, 90, 130, 0.12);
+}
+
 .download-divider {
     border-top: 1px solid var(--color-border);
     margin: 12px 0;
@@ -1538,6 +1555,21 @@ pre.code-block {
 .mt-8 { margin-top: 8px; }
 .mt-16 { margin-top: 16px; }
 .mb-0 { margin-bottom: 0; }
+
+.info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.info-list p {
+    line-height: 1.65;
+    color: var(--color-text-muted);
+}
+
+.info-list strong {
+    color: var(--color-primary-dark);
+}
 .flex { display: flex; }
 .flex-1 { flex: 1; }
 .gap-8 { gap: 8px; }
