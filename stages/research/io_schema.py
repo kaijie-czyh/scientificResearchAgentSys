@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
-
 from core.orchestration.node import NodeInput, NodeOutput
 
 
@@ -125,28 +123,6 @@ class PaperIngestOutput(NodeOutput):
     """论文入库输出：入库后的 paper_id 列表。"""
 
     paper_ids: list[str]
-
-
-class MaterialKnowledgeSchema(BaseModel):
-    """结构化材料知识抽取 schema（赛题基本任务要求）。
-
-    赛题明确要求从文献中提取：
-    - 材料成分、结构、性能、模拟方法、合成条件等结构化信息
-    """
-
-    compositions: list[str] = Field(default_factory=list, description="材料化学成分/化学式（如 Bi2Te3, SnSe）")
-    crystal_structures: list[str] = Field(default_factory=list, description="晶体结构/相结构（如 六方晶系, 单斜, 钙钛矿）")
-    properties: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="性能指标（如 {name: 'ZT', value: 1.4, unit: '', temperature_K: 373, conditions: '...'}）",
-    )
-    synthesis_methods: list[str] = Field(default_factory=list, description="合成方法（如 固相反应, 水热法, 机械合金化）")
-    synthesis_conditions: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="合成条件（如 {temperature_K: 723, time_h: 12, pressure: '1 atm', atmosphere: 'Ar'}）",
-    )
-    measurement_techniques: list[str] = Field(default_factory=list, description="表征方法（如 XRD, SEM, Hall 测量, DFT 计算）")
-    key_findings: list[str] = Field(default_factory=list, description="关键发现/结论摘要")
 
 
 # ===== CrossValidateAgent（借鉴 GPT-Researcher）=====

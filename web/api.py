@@ -1280,9 +1280,8 @@ async def upload_paper(
 ):
     """上传 PDF/文本文献，入库为 Paper 实体。
 
-    支持 .pdf / .txt / .md 文件。
-    - PDF：优先使用 MinerU（赛题推荐）深度解析为结构化 Markdown，无 MinerU 时降级为 PyMuPDF 纯文本
-    - txt/md：直接作为摘要与 chunk 素材
+    支持 .pdf / .txt / .md 文件。PDF 仅存储元信息（不做 OCR），
+    txt/md 直接作为摘要与 chunk 素材。
     """
     _require_project(project_id)
     store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
@@ -1295,45 +1294,16 @@ async def upload_paper(
     paper_id = f"paper_{uuid.uuid4().hex[:12]}"
     abstract = ""
     pdf_path = None
-    parsed_markdown = ""
-    parsed_tables: list[str] = []
-    parsed_formulas: list[str] = []
-    parse_source = ""
 
     if ext == ".pdf":
-        # PDF：保存到项目目录
+        # PDF：保存到项目目录，元信息入库
         upload_dir = _CONFIG.paths.project_dir(project_id) / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = upload_dir / filename
         pdf_path.write_bytes(raw)
-
-        # 使用 MinerU 解析 PDF（赛题推荐工具）
-        from core.tools import mineru_is_available, mineru_parse_pdf
-        if mineru_is_available():
-            try:
-                parsed_doc = mineru_parse_pdf(pdf_path)
-                parsed_markdown = parsed_doc.markdown
-                parsed_tables = parsed_doc.tables
-                parsed_formulas = parsed_doc.formulas
-                parse_source = parsed_doc.source
-                abstract = parsed_markdown[:5000] if parsed_markdown else f"(MinerU 解析为空: {filename})"
-            except Exception as e:
-                abstract = f"(MinerU 解析失败: {e}，PDF 已保存: {filename})"
-        else:
-            # 降级：用 PyMuPDF 提取纯文本
-            try:
-                import fitz
-                doc = fitz.open(str(pdf_path))
-                text_parts = [page.get_text() for page in doc]
-                doc.close()
-                parsed_markdown = "\n\n".join(text_parts)
-                abstract = parsed_markdown[:5000] if parsed_markdown else f"(PDF 文本提取为空: {filename})"
-                parse_source = "fallback"
-            except Exception:
-                abstract = f"(PDF 文件已上传: {filename}，需安装 MinerU 或 PyMuPDF 提取文本)"
+        abstract = f"(PDF 文件已上传: {filename}，需手动提取文本)"
     elif ext in (".txt", ".md"):
         abstract = raw.decode("utf-8", errors="replace")[:5000]
-        parsed_markdown = abstract
     else:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
 
@@ -1346,21 +1316,15 @@ async def upload_paper(
         url=None,
         pdf_path=str(pdf_path) if pdf_path else None,
         source_stage="upload",
-        metadata={
-            "parse_source": parse_source,
-            "table_count": len(parsed_tables),
-            "formula_count": len(parsed_formulas),
-        },
     )
     store.save_paper(paper)
 
-    # 切分为 chunk（优先使用解析后的全文，而非仅 abstract）
+    # txt/md 内容切分为 chunk
     chunk_count = 0
-    chunk_source = parsed_markdown if parsed_markdown else abstract
-    if chunk_source and len(chunk_source) > 50:
+    if ext in (".txt", ".md") and abstract:
         from core.tools import split_into_chunks
         from core.knowledge import PaperChunk
-        text_chunks = split_into_chunks(chunk_source, max_tokens=500, overlap_tokens=50)
+        text_chunks = split_into_chunks(abstract, max_tokens=500, overlap_tokens=50)
         paper_chunks = [
             PaperChunk(
                 chunk_id=f"{paper_id}_c{tc.index}",
@@ -1379,10 +1343,7 @@ async def upload_paper(
         "title": paper.title,
         "filename": filename,
         "chunks": chunk_count,
-        "parse_source": parse_source or ("mineru" if mineru_is_available() else "text"),
-        "tables": len(parsed_tables),
-        "formulas": len(parsed_formulas),
-        "message": "文献上传成功" + (f"（MinerU 解析: {len(parsed_tables)} 表格, {len(parsed_formulas)} 公式）" if parse_source == "mineru" else ""),
+        "message": "文献上传成功",
     }
 
 
