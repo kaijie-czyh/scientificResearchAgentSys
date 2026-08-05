@@ -253,6 +253,99 @@ body {
     opacity: 0.75;
 }
 
+/* 推荐卡片内：热门度条形 */
+.rec-popbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0 2px;
+}
+.rec-popbar-label {
+    font-size: 12px;
+    color: var(--color-muted);
+    flex-shrink: 0;
+}
+.rec-popbar-track {
+    flex: 1;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary, #eceef1);
+    overflow: hidden;
+}
+.rec-popbar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #2f80ed, #6ea8f5);
+}
+.rec-popbar-val {
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    min-width: 30px;
+    text-align: right;
+    color: var(--color-primary-dark);
+}
+
+/* ===== 方向推荐：维度对比总览表（纯展示，不参与排序/选择） ===== */
+.rec-compare {
+    margin: 12px 0 4px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    font-size: 12px;
+}
+.rec-compare-row {
+    display: grid;
+    grid-template-columns: 26px 1.5fr 0.9fr 0.7fr 0.7fr 0.7fr 0.9fr;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--color-border);
+}
+.rec-compare-row:last-child {
+    border-bottom: none;
+}
+.rec-compare-head {
+    font-weight: 600;
+    background: var(--bg-secondary, #f5f6f8);
+    color: var(--color-primary-dark);
+}
+.rec-compare .c-idx { color: var(--color-muted); }
+.rec-compare .c-topic { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-compare .c-dim { text-align: center; }
+.rec-compare .c-dim-col { color: var(--color-muted); }
+.pop-cell { display: flex; align-items: center; gap: 6px; justify-content: center; }
+.pop-bar {
+    width: 44px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary, #eceef1);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.pop-fill {
+    display: block;
+    height: 100%;
+    border-radius: 4px;
+    background: #2f80ed;
+}
+.pop-val { font-variant-numeric: tabular-nums; min-width: 20px; text-align: left; }
+.dim-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+}
+.dim-high { color: var(--status-success, #1a7f37); }
+.dim-med  { color: var(--status-warning, #b7791f); }
+.dim-low  { color: var(--status-danger, #cf222e); }
+.dim-high .dim-dot { background: #1a7f37; }
+.dim-med  .dim-dot { background: #b7791f; }
+.dim-low  .dim-dot { background: #cf222e; }
+
 .card-title {
     font-size: 14px;
     font-weight: 600;

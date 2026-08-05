@@ -420,6 +420,72 @@
 
     // ===== 方向推荐页面 =====
 
+    // ===== 方向推荐：维度对比总览表（纯展示，不参与排序/选择） =====
+    // 注意：此表仅按服务端已排好的顺序展示，绝不在前端重排，
+    // 保证卡片数字下标 = 服务端 recommendations 下标 = 提交文本 String(i+1)。
+    function buildRecCompareTable(recommendations, selectedTopic) {
+        const dimClass = v => {
+            if (!v) return "";
+            const s = String(v).toLowerCase();
+            if (s === "high" || s === "hard") return "dim-high";
+            if (s === "medium" || s === "med" || s === "moderate") return "dim-med";
+            if (s === "low" || s === "easy") return "dim-low";
+            return "";
+        };
+        const dimText = v => {
+            if (!v) return "N/A";
+            const map = {
+                high: "高", hard: "高", medium: "中", med: "中", moderate: "中",
+                low: "低", easy: "低",
+            };
+            return map[String(v).toLowerCase()] || v;
+        };
+        const fmtGrowth = g => (g == null ? "N/A" : `${g > 0 ? "+" : ""}${Math.round(g * 100)}%`);
+
+        const head = el("div", { class: "rec-compare-row rec-compare-head" }, [
+            el("span", { class: "c-idx" }, "#"),
+            el("span", { class: "c-topic" }, "推荐主题"),
+            el("span", { class: "c-dim" }, "热门度"),
+            el("span", { class: "c-dim" }, "难度"),
+            el("span", { class: "c-dim" }, "创新度"),
+            el("span", { class: "c-dim" }, "关联度"),
+            el("span", { class: "c-dim" }, "增长率"),
+        ]);
+        const rows = [head];
+
+        recommendations.forEach((rec, i) => {
+            const isSelected = selectedTopic && rec.topic === selectedTopic;
+            const pop = rec.popularity_score;
+            const row = el("div", { class: "rec-compare-row" }, [
+                el("span", { class: "c-idx" }, `[${i + 1}]`),
+                el("span", { class: "c-topic", title: rec.topic || "" },
+                    isSelected ? `✓ ${rec.topic || "N/A"}` : (rec.topic || "N/A")),
+                el("span", { class: "c-dim pop-cell" }, [
+                    el("span", { class: "pop-bar" }, [
+                        el("span", { class: "pop-fill", style: `width:${Math.min(100, Math.max(0, pop || 0))}%` }),
+                    ]),
+                    el("span", { class: "pop-val" }, `${pop ?? "N/A"}`),
+                ]),
+                el("span", { class: `c-dim ${dimClass(rec.difficulty)}` }, [
+                    el("span", { class: "dim-dot" }),
+                    dimText(rec.difficulty),
+                ]),
+                el("span", { class: `c-dim ${dimClass(rec.novelty)}` }, [
+                    el("span", { class: "dim-dot" }),
+                    dimText(rec.novelty),
+                ]),
+                el("span", { class: `c-dim ${dimClass(rec.relevance)}` }, [
+                    el("span", { class: "dim-dot" }),
+                    dimText(rec.relevance),
+                ]),
+                el("span", { class: "c-dim c-dim-col" }, fmtGrowth(rec.growth_rate)),
+            ]);
+            rows.push(row);
+        });
+
+        return el("div", { class: "rec-compare mt-12" }, rows);
+    }
+
     function renderTopicDiscovery(content) {
         const status = state.statusCache;
         const td = status?.topic_discovery || {};
@@ -463,6 +529,9 @@
                 el("h3", { class: "section-title" }, `推荐研究主题（${recommendations.length} 个，按热门度排序）`),
             ]);
 
+            // 维度对比总览表（纯展示，点击选择仍走下方卡片；排序与选择契约不受影响）
+            recSection.appendChild(buildRecCompareTable(recommendations, selectedTopic));
+
             recommendations.forEach((rec, i) => {
                 const isSelected = selectedTopic && rec.topic === selectedTopic;
                 const recCard = el("div", {
@@ -473,6 +542,14 @@
                         el("span", { class: "rec-index" }, `[${i + 1}]`),
                         el("span", { class: "rec-topic", text: rec.topic || "N/A" }),
                         isSelected ? el("span", { class: "badge badge-success" }, "已选择") : null,
+                    ]),
+                    // 热门度条形（0-100）
+                    el("div", { class: "rec-popbar" }, [
+                        el("span", { class: "rec-popbar-label" }, "热门度"),
+                        el("span", { class: "rec-popbar-track" }, [
+                            el("span", { class: "rec-popbar-fill", style: `width:${Math.min(100, Math.max(0, rec.popularity_score || 0))}%` }),
+                        ]),
+                        el("span", { class: "rec-popbar-val" }, `${rec.popularity_score ?? "N/A"}`),
                     ]),
                     el("div", { class: "rec-body" }, [
                         el("div", { class: "rec-field" }, [
