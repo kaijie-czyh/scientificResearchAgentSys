@@ -14,8 +14,9 @@
 """
 from __future__ import annotations
 
+import logging
 import os
-from typing import Optional, Type, TypeVar
+from typing import Any, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
@@ -32,6 +33,8 @@ from core.llm.base import (
 from core.llm.task_router import TaskRouter
 
 T = TypeVar("T", bound=BaseModel)
+
+logger = logging.getLogger(__name__)
 
 
 class LLMRegistry:
@@ -166,7 +169,11 @@ class LLMRegistry:
         system: Optional[str] = None,
         temperature_override: Optional[float] = None,
     ) -> T:
-        """按 task_type 调用 LLM 结构化输出。返回 Pydantic 实例。"""
+        """按 task_type 调用 LLM 结构化输出。返回 Pydantic 实例。
+
+        含一次重试：若首次返回 schema 定义本身（MiniMax M3 常见错误模式），
+        自动追加「请返回实例数据，不要返回 schema 定义」强提示重试一次。
+        """
         cfg = self._router.get(task_type)
         provider = self._get_provider(cfg.provider)
         request = StructuredOutputRequest(
@@ -176,13 +183,54 @@ class LLMRegistry:
             system=system,
             temperature=temperature_override if temperature_override is not None else cfg.temperature,
         )
-        result = provider.structured_output(request, model=cfg.model)
+        try:
+            result = provider.structured_output(request, model=cfg.model)
+            return self._coerce(result, output_schema)
+        except LLMError as e:
+            err_msg = str(e)
+            # 仅当「返回 schema 定义」或「不符合 schema」时重试，其他错误（如网络）直接抛
+            if "schema 定义本身" not in err_msg and "不符合 schema" not in err_msg:
+                raise
+            logger.warning(
+                "structured_output 首次失败（%s），追加实例提示重试一次",
+                err_msg[:120],
+            )
+            # 在 prompt 末尾追加强提示
+            reminder = (
+                "\n\n【重要】请直接返回符合 schema 的实例 JSON 数据，"
+                "不要返回 $defs / properties / type 等 schema 元字段。"
+                "例如若 schema 要求 {ideas: list[IdeaDraftItem]}，"
+                "应返回 {\"ideas\": [{\"text\": \"具体思路描述\", ...}]}。"
+            )
+            if prompt is not None:
+                request = StructuredOutputRequest(
+                    output_schema=output_schema,
+                    prompt=prompt + reminder,
+                    system=system,
+                    temperature=request.temperature,
+                )
+            elif messages is not None:
+                msgs = list(messages)
+                if msgs and msgs[-1].get("role") == "user":
+                    msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + reminder}
+                else:
+                    msgs.append({"role": "user", "content": reminder})
+                request = StructuredOutputRequest(
+                    output_schema=output_schema,
+                    messages=msgs,
+                    system=system,
+                    temperature=request.temperature,
+                )
+            result = provider.structured_output(request, model=cfg.model)
+            return self._coerce(result, output_schema)
+
+    @staticmethod
+    def _coerce(result: Any, output_schema: Type[T]) -> T:
         if not isinstance(result, output_schema):
-            # provider 实现可能返回 dict 或其他类型，尝试强制转换
             if isinstance(result, dict):
                 return output_schema.model_validate(result)
             raise LLMError(
-                f"Provider {cfg.provider} 返回类型 {type(result)} 不符合 {output_schema}"
+                f"Provider 返回类型 {type(result)} 不符合 {output_schema}"
             )
         return result
 

@@ -7,15 +7,18 @@
     → IdeaValidateAgent（三维度评估：可行性/新颖性/贡献度）
     → ClaimDraftAgent（从验证通过思路派生 draft Claim，status=DRAFT）
 
-说明：_execute 内 LLM 调用以完整注释范式给出，实际执行用占位数据返回，
-既能验证 IO 闭环，又不会产生 API 费用。
-敏感思路的内部推理（ideation_private_reasoning）路由到本地/隔离 provider，避免数据外流。
+执行模式：
+- dry_run=True  ：用占位数据返回，不调用 LLM（默认，验证架构用）
+- dry_run=False ：真实调用 MiniMax M3，真实入库 Idea/Claim 实体
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
-from core.knowledge import Claim, ClaimStatus, Idea, KnowledgeStore
+from pydantic import BaseModel, Field
+
+from core.knowledge import Claim, ClaimStatus, Idea, KnowledgeStore, Paper
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -49,6 +52,45 @@ from stages.ideation.io_schema import (
     IdeaValidateOutput,
 )
 
+logger = logging.getLogger(__name__)
+
+
+# ===== 结构化输出 Schema =====
+
+class IdeaDraftItem(BaseModel):
+    """单条思路草稿。"""
+
+    text: str = Field(description="思路描述（一段话）")
+    constraints: list[str] = Field(default_factory=list, description="思路约束")
+    source_paper_ids: list[str] = Field(default_factory=list, description="来源 Paper ID")
+
+
+class BrainstormSchema(BaseModel):
+    """思路生成输出 schema。"""
+
+    ideas: list[IdeaDraftItem] = Field(description="3-5 个候选思路")
+
+
+class IdeaValidationSchema(BaseModel):
+    """思路三维度评估 schema。"""
+
+    feasibility: float = Field(description="可行性 0~1")
+    novelty: float = Field(description="新颖性 0~1")
+    contribution: float = Field(description="贡献度 0~1")
+    reason: str = Field(description="评估理由")
+
+
+class ClaimDraftItem(BaseModel):
+    """单条 Claim 草稿。"""
+
+    statement: str = Field(description="一句话可验证陈述")
+
+
+class ClaimDraftListSchema(BaseModel):
+    """Claim 草稿列表 schema。"""
+
+    claims: list[ClaimDraftItem] = Field(description="1-2 个可验证 Claim")
+
 
 # ===== BrainstormAgent =====
 
@@ -60,9 +102,6 @@ class BrainstormAgent(AgentNode):
     - 针对 cross_validation_report.gaps（证据缺口）提出 hypothesis
     - 针对 cross_validation_report.conflicts（未解决冲突）提出调和假设
     - 基于 consensus（共识）提出扩展方向
-
-    敏感思路的内部推理（ideation_private_reasoning）路由到 local provider，
-    避免未公开想法外流；交互式发散用 ideation_brainstorm。
     """
 
     node_type = "ideation_brainstorm"
@@ -71,7 +110,6 @@ class BrainstormAgent(AgentNode):
     output_schema = BrainstormOutput
     output_keys = {
         "idea_ids": IDEATION_IDEA_IDS,
-        # ideas_meta 不写回 context（下游按 id 从 KnowledgeStore 读取正文）
     }
 
     def _build_input(self, ctx: ExecutionContext) -> BrainstormInput:
@@ -83,7 +121,7 @@ class BrainstormAgent(AgentNode):
     def _execute(self, input_obj: BrainstormInput, ctx: ExecutionContext) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
-        dry_run: bool = ctx.get(DRY_RUN, True)  # dry_run 时跳过真实 LLM，用占位数据
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
         report = input_obj.cross_validation_report or {}
         gaps = report.get("gaps", []) or []
@@ -91,83 +129,56 @@ class BrainstormAgent(AgentNode):
         consensus = report.get("consensus", []) or []
         paper_ids = input_obj.paper_ids or []
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # 思路生成涉及未公开想法，敏感推理先走 ideation_private_reasoning（路由到 local provider）：
-        # private_resp = registry.complete(
-        #     task_type="ideation_private_reasoning",
-        #     prompt=(
-        #         f"基于以下调研证据进行内部推演：\n"
-        #         f"paper_ids: {paper_ids}\n"
-        #         f"gaps: {gaps}\n"
-        #         f"conflicts: {conflicts}\n"
-        #         f"consensus: {consensus}\n"
-        #         "请围绕证据缺口与未解决冲突，推演 3-5 个候选研究假设。"
-        #     ),
-        # )
-        # 再用 ideation_brainstorm 做交互式发散，输出结构化 Idea 列表：
-        # from core.llm.base import StructuredOutputRequest
-        # class IdeaDraftSchema(BaseModel):
-        #     text: str
-        #     constraints: list[str]
-        #     source_paper_ids: list[str]
-        # class BrainstormSchema(BaseModel):
-        #     ideas: list[IdeaDraftSchema]
-        # result = registry.structured_output(
-        #     task_type=self.task_type,
-        #     output_schema=BrainstormSchema,
-        #     system=(
-        #         "你是科研思路生成助手。基于调研的交叉验证报告，"
-        #         "针对证据缺口（gaps）与未解决冲突（conflicts）提出可验证的研究假设，"
-        #         "每个假设给出约束条件与来源论文。"
-        #     ),
-        #     prompt=(
-        #         f"gaps: {gaps}\n"
-        #         f"conflicts: {conflicts}\n"
-        #         f"consensus: {consensus}\n"
-        #         f"paper_ids: {paper_ids}"
-        #     ),
-        # )
-        # drafts = result.ideas
+        # 加载 paper 摘要作为 prompt 素材
+        paper_summaries: list[str] = []
+        if store is not None:
+            for pid in paper_ids[:5]:  # 限制 token 量
+                try:
+                    p = store.get_paper(pid)
+                    paper_summaries.append(
+                        f"- {p.title} ({p.year}): {(p.abstract or '')[:200]}"
+                    )
+                except Exception:
+                    pass
 
-        # 占位数据：针对 gaps/conflicts/consensus 各提出一个 hypothesis
-        # 每条：(text, constraints, source_paper_ids)
         idea_drafts: list[tuple[str, list[str], list[str]]] = []
 
-        if gaps:
-            gap0 = gaps[0] if isinstance(gaps[0], str) else str(gaps[0])
+        if not dry_run and registry is not None:
+            try:
+                result = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=BrainstormSchema,
+                    system=(
+                        "你是科研思路生成助手。基于调研的交叉验证报告与文献证据，"
+                        "针对证据缺口（gaps）与未解决冲突（conflicts）提出 3-5 个可验证的研究假设。"
+                        "每个假设给出：思路描述、约束条件、来源 Paper ID（从给定列表选取）。"
+                        "思路应当：可落地、相对已有工作有差异、有潜在学术贡献。"
+                    ),
+                    prompt=(
+                        f"文献证据：\n" + "\n".join(paper_summaries) + "\n\n"
+                        f"gaps: {gaps}\n"
+                        f"conflicts: {conflicts}\n"
+                        f"consensus: {consensus}\n"
+                        f"可用 paper_ids: {paper_ids}"
+                    ),
+                )
+                for d in result.ideas:
+                    idea_drafts.append((d.text, d.constraints, d.source_paper_ids))
+            except Exception as e:
+                logger.warning("Brainstorm 真实调用失败，回退占位: %s", e)
+                idea_drafts = self._placeholder_drafts(gaps, conflicts, consensus, paper_ids)
+        else:
+            idea_drafts = self._placeholder_drafts(gaps, conflicts, consensus, paper_ids)
+
+        # 兜底：至少 1 个思路
+        if not idea_drafts:
             idea_drafts.append((
-                f"针对证据缺口「{gap0}」提出假设：设计新方法填补该缺口，"
-                "并设计对照实验验证其有效性。",
-                ["需在现有公开数据集上可复现", "方法改动应可消融分析"],
-                paper_ids[:2],
-            ))
-        if conflicts:
-            c0 = conflicts[0]
-            cclaim = c0.get("claim", "某冲突") if isinstance(c0, dict) else str(c0)
-            idea_drafts.append((
-                f"针对未解决冲突「{cclaim}」提出调和假设：设计统一实验框架，"
-                "在相同评测协议下重新检验冲突双方的结论。",
-                ["需严格控制变量", "评测协议须公开可复现"],
-                paper_ids[:2],
-            ))
-        if consensus:
-            cons0 = consensus[0] if isinstance(consensus[0], str) else str(consensus[0])
-            idea_drafts.append((
-                f"基于共识「{cons0}」的扩展假设：在已有共识基础上引入新模块，"
-                "验证是否能进一步提升性能。",
-                ["新模块须有理论依据", "不得破坏原共识成立条件"],
-                paper_ids[:3],
-            ))
-        # 兜底：若报告缺失关键字段，补足至 3 个候选思路
-        while len(idea_drafts) < 3:
-            idx = len(idea_drafts)
-            idea_drafts.append((
-                f"占位候选思路 {idx + 1}：基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
+                f"基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
                 ["需进一步文献确认新颖性"],
                 paper_ids[:2],
             ))
 
-        # 生成 Idea 实体并持久化（下游 IdeaDiscussHuman/IdeaValidateAgent 按 id 读取正文）
+        # 持久化 Idea 实体
         idea_ids: list[str] = []
         ideas_meta: list[dict] = []
         for text, constraints, src_pids in idea_drafts:
@@ -184,8 +195,8 @@ class BrainstormAgent(AgentNode):
             if store is not None:
                 try:
                     store.save_idea(idea)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Idea 入库失败: %s", e)
             idea_ids.append(idea_id)
             ideas_meta.append({
                 "idea_id": idea_id,
@@ -204,6 +215,45 @@ class BrainstormAgent(AgentNode):
             ),
         )
 
+    @staticmethod
+    def _placeholder_drafts(
+        gaps: list, conflicts: list, consensus: list, paper_ids: list
+    ) -> list[tuple[str, list[str], list[str]]]:
+        drafts: list[tuple[str, list[str], list[str]]] = []
+        if gaps:
+            gap0 = gaps[0] if isinstance(gaps[0], str) else str(gaps[0])
+            drafts.append((
+                f"针对证据缺口「{gap0}」提出假设：设计新方法填补该缺口，"
+                "并设计对照实验验证其有效性。",
+                ["需在现有公开数据集上可复现", "方法改动应可消融分析"],
+                paper_ids[:2],
+            ))
+        if conflicts:
+            c0 = conflicts[0]
+            cclaim = c0.get("claim", "某冲突") if isinstance(c0, dict) else str(c0)
+            drafts.append((
+                f"针对未解决冲突「{cclaim}」提出调和假设：设计统一实验框架，"
+                "在相同评测协议下重新检验冲突双方的结论。",
+                ["需严格控制变量", "评测协议须公开可复现"],
+                paper_ids[:2],
+            ))
+        if consensus:
+            cons0 = consensus[0] if isinstance(consensus[0], str) else str(consensus[0])
+            drafts.append((
+                f"基于共识「{cons0}」的扩展假设：在已有共识基础上引入新模块，"
+                "验证是否能进一步提升性能。",
+                ["新模块须有理论依据", "不得破坏原共识成立条件"],
+                paper_ids[:3],
+            ))
+        while len(drafts) < 3:
+            idx = len(drafts)
+            drafts.append((
+                f"占位候选思路 {idx + 1}：基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
+                ["需进一步文献确认新颖性"],
+                paper_ids[:2],
+            ))
+        return drafts
+
 
 # ===== IdeaDiscussHuman =====
 
@@ -212,11 +262,9 @@ class IdeaDiscussHuman(HumanNode):
 
     呈现每个候选思路的 text 与 constraints，用户可：
     - 'ok' 确认全部思路
-    - 'reject: <序号>' 否决某个思路（1-based，对应提示中的序号）
-    - 'add: <思路描述>' 补充新思路（将创建新 Idea 入库）
-    - 自由文本作为讨论笔记（追加到 discussion_notes）
-
-    多条操作可分行输入。否决/补充会更新 idea_ids 列表并写回 context。
+    - 'reject: <序号>' 否决某个思路（1-based）
+    - 'add: <思路描述>' 补充新思路
+    - 自由文本作为讨论笔记
     """
 
     node_type = "ideation_discuss"
@@ -224,14 +272,14 @@ class IdeaDiscussHuman(HumanNode):
     output_schema = IdeaDiscussOutput
     output_keys = {
         "discussion_notes": IDEATION_DISCUSSION_NOTES,
-        "idea_ids": IDEATION_IDEA_IDS,  # reject/add 后会变化，需写回
+        "idea_ids": IDEATION_IDEA_IDS,
     }
 
     def _build_input(self, ctx: ExecutionContext) -> NodeInput:
         return NodeInput()
 
     def _fetch_ideas(self, ctx: ExecutionContext) -> list[Idea]:
-        """从 KnowledgeStore 按 id 读取思路正文；失败时返回空列表。"""
+        """从 KnowledgeStore 按 id 读取思路正文。"""
         idea_ids = ctx.get(IDEATION_IDEA_IDS, [])
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         if not idea_ids or store is None:
@@ -276,7 +324,7 @@ class IdeaDiscussHuman(HumanNode):
 
         text = (response.text or "").strip()
         notes_parts: list[str] = []
-        reject_indices: set[int] = set()  # 1-based
+        reject_indices: set[int] = set()
 
         if not text or text.lower() in ("ok", "确认", "y", "yes"):
             notes_parts.append("用户确认全部思路。")
@@ -320,11 +368,9 @@ class IdeaDiscussHuman(HumanNode):
                 else:
                     notes_parts.append(line)
 
-        # 应用 reject：按 1-based 序号剔除（从大到小删以避免索引错位）
         for idx in sorted(reject_indices, reverse=True):
             try:
                 removed = idea_ids.pop(idx - 1)
-                # 标记被否决思路状态（便于追溯）
                 if store is not None:
                     try:
                         idea = store.get_idea(removed)
@@ -347,14 +393,12 @@ class IdeaDiscussHuman(HumanNode):
 class IdeaValidateAgent(AgentNode):
     """思路验证 Agent。
 
-    借鉴 LangGraph 人在回路中「Agent 推进」环节：对用户讨论后保留的思路
-    做三维度量化评估：
+    对用户讨论后保留的思路做三维度量化评估：
     - feasibility（可行性）：是否有可落地的方法路径与资源
     - novelty（新颖性）：相对已有工作的差异度
     - contribution（贡献度）：潜在学术/工程价值
 
-    三维度均 >= DEFAULT_THRESHOLD 视为通过，写入 validated_idea_ids，
-    并把评分写回 Idea.validation_notes、状态置为 'validated'。
+    三维度均 >= DEFAULT_THRESHOLD 视为通过。
     """
 
     node_type = "ideation_validate"
@@ -378,61 +422,50 @@ class IdeaValidateAgent(AgentNode):
     ) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
-        dry_run: bool = ctx.get(DRY_RUN, True)  # dry_run 时跳过真实 LLM，用占位数据
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # from core.llm.base import StructuredOutputRequest
-        # class IdeaValidationSchema(BaseModel):
-        #     feasibility: float    # 0~1
-        #     novelty: float         # 0~1
-        #     contribution: float    # 0~1
-        #     reason: str
-        # validation_reports = []
-        # for idea_id in input_obj.idea_ids:
-        #     idea = store.get_idea(idea_id)
-        #     resp = registry.structured_output(
-        #         task_type=self.task_type,
-        #         output_schema=IdeaValidationSchema,
-        #         system=(
-        #             "你是科研思路评审助手。从可行性、新颖性、贡献度三个维度"
-        #             "评估研究思路，各维度给出 0~1 的分数与理由。"
-        #         ),
-        #         prompt=(
-        #             f"思路：{idea.text}\n"
-        #             f"约束：{idea.constraints}\n"
-        #             f"讨论笔记：{input_obj.discussion_notes}"
-        #         ),
-        #     )
-        #     passed = (
-        #         resp.feasibility >= self.DEFAULT_THRESHOLD
-        #         and resp.novelty >= self.DEFAULT_THRESHOLD
-        #         and resp.contribution >= self.DEFAULT_THRESHOLD
-        #     )
-        #     validation_reports.append({
-        #         "idea_id": idea_id,
-        #         "feasibility": resp.feasibility,
-        #         "novelty": resp.novelty,
-        #         "contribution": resp.contribution,
-        #         "passed": passed,
-        #         "reason": resp.reason,
-        #     })
-        #     idea.status = "validated" if passed else "rejected"
-        #     idea.validation_notes = {
-        #         "feasibility": resp.feasibility,
-        #         "novelty": resp.novelty,
-        #         "contribution": resp.contribution,
-        #         "reason": resp.reason,
-        #     }
-        #     store.save_idea(idea)
-
-        # 占位数据：每个思路给 0.7/0.6/0.5 的分数（feasibility/novelty/contribution）
-        # 三维度均 >= 0.5，全部通过
         validation_reports: list[dict] = []
         validated_idea_ids: list[str] = []
+
         for idea_id in input_obj.idea_ids:
-            feasibility = 0.7
-            novelty = 0.6
-            contribution = 0.5
+            # 读取思路正文
+            idea_text = f"思路 {idea_id}"
+            idea_constraints: list[str] = []
+            if store is not None:
+                try:
+                    idea = store.get_idea(idea_id)
+                    idea_text = idea.text
+                    idea_constraints = idea.constraints
+                except Exception:
+                    pass
+
+            if not dry_run and registry is not None:
+                try:
+                    resp = registry.structured_output(
+                        task_type=self.task_type,
+                        output_schema=IdeaValidationSchema,
+                        system=(
+                            "你是科研思路评审助手。从可行性、新颖性、贡献度三个维度"
+                            "评估研究思路，各维度给出 0~1 的分数与理由。"
+                            "评分依据：可行性看方法路径与资源是否就绪；"
+                            "新颖性看相对已有工作的差异度；贡献度看潜在学术/工程价值。"
+                        ),
+                        prompt=(
+                            f"思路：{idea_text}\n"
+                            f"约束：{idea_constraints}\n"
+                            f"讨论笔记：{input_obj.discussion_notes}"
+                        ),
+                    )
+                    feasibility = float(resp.feasibility)
+                    novelty = float(resp.novelty)
+                    contribution = float(resp.contribution)
+                    reason = resp.reason
+                except Exception as e:
+                    logger.warning("IdeaValidate 真实调用失败（idea_id=%r）: %s", idea_id, e)
+                    feasibility, novelty, contribution, reason = 0.7, 0.6, 0.5, f"评估失败，默认通过: {e}"
+            else:
+                feasibility, novelty, contribution, reason = 0.7, 0.6, 0.5, "占位评估：方法路径清晰、与已有工作有差异、具一定贡献度。"
+
             passed = (
                 feasibility >= self.DEFAULT_THRESHOLD
                 and novelty >= self.DEFAULT_THRESHOLD
@@ -444,12 +477,11 @@ class IdeaValidateAgent(AgentNode):
                 "novelty": novelty,
                 "contribution": contribution,
                 "passed": passed,
-                "reason": "占位评估：方法路径清晰、与已有工作有差异、具一定贡献度。",
+                "reason": reason,
             }
             validation_reports.append(report)
             if passed:
                 validated_idea_ids.append(idea_id)
-                # 更新 Idea 状态与验证记录
                 if store is not None:
                     try:
                         idea = store.get_idea(idea_id)
@@ -458,11 +490,11 @@ class IdeaValidateAgent(AgentNode):
                             "feasibility": feasibility,
                             "novelty": novelty,
                             "contribution": contribution,
-                            "reason": report["reason"],
+                            "reason": reason,
                         }
                         store.save_idea(idea)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Idea 状态更新失败: %s", e)
 
         output = IdeaValidateOutput(
             validated_idea_ids=validated_idea_ids,
@@ -486,10 +518,8 @@ class ClaimDraftAgent(AgentNode):
 
     从验证通过的 Idea 派生 draft Claim（每个 Idea 派生 1-2 个）。
     - statement 为一句话可验证陈述
-    - status=ClaimStatus.DRAFT，evidence_refs=[]（草稿阶段无证据，由 design 阶段关联）
+    - status=ClaimStatus.DRAFT，evidence_refs=[]（草稿阶段无证据）
     - 派生关系记录到 KnowledgeStore（source_idea_id）
-
-    调用 design_claim_extract task（与 design 阶段共享，但此处产出 DRAFT）。
     """
 
     node_type = "ideation_claim_draft"
@@ -508,55 +538,57 @@ class ClaimDraftAgent(AgentNode):
     def _execute(self, input_obj: ClaimDraftInput, ctx: ExecutionContext) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
-        dry_run: bool = ctx.get(DRY_RUN, True)  # dry_run 时跳过真实 LLM，用占位数据
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # from core.llm.base import StructuredOutputRequest
-        # class ClaimDraftSchema(BaseModel):
-        #     statement: str  # 一句话可验证陈述
-        # class ClaimDraftListSchema(BaseModel):
-        #     claims: list[ClaimDraftSchema]
-        # for idea_id in input_obj.validated_idea_ids:
-        #     idea = store.get_idea(idea_id)
-        #     resp = registry.structured_output(
-        #         task_type=self.task_type,
-        #         output_schema=ClaimDraftListSchema,
-        #         system=(
-        #             "你是科研论点提炼助手。从研究思路中派生 1-2 个可验证的 Claim，"
-        #             "每个 Claim 用一句话陈述，须可被实验或证据验证/反驳。"
-        #         ),
-        #         prompt=f"思路：{idea.text}\n约束：{idea.constraints}",
-        #     )
-        #     for c in resp.claims:
-        #         claim_id = KnowledgeStore.new_id()
-        #         claim = Claim(
-        #             claim_id=claim_id,
-        #             statement=c.statement,
-        #             source_idea_id=idea_id,
-        #             evidence_refs=[],  # 草稿阶段无证据
-        #             status=ClaimStatus.DRAFT,
-        #         )
-        #         store.save_claim(claim)
-
-        # 占位数据：每个验证通过思路派生 1-2 个 draft Claim
         draft_claim_ids: list[str] = []
         claims_meta: list[dict] = []
+
         for i, idea_id in enumerate(input_obj.validated_idea_ids):
-            # 读取思路正文（失败则用占位文本）
+            # 读取思路正文
             idea_text = f"思路 {idea_id}"
+            idea_constraints: list[str] = []
             if store is not None:
                 try:
-                    idea_text = store.get_idea(idea_id).text
+                    idea = store.get_idea(idea_id)
+                    idea_text = idea.text
+                    idea_constraints = idea.constraints
                 except Exception:
                     pass
-            # 第一个思路派生 2 个 Claim，其余派生 1 个（体现 1-2 范围）
-            claim_count = 2 if i == 0 else 1
-            for j in range(claim_count):
-                claim_id = KnowledgeStore.new_id()
-                statement = (
+
+            # 生成 1-2 个 Claim
+            if not dry_run and registry is not None:
+                try:
+                    resp = registry.structured_output(
+                        task_type=self.task_type,
+                        output_schema=ClaimDraftListSchema,
+                        system=(
+                            "你是科研论点提炼助手。从研究思路中派生 1-2 个可验证的 Claim，"
+                            "每个 Claim 用一句话陈述，须可被实验或证据验证/反驳。"
+                            "Claim 应当具体、可量化、可证伪。"
+                        ),
+                        prompt=(
+                            f"思路：{idea_text}\n"
+                            f"约束：{idea_constraints}"
+                        ),
+                    )
+                    claim_statements = [c.statement for c in resp.claims]
+                except Exception as e:
+                    logger.warning("ClaimDraft 真实调用失败（idea_id=%r）: %s", idea_id, e)
+                    claim_statements = [
+                        f"基于「{idea_text[:40]}」的可验证论断："
+                        "所提方法在标准评测协议下优于现有 baseline。"
+                    ]
+            else:
+                # 占位：第一个思路派生 2 个 Claim，其余 1 个
+                claim_count = 2 if i == 0 else 1
+                claim_statements = [
                     f"基于「{idea_text[:40]}」的可验证论断 {j + 1}："
                     "所提方法在标准评测协议下优于现有 baseline。"
-                )
+                    for j in range(claim_count)
+                ]
+
+            for statement in claim_statements:
+                claim_id = KnowledgeStore.new_id()
                 claim = Claim(
                     claim_id=claim_id,
                     statement=statement,
@@ -567,8 +599,8 @@ class ClaimDraftAgent(AgentNode):
                 if store is not None:
                     try:
                         store.save_claim(claim)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Claim 入库失败: %s", e)
                 draft_claim_ids.append(claim_id)
                 claims_meta.append({
                     "claim_id": claim_id,

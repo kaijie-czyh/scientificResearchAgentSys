@@ -185,6 +185,42 @@ tasks:
     temperature: 0.4
     description: "根据 Claim 与实验结果起草论文章节（兼容旧节点）"
 
+  # ===== 构效关系发现阶段（路线 A：材料科学文献驱动智能体）=====
+  # LLM 从 Research Gap 生成候选构效关系假设作为搜索种子
+  discovery_hypothesis_seed:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.5
+    description: "从 Research Gap 与文献证据生成候选构效关系假设（搜索种子）"
+
+  # 定义搜索空间：材料变量/性能目标/物理约束，并从文献抽取数据点
+  discovery_search_space:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.2
+    description: "定义构效关系搜索空间，从文献抽取 (结构, 性能) 数据点"
+
+  # LLM 引导搜索：生成候选配置 + 评估科学合理性 + 引导剪枝（核心创新）
+  discovery_llm_guided_search:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.4
+    description: "LLM 深度参与搜索过程：生成候选、评估中间结果、引导剪枝"
+
+  # 验证发现的构效关系：交叉验证文献、评估新颖性、关联证据链
+  discovery_validate:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.2
+    description: "验证候选构效关系：文献交叉验证 + 新颖性评估 + 证据链关联"
+
+  # 生成结构化发现报告（含物理机制解释）
+  discovery_report:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.3
+    description: "生成构效关系发现报告，含物理机制解释与证据链"
+
 # 嵌入模型（独立配置，所有向量检索共用）
 # 注意：MiniMax 暂不提供嵌入 API。
 # - 用户配置了 OPENAI_API_KEY 时走 OpenAI text-embedding-3-small

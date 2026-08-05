@@ -1,0 +1,60 @@
+"""科研工具集（外部 API / 数据检索）。
+
+模块化设计：每个工具独立，便于按需导入与替换。
+- arxiv_search: arxiv API 检索（research 阶段真实文献抓取）
+- text_split: 文本切分（PaperIngestAgent chunk 化）
+- semantic_scholar: Semantic Scholar API 检索（补充 arxiv 之外的引用图谱）
+- sciverse_search: Sciverse 科学智能数据库（赛题推荐，证据片段级检索）
+- code_runner: 沙盒代码运行（experiment 阶段执行 LLM 生成的代码）
+- materials_search: 构效关系搜索（路线 A：MCTS + 文献代理模型 + LLM 融合）
+"""
+from __future__ import annotations
+
+from core.tools.arxiv_search import ArxivPaper, search_arxiv
+from core.tools.code_runner import RunResult, check_syntax, run_python_code
+from core.tools.materials_search import (
+    LiteraturePoint,
+    MCTSSearcher,
+    SearchCandidate,
+    SearchVariable,
+    SurrogateModel,
+    build_literature_points,
+    build_search_variables,
+    perturb_config,
+)
+from core.tools.sciverse_search import (
+    SciverseEvidence,
+    agentic_search as sciverse_agentic_search,
+    is_available as sciverse_is_available,
+    meta_catalog as sciverse_meta_catalog,
+    meta_search as sciverse_meta_search,
+    read_content as sciverse_read_content,
+)
+from core.tools.semantic_scholar import S2Paper, search_semantic_scholar
+from core.tools.text_split import split_into_chunks
+
+__all__ = [
+    "ArxivPaper",
+    "search_arxiv",
+    "S2Paper",
+    "search_semantic_scholar",
+    "SciverseEvidence",
+    "sciverse_agentic_search",
+    "sciverse_meta_catalog",
+    "sciverse_meta_search",
+    "sciverse_read_content",
+    "sciverse_is_available",
+    "split_into_chunks",
+    "RunResult",
+    "run_python_code",
+    "check_syntax",
+    "LiteraturePoint",
+    "MCTSSearcher",
+    "SearchCandidate",
+    "SearchVariable",
+    "SurrogateModel",
+    "build_literature_points",
+    "build_search_variables",
+    "perturb_config",
+]
+
