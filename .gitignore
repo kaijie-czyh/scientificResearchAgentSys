@@ -44,3 +44,5 @@ mlruns/
 realrun*.txt
 run_log.txt
 _test_api.py
+*.log
+diag_*.py

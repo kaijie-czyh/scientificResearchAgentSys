@@ -221,6 +221,22 @@ tasks:
     temperature: 0.3
     description: "生成构效关系发现报告，含物理机制解释与证据链"
 
+# ===== 方向推荐阶段（topic_discovery：研究趋势发现与主题推荐）=====
+# 趋势分析（纯统计计算，不调用 LLM，但 task_type 声明用于路由兼容）
+  topic_trend_analysis:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.2
+    description: "关键词趋势分析（增长率计算 + 新兴/稳定/饱和方向分类）"
+
+  # LLM 生成推荐研究主题：解读趋势数据 + 推荐材料体系 + 评估创新性
+  topic_recommend:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.5
+    description: "根据领域趋势分析结果，LLM 生成 3-5 个推荐研究主题（含创新切入点与材料体系推荐）"
+
+
 # 嵌入模型（独立配置，所有向量检索共用）
 # 注意：MiniMax 暂不提供嵌入 API。
 # - 用户配置了 OPENAI_API_KEY 时走 OpenAI text-embedding-3-small

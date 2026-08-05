@@ -231,6 +231,28 @@ body {
     box-shadow: var(--shadow-sm);
 }
 
+/* 方向推荐卡片：可点击选中 */
+.rec-card {
+    cursor: pointer;
+    transition: outline 0.15s ease, background 0.15s ease;
+}
+.rec-card:hover {
+    outline: 1px solid var(--color-accent, #2f80ed);
+}
+.rec-card.rec-selected {
+    outline: 2px solid var(--color-accent, #2f80ed);
+    background: var(--status-info-bg, #eaf2fd);
+}
+.rec-tags {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+.rec-hint {
+    opacity: 0.75;
+}
+
 .card-title {
     font-size: 14px;
     font-weight: 600;

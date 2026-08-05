@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # 确保项目根在 sys.path（python -m web.api 已保证，但直接运行脚本时需补充）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -27,6 +27,44 @@ if str(_PROJECT_ROOT) not in sys.path:
 from runtime.cli import _load_env  # noqa: E402
 
 _load_env()
+
+
+def _guard_single_instance() -> None:
+    """启动时检测端口冲突，防止多 uvicorn 实例分裂内存状态。
+
+    多实例会导致 _PROJECTS / _BRIDGE（进程内存单例）互相不可见：
+    人工节点提交失败、项目进度丢失。本函数在模块 import 时探测端口。
+
+    兼容性：
+    - python -m web.api：import 时端口尚未被自己绑定，能准确识别旧实例。
+    - uvicorn web.api:app / --reload：worker 子进程 import 本模块时端口尚未被自己
+      绑定，不会误判；若检测到旧实例则报错退出（reload supervisor 会反复重启，
+      必须先清理旧实例）。
+    - 测试/嵌入式场景：设 SRA_WEB_SKIP_GUARD=1 跳过。
+    """
+    if os.environ.get("SRA_WEB_SKIP_GUARD", "").lower() in ("1", "true", "yes"):
+        return
+    import socket
+
+    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("0.0.0.0", port))
+    except OSError:
+        print(
+            f"[FATAL] 端口 {port} 已被占用，检测到另一个 uvicorn 实例在运行。\n"
+            "多实例会导致项目状态互相不可见（人工节点提交失败、进度丢失）。\n"
+            "请先停止旧实例再启动：\n"
+            f"  netstat -ano | findstr :{port}\n"
+            "  taskkill /PID <pid> /F",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    finally:
+        probe.close()
+
+
+_guard_single_instance()
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
@@ -47,6 +85,11 @@ from runtime.pipeline import Pipeline, PipelineResult  # noqa: E402
 
 class CreateProjectRequest(BaseModel):
     topic: str
+
+
+class TopicDiscoveryRequest(BaseModel):
+    """方向推荐请求。"""
+    interest: str
 
 
 class NoteRequest(BaseModel):
@@ -78,7 +121,12 @@ class HumanCallbackBridge:
         # project_id -> HumanResponse，由 REST 接口注入
         self._responses: dict[str, HumanResponse] = {}
 
-    def make_callback(self, project_id: str):
+    def make_callback(
+        self,
+        project_id: str,
+        on_pending: Optional[Callable[[], None]] = None,
+        on_resume: Optional[Callable[[], None]] = None,
+    ):
         def _cb(req: HumanRequest) -> HumanResponse:
             event = threading.Event()
             payload = {
@@ -91,8 +139,14 @@ class HumanCallbackBridge:
             with self._lock:
                 self._pending[project_id] = payload
                 self._events[project_id] = event
+            # 通知外部（工作线程）项目进入人工等待状态
+            if on_pending is not None:
+                on_pending()
             # 阻塞直到 REST 接口提交响应或超时
             triggered = event.wait(timeout=3600)
+            # 收到响应/超时后恢复 running
+            if on_resume is not None:
+                on_resume()
             with self._lock:
                 resp = self._responses.pop(project_id, None)
                 self._pending.pop(project_id, None)
@@ -145,7 +199,9 @@ class ProjectState:
     recommendation: str = ""
     # 路线 A：构效关系发现产出（从 discovery 子图 context 收集）
     discovery: dict = field(default_factory=dict)
-    # 当前运行模式：pipeline / discovery
+    # 方向推荐产出（从 topic_discovery 子图收集）
+    topic_discovery: dict = field(default_factory=dict)
+    # 当前运行模式：pipeline / discovery / topic_discovery
     run_mode: str = ""
 
 
@@ -160,16 +216,27 @@ _LOCK = threading.Lock()
 # ===== Pipeline 工作线程 =====
 
 
+def _set_state_status(state: ProjectState, status: str) -> None:
+    """线程安全更新项目状态。"""
+    with _LOCK:
+        state.status = status
+
+
 def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
     """工作线程函数：执行 Pipeline 并更新项目状态。"""
     state = _PROJECTS.get(project_id)
     if state is None:
         return
     try:
-        state.status = "running"
+        _set_state_status(state, "running")
         pipeline = Pipeline(config=_CONFIG)
         # dry_run 模式下也使用桥接回调，让用户能介入；非 dry_run 同样使用桥接
-        human_cb = _BRIDGE.make_callback(project_id)
+        # 人工等待期间将 status 置为 pending_human，前端可明确感知
+        human_cb = _BRIDGE.make_callback(
+            project_id,
+            on_pending=lambda: _set_state_status(state, "pending_human"),
+            on_resume=lambda: _set_state_status(state, "running"),
+        )
         result: PipelineResult = pipeline.run_pipeline(
             project_id=project_id,
             topic=topic,
@@ -193,10 +260,14 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
     if state is None:
         return
     try:
-        state.status = "running"
+        _set_state_status(state, "running")
         state.run_mode = "discovery"
         pipeline = Pipeline(config=_CONFIG)
-        human_cb = _BRIDGE.make_callback(project_id)
+        human_cb = _BRIDGE.make_callback(
+            project_id,
+            on_pending=lambda: _set_state_status(state, "pending_human"),
+            on_resume=lambda: _set_state_status(state, "running"),
+        )
         result: PipelineResult = pipeline.run_discovery(
             project_id=project_id,
             topic=topic,
@@ -242,6 +313,97 @@ def _extract_discovery_summary(node_history: list[dict]) -> dict:
                             h["summary"].split("其中 ")[1].split(" 条")[0])
                 except (IndexError, ValueError):
                     pass
+    return summary
+
+
+def _run_topic_discovery_thread(project_id: str, interest: str, resume: bool) -> None:
+    """工作线程函数：执行方向推荐并更新项目状态。"""
+    state = _PROJECTS.get(project_id)
+    if state is None:
+        return
+    try:
+        _set_state_status(state, "running")
+        state.run_mode = "topic_discovery"
+        pipeline = Pipeline(config=_CONFIG)
+        human_cb = _BRIDGE.make_callback(
+            project_id,
+            on_pending=lambda: _set_state_status(state, "pending_human"),
+            on_resume=lambda: _set_state_status(state, "running"),
+        )
+        def _publish_recommendations(recs: list[dict]) -> None:
+            """推荐就绪时提前写入 state，供 pending_human 状态下前端展示卡片。"""
+            with _LOCK:
+                state.topic_discovery = {
+                    **state.topic_discovery,
+                    "recommendations": recs,
+                    "interest": interest,
+                }
+
+        result: PipelineResult = pipeline.run_topic_discovery(
+            project_id=project_id,
+            interest=interest,
+            human_callback=human_cb,
+            auto_research=False,
+            resume=resume,
+            on_recommendations=_publish_recommendations,
+        )
+        state.last_result = result
+        state.status = result.status
+        state.summary = result.summary
+        state.recommendation = result.recommendation
+        state.node_history = result.node_history or []
+        # 存储方向推荐完整数据（推荐列表 + 选择结果）
+        state.topic_discovery = result.extra or {}
+    except Exception as e:  # noqa: BLE001
+        state.status = "failed"
+        state.error = f"{type(e).__name__}: {e}"
+        state.summary = f"TopicDiscovery 执行异常: {e}"
+
+
+def _extract_topic_discovery_summary(node_history: list[dict]) -> dict:
+    """从节点历史提取方向推荐产出摘要。"""
+    summary = {
+        "trends_fetched": False,
+        "emerging_count": 0,
+        "stable_count": 0,
+        "saturated_count": 0,
+        "recommendations_count": 0,
+        "selected_topic": "",
+        "nodes": [],
+    }
+    for h in node_history or []:
+        node_id = h.get("node_id", "")
+        if node_id in ("trend_fetch", "trend_analysis", "topic_recommend", "topic_select"):
+            summary["nodes"].append({
+                "node_id": node_id,
+                "status": h.get("status"),
+                "summary": h.get("summary", ""),
+            })
+            if node_id == "trend_fetch":
+                summary["trends_fetched"] = True
+            if node_id == "trend_analysis":
+                # 从 summary 提取数量
+                s = h.get("summary", "")
+                try:
+                    if "个新兴方向" in s:
+                        summary["emerging_count"] = int(s.split("个新兴方向")[0].split("：")[-1])
+                    if "个稳定方向" in s:
+                        summary["stable_count"] = int(s.split("个稳定方向")[0].split("，")[-1])
+                    if "个饱和方向" in s:
+                        summary["saturated_count"] = int(s.split("个饱和方向")[0].split("，")[-1])
+                except (IndexError, ValueError):
+                    pass
+            if node_id == "topic_recommend":
+                s = h.get("summary", "")
+                try:
+                    if "个推荐主题" in s:
+                        summary["recommendations_count"] = int(s.split("生成")[1].split("个")[0])
+                except (IndexError, ValueError):
+                    pass
+            if node_id == "topic_select":
+                s = h.get("summary", "")
+                # 用户选择的主题会通过 context 写入，这里只是标记
+                summary["selected_topic"] = ""
     return summary
 
 
@@ -322,6 +484,7 @@ def get_status(project_id: str) -> dict:
         "node_history": state.node_history,
         "counts": counts,
         "pending_human": pending,
+        "topic_discovery": state.topic_discovery,
     }
 
 
@@ -397,6 +560,49 @@ def get_discoveries(project_id: str) -> dict:
         "project_id": project_id,
         "discovery_summary": state.discovery,
         "relationships": relationships,
+        "run_mode": state.run_mode,
+    }
+
+
+@app.post("/api/projects/{project_id}/run-topic-discovery")
+def run_topic_discovery(project_id: str, req: TopicDiscoveryRequest) -> dict:
+    """启动方向推荐（topic_discovery 子图）。
+
+    在用户给定主题之前，主动分析领域趋势、推荐研究主题。
+    异步执行，推荐结果通过 /recommendations 接口查询，
+    用户选择通过 /human-response 接口提交。
+    """
+    state = _require_project(project_id)
+    interest = (req.interest or "").strip()
+    if not interest:
+        raise HTTPException(status_code=400, detail="interest 不能为空")
+    if state.status == "running":
+        raise HTTPException(status_code=409, detail="任务正在运行中")
+    if state.status == "pending_human":
+        raise HTTPException(
+            status_code=409,
+            detail="当前等待人工响应，请先提交 human-response 或中止",
+        )
+    resume = state.status not in ("created",)
+    thread = threading.Thread(
+        target=_run_topic_discovery_thread,
+        args=(project_id, interest, resume),
+        daemon=True,
+    )
+    state.thread = thread
+    state.error = None
+    state.topic = interest  # 更新 topic 为用户输入的研究兴趣
+    thread.start()
+    return {"project_id": project_id, "message": "topic_discovery 已启动", "interest": interest}
+
+
+@app.get("/api/projects/{project_id}/recommendations")
+def get_recommendations(project_id: str) -> dict:
+    """获取方向推荐产出（推荐主题列表 + 趋势分析摘要）。"""
+    state = _require_project(project_id)
+    return {
+        "project_id": project_id,
+        "topic_discovery_summary": state.topic_discovery,
         "run_mode": state.run_mode,
     }
 
@@ -516,9 +722,14 @@ def submit_human_response(project_id: str, req: HumanResponseRequest) -> dict:
     )
     ok = _BRIDGE.submit(project_id, resp)
     if not ok:
-        # 没有等待中的人工请求，仍记录状态便于前端展示
-        state.summary = "未找到等待中的人工请求，响应已忽略"
-        return {"project_id": project_id, "submitted": False, "message": "无等待中的人工请求"}
+        # 没有等待中的人工请求：可能已提交、已超时、被清除，或多实例分裂
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "当前没有等待中的人工请求：可能已提交、已超时或被清除。"
+                "请刷新页面查看最新状态。"
+            ),
+        )
     return {"project_id": project_id, "submitted": True, "action": action}
 
 
@@ -529,7 +740,14 @@ def _require_project(project_id: str) -> ProjectState:
     with _LOCK:
         state = _PROJECTS.get(project_id)
     if state is None:
-        raise HTTPException(status_code=404, detail=f"项目不存在: {project_id}")
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"项目不存在: {project_id}"
+                "（若刚重启服务，内存项目列表已丢失，请重新创建项目；"
+                "若访问了错误端口，请确认 8001 单实例）"
+            ),
+        )
     return state
 
 
@@ -548,4 +766,5 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("web.api:app", host="0.0.0.0", port=8000, reload=False)
+    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    uvicorn.run("web.api:app", host="0.0.0.0", port=port, reload=False)

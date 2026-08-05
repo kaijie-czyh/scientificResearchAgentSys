@@ -87,6 +87,19 @@ WRITING_REVIEW_NOTES = ContextKey[str]("writing.review_notes")
 WRITING_PAPER_DRAFT_ARTIFACT_ID = ContextKey[str]("writing.paper_draft_artifact_id")
 
 
+# ===== topic_discovery 阶段域键（方向推荐：研究趋势发现）=====
+# 用户研究兴趣输入
+TOPIC_DISCOVERY_INTEREST = ContextKey[str]("topic_discovery.interest")
+# 关键词年度频率数据：{keyword: {year: count}}
+TOPIC_DISCOVERY_TRENDS = ContextKey[dict]("topic_discovery.trends")
+# 趋势分析结果：{emerging: [...], stable: [...], saturated: [...], all_keywords: [...]}
+TOPIC_DISCOVERY_ANALYSIS = ContextKey[dict]("topic_discovery.analysis")
+# LLM 推荐的研究主题列表：[{topic, rationale, innovation_point, recommended_materials, trend_data}]
+TOPIC_DISCOVERY_RECOMMENDATIONS = ContextKey[list[dict]]("topic_discovery.recommendations")
+# 用户选择的推荐主题（写入 RESEARCH_TOPIC，接入原有 research 流程）
+TOPIC_DISCOVERY_SELECTED_TOPIC = ContextKey[str]("topic_discovery.selected_topic")
+
+
 # ===== discovery 阶段域键（路线 A：构效关系发现）=====
 # 候选构效关系假设（搜索种子）：[{hypothesis, variables, target_property, rationale, gap_ref}]
 DISCOVERY_HYPOTHESES = ContextKey[list[dict]]("discovery.hypotheses")

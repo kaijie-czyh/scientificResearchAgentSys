@@ -54,6 +54,9 @@ from stages.common import (
     PROJECT_ROOT,
     PROVENANCE_VALIDATOR,
     RESEARCH_TOPIC,
+    TOPIC_DISCOVERY_INTEREST,
+    TOPIC_DISCOVERY_RECOMMENDATIONS,
+    TOPIC_DISCOVERY_SELECTED_TOPIC,
 )
 
 
@@ -89,6 +92,8 @@ class PipelineResult:
     experiment_outcome: Optional[dict] = None
     recommendation: str = ""
     node_history: list[dict] = field(default_factory=list)
+    # 额外的上下文数据（如方向推荐的推荐列表、趋势数据等）
+    extra: dict = field(default_factory=dict)
 
 
 class Pipeline:
@@ -141,8 +146,15 @@ class Pipeline:
 
         return session, ctx
 
-    def resume_project(self, project_id: str) -> tuple[ProjectSession, ExecutionContext]:
-        """从已有项目恢复（用于中断后续跑）。"""
+    def resume_project(
+        self, project_id: str, topic: str = ""
+    ) -> tuple[ProjectSession, ExecutionContext]:
+        """从已有项目恢复（用于中断后续跑）。
+
+        Args:
+            topic: 研究主题。ProjectSession 快照不持久化 topic，必须由调用方传入，
+                   否则恢复后 RESEARCH_TOPIC 为空，检索阶段会拿到空主题。
+        """
         session = ProjectSession.load(project_id, self.paths)
         ctx = ExecutionContext(project_id=project_id)
         # 重新注入依赖（依赖不持久化在 context 里，每次恢复时重建）
@@ -155,6 +167,8 @@ class Pipeline:
         ctx.set(DRY_RUN, self.config.dry_run)
         ctx.set(PROJECT_ROOT, self.paths.root)
         ctx.set(PROJECT_DIR, self.paths.project_dir(project_id))
+        # 补：恢复研究主题（否则下游 research 阶段拿到空主题）
+        ctx.set(RESEARCH_TOPIC, topic)
         return session, ctx
 
     # ===== 阶段图构建 =====
@@ -293,7 +307,7 @@ class Pipeline:
         """
         # 初始化或恢复
         if resume:
-            session, ctx = self.resume_project(project_id)
+            session, ctx = self.resume_project(project_id, topic)
         else:
             session, ctx = self.start_project(project_id, topic)
 
@@ -404,7 +418,7 @@ class Pipeline:
             PipelineResult，summary 含发现概览，node_history 含 discovery 节点历史
         """
         if resume:
-            session, ctx = self.resume_project(project_id)
+            session, ctx = self.resume_project(project_id, topic)
         else:
             session, ctx = self.start_project(project_id, topic)
 
@@ -480,4 +494,128 @@ class Pipeline:
         )
         result.node_history = ctx.history()
         result.recommendation = "discovery_completed"
+        return result
+
+    # ===== 方向推荐（topic_discovery）=====
+
+    def run_topic_discovery(
+        self,
+        project_id: str,
+        interest: str,
+        human_callback: Optional[HumanCallback] = None,
+        auto_research: bool = False,
+        resume: bool = False,
+        on_recommendations: Optional[Callable[[list[dict]], None]] = None,
+    ) -> PipelineResult:
+        """运行方向推荐（topic_discovery 子图）。
+
+        在用户给定主题之前，主动分析领域趋势、发现新兴方向、推荐研究主题。
+        作为 research 阶段的可选前置入口，不修改原有流程。
+
+        流程：
+        1. 趋势数据获取（arXiv API + 关键词频率统计）
+        2. 趋势分析（增长率计算 + 新兴/稳定/饱和分类）
+        3. 主题推荐（LLM 生成 3-5 个推荐主题）
+        4. 用户选择（写入 RESEARCH_TOPIC）
+
+        Args:
+            project_id: 项目 ID
+            interest: 用户研究兴趣/领域关键词（如 "thermoelectric materials"）
+            human_callback: 人工节点回调（用于 TopicSelectHuman）
+            auto_research: 用户选择主题后是否自动进入 research 阶段
+            resume: 是否从已有项目恢复
+            on_recommendations: 推荐结果就绪时回调（在进入人工等待前触发），
+                供 Web 层在 pending_human 状态下提前展示推荐卡片
+
+        Returns:
+            PipelineResult，summary 含推荐与选择概览
+        """
+        if resume:
+            session, ctx = self.resume_project(project_id, interest)
+        else:
+            session, ctx = self.start_project(project_id, interest)
+
+        result = PipelineResult(project_id=project_id, status="running")
+
+        # 设置研究兴趣
+        ctx.set(TOPIC_DISCOVERY_INTEREST, interest)
+
+        # 运行 topic_discovery 子图
+        from stages.topic_discovery.graph import build_topic_discovery_graph
+
+        graph = build_topic_discovery_graph()
+        runner = GraphRunner(graph, ctx)
+        ctx.current_stage = "topic_discovery"
+
+        runner.start()
+
+        # 推荐结果就绪（进入人工等待前），推给外部（Web 层可在 pending_human 展示卡片）
+        if on_recommendations is not None:
+            recs = ctx.get(TOPIC_DISCOVERY_RECOMMENDATIONS, []) or []
+            if recs:
+                on_recommendations(recs)
+
+        # 处理人工节点阻塞（TopicSelectHuman）
+        while runner.is_pending_human():
+            if human_callback is None:
+                req = runner.pending_human_request()
+                result.status = "pending_human"
+                result.summary = "方向推荐等待用户选择主题"
+                return result
+            req = runner.pending_human_request()
+            resp = human_callback(req)
+            runner.resume_after_human(resp)
+
+        if runner.is_aborted():
+            result.status = "aborted"
+            result.summary = "方向推荐被中止"
+            result.node_history = ctx.history()
+            return result
+
+        final = runner.final_result()
+        if final is not None and final.status == NodeStatus.FAILED:
+            result.status = "failed"
+            result.summary = final.summary or "方向推荐失败"
+            result.node_history = ctx.history()
+            return result
+
+        # 收集产出
+        recommendations = ctx.get(TOPIC_DISCOVERY_RECOMMENDATIONS, []) or []
+        selected_topic = ctx.get(TOPIC_DISCOVERY_SELECTED_TOPIC, "") or ""
+        # 用户选择的主题写入 RESEARCH_TOPIC（供后续 research 阶段使用）
+        if selected_topic:
+            ctx.set(RESEARCH_TOPIC, selected_topic)
+
+        result.status = "completed"
+        result.current_stage = None
+        result.summary = (
+            f"方向推荐完成：生成 {len(recommendations)} 个推荐主题，"
+            f"用户选择：{selected_topic[:50] if selected_topic else '未选择'}"
+        )
+        result.node_history = ctx.history()
+        result.recommendation = "topic_discovery_completed"
+        # 存入额外数据供前端展示
+        result.extra = {
+            "recommendations": recommendations,
+            "selected_topic": selected_topic,
+            "interest": interest,
+        }
+
+        # 可选：自动进入 research 阶段
+        if auto_research and selected_topic:
+            research_result = self.run_stage(
+                session, ctx, LifecycleStage.RESEARCH, human_callback
+            )
+            result.node_history = research_result.node_history
+            if research_result.status == "pending_human":
+                result.status = "pending_human"
+                result.summary = f"方向推荐完成 → research 阶段等待人工输入"
+                return result
+            if research_result.status in ("failed", "aborted"):
+                result.status = research_result.status
+                result.summary = f"research 阶段{research_result.status}: {research_result.summary}"
+                return result
+            result.completed_stages.append(LifecycleStage.RESEARCH)
+            result.summary += " → research 阶段完成"
+
         return result

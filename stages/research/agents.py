@@ -372,6 +372,17 @@ class PaperFetchAgent(AgentNode):
         # 去重（按 arxiv_id 优先，其次 title）
         paper_metas = self._dedup(paper_metas)
 
+        if not dry_run and not paper_metas:
+            # 空结果：明确失败，避免下游 filter/ingest/cross_validate 静默空跑
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error="所有数据源（arXiv/Semantic Scholar/Sciverse）检索结果均为空",
+                summary=(
+                    "未检索到论文（0 篇）：arXiv/S2/Sciverse 均返回空或调用失败。"
+                    "建议更换更通用的关键词、检查网络或 API 配置后重试。"
+                ),
+            )
+
         output = PaperFetchOutput(paper_metas=paper_metas)
         return NodeResult(
             status=NodeStatus.SUCCESS,

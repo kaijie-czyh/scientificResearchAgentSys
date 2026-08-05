@@ -11,6 +11,8 @@
         lastPollAt: 0,
         runMode: "",            // pipeline / discovery（由 /discoveries 与启动动作同步）
         discoveryCache: null,   // 最近一次 /discoveries 结果
+        humanFingerprint: null, // 最近一次 pending_human 的指纹（用于跳过无变化的整页重建）
+        humanDraft: "",         // 人工输入草稿（轮询重建时恢复）
     };
 
     const STAGES = ["research", "ideation", "design", "experiment", "writing"];
@@ -155,6 +157,7 @@
         });
         const titles = {
             create: "新建项目",
+            "topic-discovery": "方向推荐",
             progress: "研究进度",
             papers: "论文浏览",
             claims: "Claim 列表",
@@ -194,9 +197,18 @@
             const data = await api("GET", `/api/projects/${state.currentProjectId}/status`);
             state.statusCache = data;
             updateBadges(data);
-            // 在 progress / human 页面时自动重渲染
-            if (state.currentPage === "progress" || state.currentPage === "human") {
+            // progress / topic-discovery 页面自动重渲染（数据驱动）
+            if (state.currentPage === "progress" || state.currentPage === "topic-discovery") {
                 renderPage();
+            } else if (state.currentPage === "human") {
+                // human 页：仅当 pending_human 指纹变化时才重建，避免输入框被 2s 轮询清空。
+                // 注意：勿在 pending_human payload 中加入动态字段（如时间戳），否则指纹每轮变化、方案失效。
+                const fp = JSON.stringify(data.pending_human);
+                if (fp !== state.humanFingerprint) {
+                    state.humanFingerprint = fp;
+                    state.humanDraft = ""; // 新请求/消失/切换 → 丢弃上一节点草稿，避免串节点
+                    renderPage();
+                }
             }
             // 轮询 status 时若 run_mode=discovery，同步刷新 discoveries
             if (state.currentPage === "discovery" ||
@@ -241,6 +253,7 @@
 
         switch (state.currentPage) {
             case "create": renderCreate(content); break;
+            case "topic-discovery": renderTopicDiscovery(content); break;
             case "progress": renderProgress(content); break;
             case "papers": renderPapers(content); break;
             case "claims": renderClaims(content); break;
@@ -282,6 +295,7 @@
 
         const btnRow = el("div", { class: "btn-row" }, [
             el("button", { class: "btn", id: "create-btn" }, "启动科研"),
+            el("button", { class: "btn btn-outline", id: "topic-discovery-create-btn" }, "方向推荐"),
         ]);
         card.appendChild(btnRow);
 
@@ -313,6 +327,36 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = "启动科研";
+            }
+        });
+
+        // 方向推荐按钮：创建项目后启动方向推荐
+        document.getElementById("topic-discovery-create-btn").addEventListener("click", async () => {
+            const topic = document.getElementById("topic-input").value.trim();
+            if (!topic) {
+                showToast("请输入研究兴趣", "error");
+                return;
+            }
+            const btn = document.getElementById("topic-discovery-create-btn");
+            btn.disabled = true;
+            btn.textContent = "创建中…";
+            try {
+                // 创建项目（topic 字段暂存研究兴趣）
+                const data = await api("POST", "/api/projects", { topic });
+                state.currentProjectId = data.project_id;
+                updateProjectIdDisplay();
+                startPolling();
+                renderSidebarNotes();
+                // 启动方向推荐
+                await api("POST", `/api/projects/${data.project_id}/run-topic-discovery`, { interest: topic });
+                state.runMode = "topic_discovery";
+                setActivePage("topic-discovery");
+                showToast("方向推荐已启动", "success");
+            } catch (e) {
+                showToast("启动失败：" + e.message, "error");
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "方向推荐";
             }
         });
 
@@ -371,6 +415,139 @@
             setActivePage("discovery");
         } catch (e) {
             showToast("启动失败：" + e.message, "error");
+        }
+    }
+
+    // ===== 方向推荐页面 =====
+
+    function renderTopicDiscovery(content) {
+        const status = state.statusCache;
+        const td = status?.topic_discovery || {};
+        const recommendations = td.recommendations || [];
+        const selectedTopic = td.selected_topic || "";
+        const interest = td.interest || status?.topic || "";
+
+        const card = el("div", { class: "card" }, [
+            el("div", { class: "card-title" }, "方向推荐"),
+            el("p", { class: "muted small" },
+                "输入研究兴趣，系统将分析领域趋势（关键词演化、增长率）并推荐值得研究的方向。"),
+        ]);
+
+        // 研究兴趣显示
+        if (interest) {
+            card.appendChild(el("div", { class: "field" }, [
+                el("span", { class: "field-label" }, "研究兴趣："),
+                el("span", { text: interest }),
+            ]));
+        }
+
+        // 状态横幅
+        if (status && status.status) {
+            card.appendChild(el("div", {
+                html: statusBanner(status.status, status.summary, status.error, status.recommendation),
+            }));
+        }
+
+        // 等待人工选择
+        if (status && status.status === "pending_human") {
+            card.appendChild(el("div", { class: "alert alert-warning" }, [
+                el("p", {}, "系统已生成推荐主题，等待你选择。"),
+                el("button", { class: "btn", onclick: () => setActivePage("human") }, "去选择主题"),
+            ]));
+        }
+
+        // 推荐结果列表（服务端已按热门度 popularity_score 降序返回，前端不要二次排序，
+        // 否则数字下标与 TopicSelectHuman 的服务端解析不一致会导致选错主题）
+        if (recommendations.length > 0) {
+            const recSection = el("div", { class: "mt-16" }, [
+                el("h3", { class: "section-title" }, `推荐研究主题（${recommendations.length} 个，按热门度排序）`),
+            ]);
+
+            recommendations.forEach((rec, i) => {
+                const isSelected = selectedTopic && rec.topic === selectedTopic;
+                const recCard = el("div", {
+                    class: "card rec-card" + (isSelected ? " rec-selected" : ""),
+                    onclick: () => selectTopic(i, rec),
+                }, [
+                    el("div", { class: "rec-header" }, [
+                        el("span", { class: "rec-index" }, `[${i + 1}]`),
+                        el("span", { class: "rec-topic", text: rec.topic || "N/A" }),
+                        isSelected ? el("span", { class: "badge badge-success" }, "已选择") : null,
+                    ]),
+                    el("div", { class: "rec-body" }, [
+                        el("div", { class: "rec-field" }, [
+                            el("span", { class: "rec-label", text: "理由：" }),
+                            el("span", { text: rec.rationale || "N/A" }),
+                        ]),
+                        el("div", { class: "rec-field" }, [
+                            el("span", { class: "rec-label", text: "创新切入点：" }),
+                            el("span", { text: rec.innovation_point || "N/A" }),
+                        ]),
+                        el("div", { class: "rec-field" }, [
+                            el("span", { class: "rec-label", text: "推荐材料：" }),
+                            el("span", { text: (rec.recommended_materials || []).join(", ") || "N/A" }),
+                        ]),
+                        el("div", { class: "rec-field" }, [
+                            el("span", { class: "rec-label", text: "趋势摘要：" }),
+                            el("span", { text: rec.trend_summary || "N/A" }),
+                        ]),
+                        el("div", { class: "rec-tags" }, [
+                            el("span", { class: "badge badge-neutral", text: `难度: ${rec.difficulty || "N/A"}` }),
+                            el("span", { class: "badge badge-info", text: `创新度: ${rec.novelty || "N/A"}` }),
+                            el("span", { class: "badge badge-warning", text: `热门度: ${rec.popularity_score != null ? rec.popularity_score : "N/A"}` }),
+                            el("span", { class: "badge badge-success", text: `关联度: ${rec.relevance || "N/A"}` }),
+                        ]),
+                        el("div", { class: "rec-hint small muted mt-8" },
+                            "点击卡片即可选择该主题"),
+                    ]),
+                ]);
+                recSection.appendChild(recCard);
+            });
+
+            card.appendChild(recSection);
+        }
+
+        // 已完成且选择了主题 → 提供开始文献调研按钮
+        if (status && status.status === "completed" && selectedTopic) {
+            card.appendChild(el("div", { class: "alert alert-success mt-16" }, [
+                el("p", {}, `已选择主题：${selectedTopic}`),
+            ]));
+            card.appendChild(el("div", { class: "btn-row mt-16" }, [
+                el("button", {
+                    class: "btn btn-success",
+                    onclick: () => startPipeline(),
+                }, "使用该主题开始文献调研"),
+                el("button", {
+                    class: "btn btn-secondary",
+                    onclick: () => setActivePage("progress"),
+                }, "查看进度"),
+            ]));
+        }
+
+        // 运行中提示
+        if (status && status.status === "running" && recommendations.length === 0) {
+            card.appendChild(el("div", { class: "alert alert-info" }, [
+                el("p", {}, "正在分析领域趋势，获取论文数据并生成推荐…"),
+                el("p", { class: "muted small" }, "此过程可能需要 1-3 分钟（真实模式）或几秒（dry_run 模式）"),
+            ]));
+        }
+
+        content.appendChild(card);
+    }
+
+    // 点击推荐卡片选择主题（数字下标 = 服务端 ctx 中 recommendations 下标，与服务端 TopicSelectHuman 解析一致）
+    async function selectTopic(i, rec) {
+        if (!state.currentProjectId) return;
+        try {
+            await api("POST", `/api/projects/${state.currentProjectId}/human-response`, {
+                action: "continue",
+                text: String(i + 1),
+            });
+            showToast("已选择：" + (rec.topic || ""), "success");
+            state.humanFingerprint = null; // 强制下一轮刷新页面状态
+            pollStatus();
+        } catch (e) {
+            showToast("选择失败：" + e.message, "error");
         }
     }
 
@@ -991,6 +1168,7 @@
         ]));
 
         if (!pending) {
+            state.humanDraft = ""; // 无等待请求，清空草稿
             content.appendChild(el("div", { class: "human-empty" }, [
                 el("div", { text: "当前无等待中的人工节点请求。", class: "mb-0" }),
                 el("div", { class: "small muted mt-8" },
@@ -1029,6 +1207,9 @@
             id: "human-text",
             placeholder: "在此输入修改意见或确认说明（确认时也可留空，提交时将使用 'ok'）",
         });
+        // 恢复草稿（轮询/切页导致重建时保留用户已输入的内容）
+        if (state.humanDraft) textarea.value = state.humanDraft;
+        textarea.addEventListener("input", () => { state.humanDraft = textarea.value; });
         form.appendChild(el("label", { class: "field-label" }, "响应文本"));
         form.appendChild(textarea);
 
@@ -1041,6 +1222,7 @@
                     text: o,
                     onclick: () => {
                         textarea.value = o;
+                        state.humanDraft = o; // 同步保存草稿
                     },
                 }));
             });
@@ -1086,6 +1268,8 @@
                 const r = await api("POST",
                     `/api/projects/${state.currentProjectId}/human-response`, payload);
                 if (r.submitted) {
+                    state.humanDraft = "";
+                    state.humanFingerprint = null; // 强制下一轮重建为空状态
                     showToast("响应已提交", "success");
                 } else {
                     showToast("未找到等待中的请求", "error");
@@ -1093,7 +1277,9 @@
                 pollStatus();
                 renderPage();
             } catch (e) {
+                // 后端 409/404 的 detail 已由 api() 透传到 e.message
                 showToast("提交失败：" + e.message, "error");
+                state.humanFingerprint = null; // 让下一轮轮询重建，避免陈旧表单误导
             }
         }
 
