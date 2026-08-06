@@ -448,7 +448,6 @@ config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
 - 交叉验证长 JSON 解析失败会让 cross_validate 节点将该子问题记入 gaps——后续可考虑 complete 输出 + 容错解析（DEVLOG 已有 TODO）
 - 8001 服务曾因后台任务管理被终止，已用托管 venv 重启
 
-
 ---
 
 ## 2026-08-06 第七轮：Task 2 材料知识抽取节点（材料-性能-合成三元组）
@@ -503,63 +502,6 @@ config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
 ### 已知事项
 - MiniMax M3 结构化输出偶发非合法 JSON（属性名无引号、直接写分析文本）→ 该篇材料为空，不阻塞流程；后续可加 JSON 修复（如属性名补引号）提升召回
 - verify_material_extract.py 为验证脚本（未纳入 git 或待归档）
-
-
----
-
-## 2026-08-06 第七轮：Task 2 材料知识抽取节点（材料-性能-合成三元组）
-
-### 目标
-按赛题「知识抽取」要求落地：research 阶段新增 material_extraction 节点，从入库论文摘要中抽取结构化材料知识（材料成分/晶体结构/性能指标/合成条件），落库为可溯源三元组，Web 新增「材料知识」页展示。
-
-### 改动清单
-
-#### 1. `core/knowledge/schema.py` — 材料知识三实体 + 关系
-- `EntityType` 新增 `MATERIAL_EXTRACTED_FROM_PAPER`；`RelationType` 新增 `MATERIAL_HAS_PROPERTY` / `MATERIAL_HAS_SYNTHESIS`
-- 新增 `Material`（name/formula/crystal_structure/space_group/lattice_parameters/symmetry/composition/norm_name/confidence/source_snippet）
-- 新增 `MaterialProperty`（property_name/name_cn/value/value_num/unit/condition）
-- 新增 `MaterialSynthesis`（method/precursors/temperature/pressure/atmosphere/duration/steps）
-
-#### 2. `core/knowledge/store.py` — 材料三表 + CRUD
-- `_SCHEMA_SQL` 追加 `materials` / `material_properties` / `material_synthesis` 三表（`CREATE TABLE IF NOT EXISTS`，旧库自动补表）
-- `save_material`：按 `norm_name` 查重，同名材料跨文献合并（新 paper_id 并入 `metadata.source_paper_ids`）→ 满足赛题「跨文献实体链接」
-- `save_material_property` / `save_material_synthesis` / `list_*` / `material_stats`（含 complete_triples 统计）
-
-#### 3. `stages/research/agents.py` — MaterialKnowledgeExtractionAgent
-- `node_type=research_material_extraction`，`task_type=material_knowledge_extract`
-- 逐篇论文 LLM 结构化抽取（`MaterialExtractSchema`：每篇独立 prompt 避免跨论文信息混淆）→ 落库 → 写 context（`RESEARCH_MATERIAL_KNOWLEDGE`）
-- dry_run / LLM 失败时占位兜底，不阻塞流程
-- **关键 Bug 修复**（全量验证发现）：
-  - `output_keys` 值误写为字符串 → `ctx.set` 抛 `AttributeError: 'str' object has no attribute 'name'`（节点必崩）。改为 `{}`，输出由 `_execute` 显式写入 context
-  - LLM 返回的 `precursors` 可能是字符串 → `list(str)` 逐字符拆分。统一转 list
-  - `steps` 可能是 list → join 为字符串；`value_num` 可能是空串/不可解析 → 容错转 float/None；`property_name` 可能为 None → 兜底 ""
-
-#### 4. `config/tasks.yaml` — 注册 `material_knowledge_extract`
-- provider minimax / MiniMax-M3 / temperature 0.0（此前缺失导致节点运行时 `TaskNotFoundError` 全部抽取降级为空）
-
-#### 5. `stages/research/graph.py` — 拓扑
-- `paper_ingest → material_extraction → cross_validate`
-
-#### 6. `web/api.py` — `/materials` 端点 + 启动恢复机制
-- 新增 `GET /api/projects/{pid}/materials`：按材料聚合性能/合成，含来源论文与证据片段
-- `get_status` counts 增加 materials/properties/synthesis
-- **新增 `_scan_existing_projects()`**：服务启动时扫描 projects/ 目录恢复内存项目状态（ProjectState 是进程单例，重启即失；恢复后旧项目数据可继续通过 Web 查看）。topic 不持久化，恢复项目 topic 为空 → run 接口加保护：topic 为空返回 400 提示
-
-#### 7. `web/static/` — 材料知识页
-- 导航新增「材料知识」项（badge-materials）；`renderMaterials` 渲染统计卡片 + 材料卡片（结构/组成、性能、合成、来源论文、跨文献徽章）
-
-### 验证结果
-- 空抽取结果路径（LLM 全失败）不再崩溃：修复前 `AttributeError: 'str' object has no attribute 'name'` → 修复后 SUCCESS（0 材料不报错）
-- 10 篇小规模：24 种材料抽取、28 条性能、13 条合成、零落库失败
-- **全量 100 篇真实 LLM 抽取（15.5 分钟）**：
-  - **153 种材料抽取 → 141 种入库（同名合并去重，跨文献实体链接生效）**
-  - **324 条性能指标、103 条合成方法、71 条完整三元组**
-  - 3 篇抽取失败（MiniMax M3 非标准 JSON/非材料论文），per-paper 容错降级，节点整体 SUCCESS
-
-### 已知事项
-- MiniMax M3 结构化输出偶发非合法 JSON（属性名无引号、直接写分析文本）→ 该篇材料为空，不阻塞流程；后续可加 JSON 修复（如属性名补引号）提升召回
-- verify_material_extract.py 为验证脚本（未纳入 git 或待归档）
-
 
 ---
 
