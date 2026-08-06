@@ -78,13 +78,18 @@ class PaperFetchInput(NodeInput):
 
 
 class PaperFetchOutput(NodeOutput):
-    """论文抓取输出：论文元数据列表。
+    """论文抓取输出：论文元数据列表 + 检索证据链。
 
     每条元数据是 dict，含 title/authors/year/abstract/arxiv_id/source_subquery 等字段。
     source_subquery 标记该候选来自哪个子问题的检索（便于后续交叉验证）。
+
+    evidence_chain 是审计轨迹（赛题证据链要求）：每条记录一次检索命中，
+    含 subquery / source / title / external_id(doc_id|arxiv_id|s2_id) /
+    offset / evidence_score / snippet，由 PaperIngestAgent 落库并关联 paper_id。
     """
 
     paper_metas: list[dict[str, Any]]
+    evidence_chain: list[dict[str, Any]] = []
 
 
 # ===== PaperRelevanceFilterAgent（借鉴 PaperQA filter）=====

@@ -1165,3 +1165,139 @@ pre.code-block {
 .items-center { align-items: center; }
 .justify-between { justify-content: space-between; }
 .hidden { display: none; }
+
+/* ===== 检索证据链（审计轨迹）===== */
+
+.ev-card {
+    margin-bottom: 16px;
+}
+.ev-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.ev-title {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--color-text);
+    margin-right: 4px;
+}
+.ev-desc {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    margin-bottom: 10px;
+    line-height: 1.6;
+}
+.ev-src-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.ev-src-sciverse {
+    background: #e6f0ff;
+    color: #1a56b8;
+    border-color: #b8d4f5;
+}
+.ev-src-arxiv {
+    background: #fff0e6;
+    color: #b3511a;
+    border-color: #f0cdb0;
+}
+.ev-src-s2 {
+    background: #e9f7ee;
+    color: #1e7a4a;
+    border-color: #bfe3cd;
+}
+.ev-empty {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    padding: 10px 0;
+}
+.ev-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 360px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+.ev-group {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-bg);
+    overflow: hidden;
+}
+.ev-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 12px;
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border);
+}
+.ev-group-q {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 8px;
+}
+.ev-group-count {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+}
+.ev-group-body {
+    display: flex;
+    flex-direction: column;
+}
+.ev-entry {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    border-bottom: 1px dashed var(--color-border);
+}
+.ev-entry:last-child {
+    border-bottom: none;
+}
+.ev-entry-title {
+    flex: 1;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ev-entry-score {
+    color: var(--color-info);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.ev-entry-id {
+    color: var(--color-text-muted);
+    font-size: 11px;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ev-entry-offset {
+    color: var(--color-text-muted);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.ev-entry-linked {
+    color: var(--color-success);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.ev-entry-unlinked {
+    color: var(--color-text-muted);
+    font-size: 11px;
+    flex-shrink: 0;
+}

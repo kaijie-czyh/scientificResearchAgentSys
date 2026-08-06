@@ -459,13 +459,14 @@ def get_status(project_id: str) -> dict:
         pass
 
     # 产出物计数
-    counts = {"papers": 0, "ideas": 0, "claims": 0, "experiments": 0}
+    counts = {"papers": 0, "ideas": 0, "claims": 0, "experiments": 0, "evidence": 0}
     try:
         store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
         counts["papers"] = len(store.list_papers())
         counts["ideas"] = len(store.list_ideas())
         counts["claims"] = len(store.list_claims())
         counts["experiments"] = len(store.list_experiments())
+        counts["evidence"] = store.evidence_stats()["total"]
     except Exception:  # noqa: BLE001
         pass
 
@@ -628,10 +629,40 @@ def list_papers(project_id: str) -> dict:
                 "url": p.url,
                 "created_at": p.created_at.isoformat() if p.created_at else None,
                 "source_stage": p.source_stage,
+                # 检索证据链字段（审计溯源：来源 / doc_id / 证据分 / 命中子问题）
+                "source": p.metadata.get("source", ""),
+                "source_subquery": p.metadata.get("source_subquery", ""),
+                "doc_id": p.metadata.get("doc_id", ""),
+                "offset": p.metadata.get("offset", 0),
+                "evidence_score": p.metadata.get("evidence_score", 0.0),
+                "relevance_score": p.metadata.get("relevance_score", 0.0),
+                "relevance_reason": p.metadata.get("relevance_reason", ""),
             }
             for p in papers
         ]
     }
+
+
+@app.get("/api/projects/{project_id}/evidence")
+def list_evidence(project_id: str) -> dict:
+    """获取检索证据链（审计轨迹：query → source → 命中 → paper 关联）。
+
+    赛题手册明确要求文献调研可溯源：Sciverse 调用记录天然构成证据链。
+    每条记录：触发子问题、数据源、命中证据标题、外部 ID（doc_id/arxiv_id）、
+    证据分、片段摘要，以及是否关联到已入库论文。
+    """
+    _require_project(project_id)
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        entries = store.list_evidence(limit=500)
+        stats = store.evidence_stats()
+    except Exception as e:  # noqa: BLE001
+        return {
+            "entries": [],
+            "stats": {"total": 0, "by_source": {}, "linked": 0},
+            "error": f"读取失败: {e}",
+        }
+    return {"entries": entries, "stats": stats}
 
 
 @app.get("/api/projects/{project_id}/claims")

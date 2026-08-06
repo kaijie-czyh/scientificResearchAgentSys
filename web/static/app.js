@@ -763,18 +763,24 @@
     async function renderPapers(content) {
         content.appendChild(el("div", { class: "loading" }, "加载中…"));
         try {
-            const data = await api("GET", `/api/projects/${state.currentProjectId}/papers`);
+            // 并行拉取论文列表 + 检索证据链（审计轨迹）
+            const evData = await api("GET", `/api/projects/${state.currentProjectId}/evidence`)
+                .catch(() => null);
+            const paperData = await api("GET", `/api/projects/${state.currentProjectId}/papers`);
+            const papers = paperData.papers || [];
             clear(content);
             content.appendChild(el("div", { class: "page-header" }, [
                 el("h2", { class: "page-title" }, "论文浏览"),
-                el("p", { class: "page-desc" }, `共 ${data.papers.length} 篇入库论文，点击条目展开详情。`),
+                el("p", { class: "page-desc" }, `共 ${papers.length} 篇入库论文，点击条目展开详情。`),
             ]));
-            if (!data.papers.length) {
+            // 检索证据链卡片（真实模式下由 Sciverse/arXiv/S2 检索命中记录生成）
+            content.appendChild(renderEvidenceCard(evData));
+            if (!papers.length) {
                 content.appendChild(el("div", { class: "list-empty" }, "暂无论文，请先启动 research 阶段"));
                 return;
             }
             const list = el("div", { class: "list" });
-            data.papers.forEach(p => list.appendChild(renderPaperItem(p)));
+            papers.forEach(p => list.appendChild(renderPaperItem(p)));
             content.appendChild(list);
         } catch (e) {
             clear(content);
@@ -783,14 +789,104 @@
         }
     }
 
+    // ===== 检索证据链卡片（审计轨迹：query → source → 命中 → paper）=====
+
+    function renderEvidenceCard(evData) {
+        const stats = (evData && evData.stats) || { total: 0, by_source: {}, linked: 0 };
+        const entries = (evData && evData.entries) || [];
+        const bySource = stats.by_source || {};
+        const srcBadges = Object.keys(bySource).map(src =>
+            el("span", { class: `badge ev-src-badge ev-src-${src}`, text: `${src} ${bySource[src]}` }));
+
+        const card = el("div", { class: "card ev-card" }, [
+            el("div", { class: "ev-head" }, [
+                el("span", { class: "ev-title" }, "检索证据链 · 审计轨迹"),
+                el("span", { class: "badge badge-info", text: `共 ${stats.total} 条` }),
+                el("span", { class: "badge badge-neutral", text: `已关联论文 ${stats.linked} 条` }),
+                ...srcBadges,
+            ]),
+            el("div", { class: "ev-desc" },
+                "每次检索命中的完整记录：子问题 → 数据源 → 证据 → 是否入库。Sciverse 证据含 doc_id/offset，可回读原文核验。"),
+        ]);
+
+        if (!entries.length) {
+            card.appendChild(el("div", { class: "ev-empty" },
+                "暂无证据链记录：真实模式下运行 research 阶段后，检索调用自动落库"));
+            return card;
+        }
+
+        // 按子问题分组展示
+        const groups = {};
+        entries.forEach(e => {
+            const key = e.subquery || "(未标注子问题)";
+            (groups[key] = groups[key] || []).push(e);
+        });
+        const body = el("div", { class: "ev-groups" });
+        Object.keys(groups).forEach(sq => {
+            const items = groups[sq];
+            const group = el("div", { class: "ev-group" }, [
+                el("div", { class: "ev-group-head" }, [
+                    el("span", { class: "ev-group-q", text: sq }),
+                    el("span", { class: "ev-group-count", text: `${items.length} 条命中` }),
+                ]),
+            ]);
+            const listEl = el("div", { class: "ev-group-body" });
+            items.slice(0, 60).forEach(e => listEl.appendChild(renderEvidenceEntry(e)));
+            group.appendChild(listEl);
+            body.appendChild(group);
+        });
+        card.appendChild(body);
+        return card;
+    }
+
+    function renderEvidenceEntry(e) {
+        const src = e.source || "?";
+        const row = el("div", { class: "ev-entry" }, [
+            el("span", { class: `badge ev-src-badge ev-src-${src}`, text: src }),
+            el("span", { class: "ev-entry-title", text: e.title || "(无标题)" }),
+        ]);
+        if (src === "sciverse") {
+            row.appendChild(el("span", { class: "ev-entry-score",
+                text: `证据分 ${Number(e.evidence_score || 0).toFixed(2)}` }));
+            row.appendChild(el("span", { class: "mono ev-entry-id",
+                text: `doc:${e.external_id || "-"}` }));
+            if (Number(e.offset || 0) > 0) {
+                row.appendChild(el("span", { class: "ev-entry-offset",
+                    text: `@偏移${e.offset}` }));
+            }
+        } else {
+            const eid = e.external_id || "";
+            if (eid) row.appendChild(el("span", { class: "mono ev-entry-id", text: eid }));
+        }
+        row.appendChild(el("span", {
+            class: e.paper_id ? "ev-entry-linked" : "ev-entry-unlinked",
+            text: e.paper_id ? "✓ 已入库" : "未入库",
+        }));
+        return row;
+    }
+
     function renderPaperItem(p) {
         const item = el("div", { class: "list-item" });
-        const head = el("div", { class: "list-item-head" }, [
+        const headChildren = [
             el("span", { class: "list-item-title", text: p.title || "(无标题)" }),
             p.year ? el("span", { class: "badge badge-info badge-stage", text: String(p.year) }) : null,
             p.venue ? el("span", { class: "badge badge-neutral", text: p.venue }) : null,
-            el("span", { class: "list-item-meta", text: (p.authors || []).slice(0, 2).join(", ") + ((p.authors || []).length > 2 ? " et al." : "") }),
-        ]);
+        ];
+        // 数据源徽章（Sciverse 为赛题推荐主源，标注证据分）
+        if (p.source === "sciverse") {
+            headChildren.push(el("span", {
+                class: "badge ev-src-badge ev-src-sciverse",
+                text: `SC ${Number(p.evidence_score || 0).toFixed(2)}`,
+            }));
+        } else if (p.source) {
+            headChildren.push(el("span", {
+                class: `badge ev-src-badge ev-src-${p.source}`,
+                text: p.source,
+            }));
+        }
+        headChildren.push(el("span", { class: "list-item-meta", text:
+            (p.authors || []).slice(0, 2).join(", ") + ((p.authors || []).length > 2 ? " et al." : "") }));
+        const head = el("div", { class: "list-item-head" }, headChildren);
         item.appendChild(head);
 
         item.addEventListener("click", () => {
@@ -806,6 +902,10 @@
                         <dt>arXiv ID</dt><dd class="mono">${escapeHtml(p.arxiv_id || "—")}</dd>
                         <dt>URL</dt><dd>${p.url ? `<a href="${escapeHtml(p.url)}" target="_blank">${escapeHtml(p.url)}</a>` : "—"}</dd>
                         <dt>来源阶段</dt><dd>${escapeHtml(p.source_stage || "—")}</dd>
+                        <dt>数据源</dt><dd>${escapeHtml(p.source || "—")}${p.source_subquery ? `（命中子问题：${escapeHtml(p.source_subquery)}）` : ""}</dd>
+                        ${p.doc_id ? `<dt>Sciverse doc_id</dt><dd class="mono">${escapeHtml(p.doc_id)}${p.offset ? ` @偏移${p.offset}` : ""}</dd>` : ""}
+                        ${p.evidence_score ? `<dt>Sciverse 证据分</dt><dd>${escapeHtml(String(Number(p.evidence_score).toFixed(3)))}</dd>` : ""}
+                        ${p.relevance_score ? `<dt>主题相关度</dt><dd>${escapeHtml(String(Number(p.relevance_score).toFixed(2)))}${p.relevance_reason ? `（${escapeHtml(p.relevance_reason)}）` : ""}</dd>` : ""}
                         <dt>入库时间</dt><dd class="mono">${escapeHtml(formatTime(p.created_at))}</dd>
                     </dl>
                     ${p.abstract ? `<div class="mt-8"><strong>摘要：</strong><br>${escapeHtml(p.abstract)}</div>` : ""}

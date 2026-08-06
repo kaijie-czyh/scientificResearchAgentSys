@@ -20,6 +20,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -107,6 +108,21 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_id);
 CREATE INDEX IF NOT EXISTS idx_rel_target ON relations(target_id);
 CREATE INDEX IF NOT EXISTS idx_rel_type ON relations(relation_type);
+
+CREATE TABLE IF NOT EXISTS evidence_log (
+    log_id TEXT PRIMARY KEY,
+    subquery TEXT NOT NULL,
+    source TEXT NOT NULL,
+    paper_id TEXT,
+    title TEXT NOT NULL,
+    external_id TEXT,
+    offset INTEGER DEFAULT 0,
+    evidence_score REAL DEFAULT 0.0,
+    snippet TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evlog_paper ON evidence_log(paper_id);
+CREATE INDEX IF NOT EXISTS idx_evlog_source ON evidence_log(source);
 """
 
 
@@ -398,11 +414,91 @@ class KnowledgeStore:
                     source_type=EntityType(r["source_type"]),
                     target_id=r["target_id"],
                     target_type=EntityType(r["target_type"]),
-                    created_at=__import__("datetime").datetime.fromisoformat(r["created_at"]),
+                    created_at=datetime.fromisoformat(r["created_at"]),
                     metadata=json.loads(r["metadata"]) if r["metadata"] else {},
                 )
                 for r in rows
             ]
+
+    # ===== Evidence Log（检索证据链，可审计轨迹）=====
+
+    def log_evidence(self, entry: dict) -> None:
+        """记录一条检索证据链条目（query → source → 命中 → paper 关联）。
+
+        entry 字段：
+        - subquery: 触发检索的子问题
+        - source: 数据源（sciverse / arxiv / s2）
+        - paper_id: 命中论文的入库 ID（未入库可为空，表示检索命中但被筛选剔除）
+        - title: 命中论文/证据标题
+        - external_id: 外部 ID（sciverse doc_id / arxiv_id / s2 paperId）
+        - offset: Sciverse 原文偏移（证据回读定位）
+        - evidence_score: Sciverse 证据相关性分数
+        - snippet: 证据片段/摘要（截断）
+        - created_at: 可选，默认当前 UTC 时间
+        """
+        log_id = entry.get("log_id") or self.new_id()
+        created_at = entry.get("created_at") or datetime.utcnow().isoformat()
+        snippet = (entry.get("snippet") or "")[:800]
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO evidence_log "
+                "(log_id, subquery, source, paper_id, title, external_id, offset, "
+                " evidence_score, snippet, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    log_id,
+                    entry.get("subquery", ""),
+                    entry.get("source", ""),
+                    entry.get("paper_id"),
+                    entry.get("title", ""),
+                    entry.get("external_id"),
+                    int(entry.get("offset", 0) or 0),
+                    float(entry.get("evidence_score", 0.0) or 0.0),
+                    snippet,
+                    created_at,
+                ),
+            )
+
+    def list_evidence(
+        self,
+        paper_id: Optional[EntityId] = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """按论文过滤（或全部）列出证据链条目，最新的在前。"""
+        with self._connect() as conn:
+            if paper_id:
+                rows = conn.execute(
+                    "SELECT * FROM evidence_log WHERE paper_id = ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (paper_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM evidence_log ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def evidence_stats(self) -> dict:
+        """证据链统计：总量 + 按数据源分布 + 已入库占比。"""
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) AS c FROM evidence_log"
+            ).fetchone()["c"]
+            by_source = {
+                r["source"]: r["c"]
+                for r in conn.execute(
+                    "SELECT source, COUNT(*) AS c FROM evidence_log GROUP BY source"
+                ).fetchall()
+            }
+            linked = conn.execute(
+                "SELECT COUNT(*) AS c FROM evidence_log WHERE paper_id IS NOT NULL"
+            ).fetchone()["c"]
+        return {
+            "total": total,
+            "by_source": by_source,
+            "linked": linked,
+        }
 
     # ===== 工具 =====
 

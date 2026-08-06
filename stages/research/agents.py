@@ -47,6 +47,7 @@ from stages.common import (
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
     RESEARCH_CROSS_VALIDATION_REPORT,
+    RESEARCH_EVIDENCE_CHAIN,
     RESEARCH_FILTERED_PAPER_METAS,
     RESEARCH_KEYWORDS,
     RESEARCH_PAPER_IDS,
@@ -340,8 +341,12 @@ class TopicConfirmHuman(HumanNode):
 class PaperFetchAgent(AgentNode):
     """论文抓取 Agent。
 
-    根据子问题并行检索 arxiv/S2。
-    借鉴 GPT-Researcher：每个子问题独立检索，结果带 source_subquery 标记。
+    根据子问题并行检索文献。数据源策略（赛题推荐的证据链设计）：
+    - Sciverse 为主源（agentic-search 返回片段级证据，含 doc_id + offset，
+      调用记录天然构成可审计证据链，也是赛题手册明确推荐的资源）
+    - arxiv / Semantic Scholar 为补充（最新预印本、引用图谱与影响力）
+    每个子问题独立检索，结果带 source_subquery 标记；每次命中同时写入
+    evidence_chain（审计轨迹），由 PaperIngestAgent 落库并关联 paper_id。
     """
 
     node_type = "research_paper_fetch"
@@ -350,9 +355,12 @@ class PaperFetchAgent(AgentNode):
     output_schema = PaperFetchOutput
     output_keys = {
         "paper_metas": RESEARCH_PAPER_METAS,
+        "evidence_chain": RESEARCH_EVIDENCE_CHAIN,
     }
 
-    DEFAULT_PER_SUBQUERY = 5  # 每子问题抓取数
+    DEFAULT_PER_SUBQUERY = 3  # arxiv 每子问题抓取数（主源 Sciverse 后的补充）
+    SCIVERSE_PER_SUBQUERY = 5  # Sciverse 每子问题证据数（主源，赛题推荐）
+    S2_PER_SUBQUERY = 2  # S2 每子问题抓取数（限流严重，仅补充引用图谱）
 
     def _build_input(self, ctx: ExecutionContext) -> PaperFetchInput:
         return PaperFetchInput(
@@ -366,8 +374,9 @@ class PaperFetchAgent(AgentNode):
 
         if dry_run:
             paper_metas = self._placeholder(input_obj)
+            evidence_chain: list[dict] = []
         else:
-            paper_metas = self._real_fetch(input_obj)
+            paper_metas, evidence_chain = self._real_fetch(input_obj)
 
         # 去重（按 arxiv_id 优先，其次 title）
         paper_metas = self._dedup(paper_metas)
@@ -376,29 +385,69 @@ class PaperFetchAgent(AgentNode):
             # 空结果：明确失败，避免下游 filter/ingest/cross_validate 静默空跑
             return NodeResult(
                 status=NodeStatus.FAILED,
-                error="所有数据源（arXiv/Semantic Scholar/Sciverse）检索结果均为空",
+                error="所有数据源（Sciverse/arXiv/Semantic Scholar）检索结果均为空",
                 summary=(
-                    "未检索到论文（0 篇）：arXiv/S2/Sciverse 均返回空或调用失败。"
+                    "未检索到论文（0 篇）：Sciverse/arXiv/S2 均返回空或调用失败。"
                     "建议更换更通用的关键词、检查网络或 API 配置后重试。"
                 ),
             )
 
-        output = PaperFetchOutput(paper_metas=paper_metas)
+        output = PaperFetchOutput(
+            paper_metas=paper_metas,
+            evidence_chain=evidence_chain,
+        )
+        src_brief = "Sciverse 主源 + arXiv/S2 补充" if evidence_chain else ""
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary=f"抓取 {len(paper_metas)} 篇候选论文元数据（来自 {len(input_obj.subqueries or ['placeholder'])} 个子问题）",
+            summary=(
+                f"抓取 {len(paper_metas)} 篇候选论文元数据"
+                f"（来自 {len(input_obj.subqueries or ['placeholder'])} 个子问题，"
+                f"{src_brief}，证据链 {len(evidence_chain)} 条）"
+            ),
         )
 
-    def _real_fetch(self, input_obj: PaperFetchInput) -> list[dict]:
-        """真实并行检索 arxiv + S2。"""
+    def _real_fetch(self, input_obj: PaperFetchInput) -> tuple[list[dict], list[dict]]:
+        """真实并行检索：Sciverse 主源（证据片段级）+ arxiv/S2 补充。
+
+        Returns:
+            (paper_metas, evidence_chain)：paper_metas 为候选元数据列表；
+            evidence_chain 为审计轨迹（每次检索命中的完整记录）。
+        """
         subqueries = input_obj.subqueries or input_obj.keywords or []
         if not subqueries:
-            return []
+            return [], []
+        evidence_chain: list[dict] = []
 
         def fetch_one(sq: str) -> list[dict]:
             metas: list[dict] = []
-            # arxiv 检索（核心，含 abstract 全文）
+
+            # ===== 1. Sciverse 主源：证据片段级检索（赛题推荐，可审计证据链）=====
+            if sciverse_is_available():
+                try:
+                    evidences = sciverse_agentic_search(
+                        query=sq,
+                        max_results=self.SCIVERSE_PER_SUBQUERY,
+                        source_subquery=sq,
+                    )
+                    for ev in evidences:
+                        m = ev.to_meta_dict()
+                        m["source_subquery"] = sq
+                        metas.append(m)
+                        evidence_chain.append({
+                            "subquery": sq,
+                            "source": "sciverse",
+                            "title": ev.title,
+                            "external_id": ev.doc_id,
+                            "offset": ev.offset,
+                            "evidence_score": ev.score,
+                            "snippet": (ev.snippet or "")[:300],
+                            "paper_id": None,
+                        })
+                except Exception as e:
+                    logger.warning("Sciverse 检索失败（sq=%r）: %s", sq, e)
+
+            # ===== 2. arxiv 补充（最新预印本，含 abstract 全文）=====
             try:
                 arxiv_papers = search_arxiv(
                     query=sq,
@@ -406,34 +455,47 @@ class PaperFetchAgent(AgentNode):
                     source_subquery=sq,
                 )
                 for p in arxiv_papers:
-                    metas.append(p.to_meta_dict())
+                    m = p.to_meta_dict()
+                    m["source_subquery"] = sq
+                    m["source"] = "arxiv"
+                    metas.append(m)
+                    evidence_chain.append({
+                        "subquery": sq,
+                        "source": "arxiv",
+                        "title": p.title,
+                        "external_id": p.arxiv_id,
+                        "offset": 0,
+                        "evidence_score": 0.0,
+                        "snippet": (p.abstract or "")[:300],
+                        "paper_id": None,
+                    })
             except Exception as e:
                 logger.warning("arxiv 检索失败（sq=%r）: %s", sq, e)
 
-            # S2 检索（补充引用图谱/venue，限 2 篇，避免重复）
+            # ===== 3. S2 补充（引用图谱/venue/影响力，限 2 篇避免重复）=====
             try:
                 s2_papers = search_semantic_scholar(
                     query=sq,
-                    max_results=2,
+                    max_results=self.S2_PER_SUBQUERY,
                     source_subquery=sq,
                 )
                 for p in s2_papers:
-                    metas.append(p.to_meta_dict())
+                    m = p.to_meta_dict()
+                    m["source_subquery"] = sq
+                    m["source"] = "s2"
+                    metas.append(m)
+                    evidence_chain.append({
+                        "subquery": sq,
+                        "source": "s2",
+                        "title": p.title,
+                        "external_id": p.s2_id,
+                        "offset": 0,
+                        "evidence_score": 0.0,
+                        "snippet": (p.abstract or "")[:300],
+                        "paper_id": None,
+                    })
             except Exception as e:
                 logger.warning("S2 检索失败（sq=%r）: %s", sq, e)
-
-            # Sciverse 检索（赛题推荐，证据片段级，无 token 时优雅跳过）
-            if sciverse_is_available():
-                try:
-                    evidences = sciverse_agentic_search(
-                        query=sq,
-                        max_results=3,
-                        source_subquery=sq,
-                    )
-                    for ev in evidences:
-                        metas.append(ev.to_meta_dict())
-                except Exception as e:
-                    logger.warning("Sciverse 检索失败（sq=%r）: %s", sq, e)
 
             return metas
 
@@ -444,7 +506,7 @@ class PaperFetchAgent(AgentNode):
         for sub in results:
             paper_metas.extend(sub)
 
-        return paper_metas
+        return paper_metas, evidence_chain
 
     @staticmethod
     def _placeholder(input_obj: PaperFetchInput) -> list[dict]:
@@ -622,6 +684,10 @@ class PaperIngestAgent(AgentNode):
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         dry_run: bool = ctx.get(DRY_RUN, True)
+        # 检索证据链（审计轨迹）：由 PaperFetchAgent 写入，这里落库并关联 paper_id
+        evidence_chain: list[dict] = [
+            dict(e) for e in ctx.get(RESEARCH_EVIDENCE_CHAIN, [])
+        ]
 
         if dry_run:
             # 占位：用 new_id 生成合法 ID（不真实入库）
@@ -642,6 +708,7 @@ class PaperIngestAgent(AgentNode):
 
         # 真实入库
         paper_ids: list[str] = []
+        linked_count = 0
         for meta in input_obj.paper_metas:
             try:
                 paper_id = KnowledgeStore.new_id()
@@ -657,9 +724,14 @@ class PaperIngestAgent(AgentNode):
                     url=meta.get("url"),
                     metadata={
                         "source_subquery": meta.get("source_subquery", ""),
+                        "source": meta.get("source", ""),
                         "relevance_score": meta.get("relevance_score", 0.0),
                         "relevance_reason": meta.get("relevance_reason", ""),
                         "citation_count": meta.get("citation_count", 0),
+                        # Sciverse 证据链字段（doc_id + offset 可回读原文核验）
+                        "doc_id": meta.get("doc_id", ""),
+                        "offset": meta.get("offset", 0),
+                        "evidence_score": meta.get("evidence_score", 0.0),
                     },
                 )
                 store.save_paper(paper)
@@ -680,15 +752,47 @@ class PaperIngestAgent(AgentNode):
                 store.save_paper_chunks(chunk_objs)
 
                 paper_ids.append(paper_id)
+
+                # 关联证据链：命中该论文的链条目标记 paper_id 并落库
+                external_id = (meta.get("doc_id") or "").strip() or \
+                    (meta.get("arxiv_id") or "").strip()
+                title_key = (meta.get("title") or "").strip().lower()
+                matched: list[dict] = []
+                for e in evidence_chain:
+                    eid = (e.get("external_id") or "").strip()
+                    etitle = (e.get("title") or "").strip().lower()
+                    if external_id and eid and eid == external_id:
+                        matched.append(e)
+                    elif not external_id and etitle and etitle == title_key:
+                        matched.append(e)
+                for e in matched:
+                    e["paper_id"] = paper_id
+                    store.log_evidence(e)
+                    evidence_chain.remove(e)
+                    linked_count += 1
             except Exception as e:
                 logger.warning("论文入库失败（title=%r）: %s", meta.get("title"), e)
                 continue
+
+        # 未关联到入库论文的链条目（检索命中但被筛选/去重剔除）也落库，
+        # 保留完整审计轨迹：每个子问题调用了哪些源、命中了哪些证据、最终是否入库
+        unmatched = 0
+        for e in evidence_chain:
+            try:
+                store.log_evidence(e)
+                unmatched += 1
+            except Exception as err:
+                logger.warning("证据链落库失败: %s", err)
 
         output = PaperIngestOutput(paper_ids=paper_ids)
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary=f"入库 {len(paper_ids)} 篇论文（含 chunk）",
+            summary=(
+                f"入库 {len(paper_ids)} 篇论文（含 chunk）；"
+                f"证据链 {len(evidence_chain) + linked_count} 条全部落库"
+                f"（关联 {linked_count} 条，未入库 {unmatched} 条）"
+            ),
         )
 
 

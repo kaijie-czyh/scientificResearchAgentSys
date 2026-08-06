@@ -43,6 +43,9 @@ RESEARCH_PAPER_METAS = ContextKey[list[dict]]("research.paper_metas")
 # 相关性筛选后（借鉴 PaperQA filter）：保留高相关性候选
 RESEARCH_FILTERED_PAPER_METAS = ContextKey[list[dict]]("research.filtered_paper_metas")
 RESEARCH_PAPER_IDS = ContextKey[list[str]]("research.paper_ids")
+# 检索证据链（审计轨迹）：[{subquery, source, title, external_id, offset,
+# evidence_score, snippet, paper_id}]，Sciverse 调用记录天然构成可审计证据链
+RESEARCH_EVIDENCE_CHAIN = ContextKey[list[dict]]("research.evidence_chain")
 # 交叉验证报告（借鉴 GPT-Researcher）：多源冲突时的可信度评分与处置
 RESEARCH_CROSS_VALIDATION_REPORT = ContextKey[dict]("research.cross_validation_report")
 
