@@ -398,3 +398,52 @@ runtime/
   cli.py                       # CLI 入口
 config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
 ```
+
+---
+
+## 2026-08-05 第六轮：Sciverse 升级为检索主源 + 证据链审计轨迹（Task 1）
+
+### 目标
+按「文献查找优化最优解」（Sciverse 主源 + 证据链优先）落地：把 Sciverse 从第三数据源升级为主源，调用记录持久化为可审计证据链（赛题手册明确要求文献调研可溯源）。
+
+### 改动清单（commit `3a7037e`）
+
+#### 1. `core/tools/sciverse_search.py` — 修复解析器（关键 Bug）
+- **根因**：真实 API 顶层返回 `hits` 键，旧代码只找 `results`/`data` → Sciverse 一直静默返回空（从未真正生效）
+- **修复**：支持 `hits`/`results`/`data` 三种键；`author` 为 `["a|b|c"]` 分隔串需拆分；补充真实字段映射（`abstract` 独立于 `chunk`、`citation_count`、`publication_venue_name_unified`、`publication_published_year`、`page_no`、`primary_topic`）
+- `SciverseEvidence` 新增 `abstract`/`citation_count`/`page_no`/`primary_topic` 字段；`to_meta_dict` 摘要优先用 abstract
+
+#### 2. `stages/research/agents.py` — PaperFetchAgent 主源策略 + 证据链
+- 数据源策略：Sciverse 主源（每子问题 5 条证据）+ arxiv（3）+ S2（2）补充
+- `_real_fetch` 返回 `(paper_metas, evidence_chain)`：每次检索命中同步写入证据链（subquery/source/title/external_id/offset/evidence_score/snippet/paper_id）
+- `PaperIngestAgent`：paper.metadata 持久化 `source`/`doc_id`/`offset`/`evidence_score`；证据链条目按 doc_id→arxiv_id→title 关联 paper_id 落库；未入库命中（被筛选/去重剔除）也保留，构成完整审计轨迹
+- 空结果失败提示改为 Sciverse 优先表述
+
+#### 3. `core/knowledge/store.py` — evidence_log 表
+- 新表：`evidence_log(log_id, subquery, source, paper_id, title, external_id, offset, evidence_score, snippet, created_at)`
+- 方法：`log_evidence` / `list_evidence`（按 paper_id 过滤）/ `evidence_stats`（total + by_source + linked）
+
+#### 4. `stages/common.py` + `io_schema.py`
+- 新增 `RESEARCH_EVIDENCE_CHAIN` ContextKey；`PaperFetchOutput` 增加 `evidence_chain` 字段
+
+#### 5. `web/api.py` — 证据链对外暴露
+- `/papers` 返回 `source`/`source_subquery`/`doc_id`/`offset`/`evidence_score`/`relevance_score`
+- 新增 `/api/projects/{pid}/evidence`：entries + stats
+- `/status` counts 增加 `evidence`
+
+#### 6. `web/static/` — 证据链前端展示
+- 论文浏览页新增「检索证据链 · 审计轨迹」卡片：按子问题分组、来源徽章（sciverse/arxiv/s2 三色）、证据分、doc_id/偏移、已入库标记
+- 论文卡片头部加来源徽章（SC 证据分 / arxiv / s2），详情页展示 doc_id、偏移、证据分、相关度
+
+### 验证结果
+- 逻辑单测 14 项全过（落库往返 / doc_id-offset-score 持久化 / 旧库 schema 迁移 / 关联逻辑 / 未入库轨迹保留 / metadata 证据字段）
+- Sciverse 探针：修复前 `agentic_search returned: 0`；修复后返回 10 条真实证据（含 doc_id/score）；`read_content` 原文回读 OK
+- 真实模式（卤化物钙钛矿缺陷钝化主题）：
+  - 修复前：证据链 30 条全 arxiv，Sciverse 零命中
+  - 修复后：**证据链 130 条（Sciverse 100 + arxiv 30），74 条关联论文；入库 67 篇中 57 篇来自 Sciverse（85%）**，带 doc_id/证据分 0.8-0.9/真实引用数
+- 交叉验证阶段遇到 MiniMax M3 长 JSON 结构化输出解析失败（Extra data）——已知稳定性问题，非本次改动引入
+
+### 已知事项
+- S2 无 key 限流 429 常见（优雅降级为空，不影响主链路）
+- 交叉验证长 JSON 解析失败会让 cross_validate 节点将该子问题记入 gaps——后续可考虑 complete 输出 + 容错解析（DEVLOG 已有 TODO）
+- 8001 服务曾因后台任务管理被终止，已用托管 venv 重启
