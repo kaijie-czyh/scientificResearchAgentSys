@@ -32,6 +32,11 @@ class BrainstormInput(NodeInput):
     #     "overall_confidence": 0.0~1.0,
     # }
     cross_validation_report: dict[str, Any] = {}
+    # 研究缺口清单（Task 3 结构化，优先消费）：
+    # [{gap_id, gap_type, statement, detail, evidence, related_materials,
+    #   actionability, priority, source, suggested_actions}]
+    # 存在时按优先级生成思路；缺失时回退 cross_validation_report.gaps 字符串
+    gap_report: list[dict[str, Any]] = []
 
 
 class BrainstormOutput(NodeOutput):

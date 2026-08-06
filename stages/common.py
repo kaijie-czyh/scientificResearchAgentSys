@@ -51,6 +51,11 @@ RESEARCH_CROSS_VALIDATION_REPORT = ContextKey[dict]("research.cross_validation_r
 # 材料知识抽取（Task 2）：{materials: [...], properties: [...], synthesis: [...]}
 # 从入库论文摘要中抽取「材料-性能-合成」三元组，供 ideation/design 复用
 RESEARCH_MATERIAL_KNOWLEDGE = ContextKey[dict]("research.material_knowledge")
+# 研究缺口清单（Task 3）：[{gap_id, gap_type, statement, detail, evidence,
+# related_materials, actionability, priority, source, suggested_actions, subquery}]
+# 由 ResearchGapIdentifyAgent 在 cross_validate 之后生成，
+# 供 ideation（思路生成）/ discovery（假设种子 gap_ref）/ 调研报告消费
+RESEARCH_GAP_REPORT = ContextKey[list[dict]]("research.gap_report")
 
 
 # ===== ideation 阶段域键 =====

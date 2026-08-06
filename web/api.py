@@ -560,7 +560,7 @@ def get_status(project_id: str) -> dict:
 
     # 产出物计数
     counts = {"papers": 0, "ideas": 0, "claims": 0, "experiments": 0, "evidence": 0,
-              "materials": 0, "properties": 0, "synthesis": 0}
+              "materials": 0, "properties": 0, "synthesis": 0, "gaps": 0}
     try:
         store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
         counts["papers"] = len(store.list_papers())
@@ -572,6 +572,7 @@ def get_status(project_id: str) -> dict:
         counts["materials"] = mstats["materials"]
         counts["properties"] = mstats["properties"]
         counts["synthesis"] = mstats["synthesis"]
+        counts["gaps"] = store.gap_stats()["total"]
     except Exception:  # noqa: BLE001
         pass
 
@@ -864,6 +865,45 @@ def list_materials(project_id: str) -> dict:
             "method_categories": method_cat_counter,
             "material_categories": material_cat_counter,
         },
+    }
+
+
+@app.get("/api/projects/{project_id}/gaps")
+def list_research_gaps(project_id: str) -> dict:
+    """获取研究缺口清单（Task 3：Research Gap 识别）。
+
+    由 ResearchGapIdentifyAgent 在 cross_validate 之后生成并落库，
+    每条 Gap 含类型（矛盾结论/未被探索方向/缺失知识连接）、
+    证据链（可溯源 paper_id + snippet）、可操作性、优先级，
+    满足赛题「文献溯源完整性」要求，供前端「研究缺口」页展示。
+    """
+    _require_project(project_id)
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        gaps = store.list_research_gaps(limit=200)
+        stats = store.gap_stats()
+    except Exception as e:  # noqa: BLE001
+        return {"gaps": [], "stats": {"total": 0, "by_type": {}},
+                "error": f"读取失败: {e}"}
+    return {
+        "gaps": [
+            {
+                "gap_id": g.gap_id,
+                "gap_type": g.gap_type,
+                "statement": g.statement,
+                "detail": g.detail,
+                "evidence": g.evidence,
+                "related_materials": g.related_materials,
+                "actionability": g.actionability,
+                "priority": g.priority,
+                "source": g.source,
+                "suggested_actions": g.suggested_actions,
+                "subquery": g.subquery,
+                "created_at": g.created_at.isoformat() if g.created_at else None,
+            }
+            for g in gaps
+        ],
+        "stats": stats,
     }
 
 

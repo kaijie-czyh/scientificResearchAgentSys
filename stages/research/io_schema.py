@@ -189,3 +189,44 @@ class MaterialExtractionOutput(NodeOutput):
     materials: list[dict[str, Any]] = []
     properties: list[dict[str, Any]] = []
     synthesis: list[dict[str, Any]] = []
+
+
+# ===== ResearchGapIdentifyAgent（Task 3：研究缺口识别）=====
+
+class ResearchGapInput(NodeInput):
+    """研究缺口识别输入。
+
+    双通道：
+    - 通道 A（LLM）：cross_validate 报告（gaps/conflicts/consensus）+
+      论文摘要 + 材料知识 → 语义级识别矛盾/未探索/断链
+    - 通道 B（数据驱动）：KnowledgeStore 材料库统计规则 →
+      有性能无合成 / 材料体系零覆盖 / 孤立材料 / 性能类别稀疏
+    """
+
+    paper_ids: list[str]
+    subqueries: list[str]
+    cross_validation_report: dict[str, Any] = {}
+
+
+class ResearchGapOutput(NodeOutput):
+    """研究缺口识别输出：结构化 Gap 清单。
+
+    gaps: [
+        {
+            "gap_id": "gap_xxx",
+            "gap_type": "contradiction | unexplored | missing_link",
+            "statement": "一句话陈述",
+            "detail": "详细说明",
+            "evidence": [{"paper_id", "title", "snippet"}, ...],  # 证据链，可溯源
+            "related_materials": ["SnSe", ...],
+            "actionability": "high | medium | low",
+            "priority": 1~5,          # 1 最高
+            "source": "llm | data_driven | hybrid",
+            "suggested_actions": ["补充实验", ...],
+            "subquery": "关联子问题",
+        },
+        ...
+    ]
+    """
+
+    gaps: list[dict[str, Any]] = []

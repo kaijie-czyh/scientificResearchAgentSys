@@ -582,3 +582,48 @@ config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
   --remote-allow-origins=* + websocket-client 调 Runtime.evaluate 执行真实交互断言。
   注意：Windows 上 Edge 单实例复用会导致调试端口被旧实例占用，需独立
   --user-data-dir 且先清理残留进程；websocket 需 --remote-allow-origins=* 否则 403。
+
+
+## 2026-08-06 第九轮：Task 3 研究缺口识别节点（Research Gap）
+
+### 背景
+任务队列 Task 3：Research Gap 识别——基于知识抽取与交叉验证结果，识别
+矛盾结论 / 未被探索方向 / 缺失知识连接，输出带证据链的 Gap 清单。
+此前 cross_validate 的 gaps 只是子问题粒度的字符串列表，本次升级为
+结构化实体并作为 research 阶段出口节点，联动 ideation/discovery/调研报告。
+
+### 设计（用户确认后实现：全链路一次做完 + 数据驱动断链检测纳入）
+- 拓扑：material_extraction → cross_validate → research_gap（新出口节点）
+- 双通道输入：
+  - 通道 A（LLM 语义）：cross_validate 报告 + 论文摘要 + 材料知识 →
+    识别 contradiction / unexplored / missing_link
+  - 通道 B（数据驱动断链检测，纯规则不耗 token）：有性能无合成 / 有合成无性能 /
+    孤立材料（仅名称无知识）
+- 结构化 Schema：gap_id / gap_type / statement / detail / evidence(证据链) /
+  related_materials / actionability / priority(1-5) / source / suggested_actions / subquery
+
+### 实现清单
+1. **数据层**（core/knowledge）：schema.py + ResearchGap 模型；store.py +
+   research_gaps 表 + save/list/gap_stats/clear（幂等，重跑不重复）；__init__.py 导出。
+2. **核心节点**（stages/research）：io_schema.py + ResearchGapInput/Output；
+   agents.py + ResearchGapIdentifyAgent（双通道 + 合并去重：同 statement 保留 LLM 版
+   标 hybrid + 优先级排序 + dry_run 占位兜底 + 落库）；common.py + RESEARCH_GAP_REPORT；
+   graph.py 加节点加边；tasks.yaml + research_gap_identify。
+3. **下游消费方升级**（带回退兼容）：
+   - ideation BrainstormAgent：优先读 RESEARCH_GAP_REPORT 结构化清单（按优先级取前 8，
+     带 [类型|P优先级] 前缀），缺失回退旧 gaps 字符串
+   - discovery HypothesisSeedAgent：gap_ref 升级为 gap_id 强关联（同样带回退）
+4. **Web 展示**：导航新增「研究缺口」页（badge-gaps 计数）+ /api/projects/{id}/gaps
+   接口 + renderGaps（类型徽章/优先级/来源/可操作性/证据链/关联材料/建议行动 + 类型
+   筛选）+ 深链 page=gaps + NODE_LABELS + CSS（gap-* 系列）。
+
+### 验证
+- 真实项目数据（141 材料/324 性能/103 合成）：通道 B 检出 11 个 Gap
+  （5×P1 有性能无合成 + 4×P2 有合成无性能 + 2×P4 孤立材料），全部带证据链
+- 合并落库 12 条（1 contradiction + 9 missing_link + 2 unexplored）
+- dry_run 全管线 32 节点跑通：research_gap 节点成功执行（cross_validate → research_gap
+  → brainstorm 消费 gaps=1）
+- CDP 无头浏览器：研究缺口页 12 卡片渲染正确；类型筛选「矛盾结论」1 张/回全部 12 张；
+  深链 reload 落 gaps 页；布局 1280px 零重叠零溢出
+- API：GET /api/projects/{id}/gaps 返回 12 条 + stats（by_type 分布）
+

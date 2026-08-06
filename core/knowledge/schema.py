@@ -326,3 +326,38 @@ class MaterialSynthesis(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     source_stage: str = "research"
+
+
+class ResearchGap(BaseModel):
+    """研究缺口实体（Task 3：Research Gap 识别）。
+
+    由 cross_validate 的 gaps（子问题字符串列表）升级为结构化实体：
+    - 类型：contradiction（矛盾结论）/ unexplored（未被探索方向）/
+      missing_link（缺失知识连接）
+    - 每条 Gap 带证据链（可溯源 paper_id + snippet，满足赛题「文献溯源完整性」）
+    - 可操作性评估与优先级排序，供下游 ideation/discovery/报告消费
+    """
+
+    gap_id: EntityId
+    # 类型：contradiction / unexplored / missing_link
+    gap_type: str = "unexplored"
+    # 一句话陈述（简明，供下游拼 prompt / 展示）
+    statement: str = ""
+    # 详细说明（背景、现状、为什么是缺口）
+    detail: str = ""
+    # 证据链：[{paper_id, title, snippet}]，可溯源
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # 关联材料（如 ["SnSe", "Mg3Sb2"]）
+    related_materials: list[str] = Field(default_factory=list)
+    # 可操作性：high / medium / low
+    actionability: str = "medium"
+    # 优先级 1（最高）~ 5（最低）
+    priority: int = 3
+    # 来源：llm / data_driven / hybrid
+    source: str = "llm"
+    # 建议行动（如 补充实验/进一步检索/组合验证）
+    suggested_actions: list[str] = Field(default_factory=list)
+    # 关联子问题（来源 cross_validate 报告）
+    subquery: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)

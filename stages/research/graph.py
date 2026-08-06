@@ -11,6 +11,7 @@ from stages.research.agents import (
     PaperFetchAgent,
     PaperIngestAgent,
     PaperRelevanceFilterAgent,
+    ResearchGapIdentifyAgent,
     SubqueryDecomposeAgent,
     TopicConfirmHuman,
     TopicRefineAgent,
@@ -30,9 +31,12 @@ def build_research_graph() -> Graph:
         → PaperIngestAgent（chunk 摘要 + 向量入库）
         → MaterialKnowledgeExtractionAgent（Task 2：材料-性能-合成三元组抽取）
         → CrossValidateAgent（GPT-Researcher：多源交叉验证，输出可信度报告）
+        → ResearchGapIdentifyAgent（Task 3：研究缺口识别，双通道结构化 Gap 清单）
 
     检查点置于用户确认前（关键决策点），便于回滚到子问题分解阶段。
     材料知识抽取在入库后执行（依赖入库论文），交叉验证在其后。
+    研究缺口识别是 research 阶段出口节点（升级 cross_validate 的字符串 gaps
+    为结构化 Gap，供 ideation/discovery/调研报告消费）。
     """
     graph = Graph(name="research", stage=LifecycleStage.RESEARCH.value)
 
@@ -46,6 +50,7 @@ def build_research_graph() -> Graph:
     graph.add_node(PaperIngestAgent("paper_ingest"))
     graph.add_node(MaterialKnowledgeExtractionAgent("material_extraction"))
     graph.add_node(CrossValidateAgent("cross_validate"))
+    graph.add_node(ResearchGapIdentifyAgent("research_gap"))
 
     # 边
     graph.add_edge("topic_refine", "subquery_decompose")
@@ -56,6 +61,7 @@ def build_research_graph() -> Graph:
     graph.add_edge("paper_filter", "paper_ingest")
     graph.add_edge("paper_ingest", "material_extraction")
     graph.add_edge("material_extraction", "cross_validate")
+    graph.add_edge("cross_validate", "research_gap")
 
     graph.validate()
     return graph

@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
@@ -29,6 +30,7 @@ from core.knowledge import (
     MaterialSynthesis,
     Paper,
     PaperChunk,
+    ResearchGap,
 )
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
@@ -57,6 +59,7 @@ from stages.common import (
     RESEARCH_CROSS_VALIDATION_REPORT,
     RESEARCH_EVIDENCE_CHAIN,
     RESEARCH_FILTERED_PAPER_METAS,
+    RESEARCH_GAP_REPORT,
     RESEARCH_KEYWORDS,
     RESEARCH_MATERIAL_KNOWLEDGE,
     RESEARCH_PAPER_IDS,
@@ -77,6 +80,8 @@ from stages.research.io_schema import (
     PaperIngestOutput,
     PaperRelevanceFilterInput,
     PaperRelevanceFilterOutput,
+    ResearchGapInput,
+    ResearchGapOutput,
     SubqueryDecomposeInput,
     SubqueryDecomposeOutput,
     TopicConfirmOutput,
@@ -1414,3 +1419,406 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                 "source_snippet": (abstract or "")[:300],
             })
         return materials, properties, synthesis
+
+
+# ===== ResearchGapIdentifyAgent（Task 3：研究缺口识别）=====
+
+class ResearchGapItemSchema(BaseModel):
+    """研究缺口结构化输出 schema 条目。"""
+
+    gap_type: str = Field(
+        description="缺口类型：contradiction（矛盾结论）/ unexplored（未被探索方向）"
+        "/ missing_link（缺失知识连接）"
+    )
+    statement: str = Field(description="一句话陈述（简明，30 字内）")
+    detail: str = Field(default="", description="详细说明：现状、为什么是缺口")
+    evidence: list[dict] = Field(
+        default_factory=list,
+        description="证据链：[{paper_id, title, snippet}]，每条缺口至少附 1 条文献证据",
+    )
+    related_materials: list[str] = Field(default_factory=list, description="关联材料")
+    actionability: str = Field(default="medium", description="可操作性：high/medium/low")
+    priority: int = Field(default=3, description="优先级 1（最高）~5（最低）")
+    suggested_actions: list[str] = Field(default_factory=list, description="建议行动")
+    subquery: str = Field(default="", description="关联子问题")
+
+
+class ResearchGapReportSchema(BaseModel):
+    """研究缺口报告 schema。"""
+
+    gaps: list[ResearchGapItemSchema] = Field(
+        default_factory=list, description="识别的研究缺口列表（3-10 条，宁缺毋滥）"
+    )
+
+
+class ResearchGapIdentifyAgent(AgentNode):
+    """研究缺口识别 Agent（Task 3）。
+
+    在 cross_validate 之后执行，将「子问题粒度的字符串 gaps」升级为
+    「结构化 Gap 清单」，双通道识别：
+
+    通道 A（LLM 语义分析）：基于交叉验证报告（gaps/conflicts/consensus）、
+        论文摘要与材料知识，识别三类缺口：
+        - contradiction：文献间矛盾结论（如同材料性能数值差异大）
+        - unexplored：未被探索的研究方向（如某材料高温区数据缺失）
+        - missing_link：缺失的知识连接（如性能与结构/工艺间缺关联）
+
+    通道 B（数据驱动断链检测）：KnowledgeStore 材料库统计规则（纯规则，不耗 token）：
+        - 有性能无合成工艺的材料（工艺知识断链）
+        - 有合成无性能数据的材料（性能数据断链）
+        - 孤立材料（无性能无合成，仅名称）
+        - 性能类别稀疏（某类性能覆盖材料极少）
+
+    输出：结构化 Gap 清单写入 context（RESEARCH_GAP_REPORT）并落库
+    KnowledgeStore（research_gaps 表），每条带证据链（可溯源），
+    供 ideation（思路生成）/ discovery（假设种子 gap_ref）/ 调研报告消费。
+    """
+
+    node_type = "research_gap_identify"
+    task_type = "research_gap_identify"
+    input_schema = ResearchGapInput
+    output_schema = ResearchGapOutput
+    # 结构化清单整体写入 RESEARCH_GAP_REPORT（与 material_extraction 同理）
+    output_keys = {}
+
+    # 数据驱动检测规则上限（避免一次生成过多 gap 淹没下游）
+    MAX_DATA_DRIVEN_GAPS = 12
+    # LLM 语义通道生成上限
+    MAX_LLM_GAPS = 10
+
+    def _build_input(self, ctx: ExecutionContext) -> ResearchGapInput:
+        return ResearchGapInput(
+            paper_ids=ctx.get(RESEARCH_PAPER_IDS, []),
+            subqueries=ctx.get(RESEARCH_SUBQUERIES, []),
+            cross_validation_report=ctx.get(RESEARCH_CROSS_VALIDATION_REPORT, {}) or {},
+        )
+
+    def _execute(
+        self, input_obj: ResearchGapInput, ctx: ExecutionContext
+    ) -> NodeResult:
+        registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
+
+        llm_gaps: list[dict] = []
+        data_gaps: list[dict] = []
+
+        # 通道 A：LLM 语义分析（仅真实模式且 LLM 可用）
+        if not dry_run and registry is not None:
+            try:
+                llm_gaps = self._llm_identify(input_obj, registry, store)
+            except Exception as e:
+                logger.warning("Research Gap LLM 识别失败，回退规则通道: %s", e)
+
+        # 通道 B：数据驱动断链检测（纯规则，dry_run 与真实模式都执行）
+        if store is not None:
+            try:
+                data_gaps = self._data_driven_detect(store)
+            except Exception as e:
+                logger.warning("Research Gap 数据驱动检测失败: %s", e)
+
+        # 合并去重（同 statement 保留 LLM 版本，标注 hybrid）
+        gaps = self._merge_gaps(llm_gaps, data_gaps)
+
+        # dry_run 且无真实数据：生成占位 Gap（验证拓扑用）
+        if dry_run and not gaps:
+            gaps = self._placeholder_gaps(input_obj.subqueries)
+
+        # 落库 research_gaps 表（幂等，可跨会话恢复）
+        saved = 0
+        if store is not None:
+            saved = self._persist(store, gaps)
+
+        # 写入 context（供下游 ideation/discovery/报告消费）
+        ctx.set(RESEARCH_GAP_REPORT, gaps)
+
+        output = ResearchGapOutput(gaps=gaps)
+        by_type: dict[str, int] = {}
+        for g in gaps:
+            by_type[g["gap_type"]] = by_type.get(g["gap_type"], 0) + 1
+        type_brief = ", ".join(f"{k} {v} 个" for k, v in by_type.items()) or "无"
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=(
+                f"研究缺口识别完成：共 {len(gaps)} 个 Gap"
+                f"（LLM {len(llm_gaps)} + 数据驱动 {len(data_gaps)}，"
+                f"落库 {saved} 条；类型分布：{type_brief}）"
+            ),
+        )
+
+    # ===== 通道 A：LLM 语义分析 =====
+
+    def _llm_identify(
+        self,
+        input_obj: ResearchGapInput,
+        registry: LLMRegistry,
+        store: Optional[KnowledgeStore],
+    ) -> list[dict]:
+        """LLM 语义通道：基于交叉验证报告 + 论文摘要 + 材料知识识别缺口。"""
+        report = input_obj.cross_validation_report or {}
+        # 基础 gaps（cross_validate 输出的子问题缺口）+ 冲突 + 共识
+        base_gaps = report.get("gaps") or []
+        conflicts = report.get("conflicts") or []
+        consensus = report.get("consensus") or []
+        confidence = report.get("overall_confidence", 0.0)
+
+        # 论文摘要（top 5）
+        abstracts_block = ""
+        if store is not None:
+            lines = []
+            for pid in input_obj.paper_ids[:5]:
+                try:
+                    p = store.get_paper(pid)
+                    lines.append(
+                        f"[{p.title}] ({p.year}): {(p.abstract or '')[:200]}"
+                    )
+                except Exception:
+                    pass
+            abstracts_block = "\n\n".join(lines)
+
+        resp = registry.structured_output(
+            task_type=self.task_type,
+            output_schema=ResearchGapReportSchema,
+            system=(
+                "你是材料科学研究缺口分析专家。基于文献调研的交叉验证报告、"
+                "论文摘要与材料知识，识别本领域的研究缺口（Research Gap）。\n"
+                "缺口类型：\n"
+                "- contradiction：文献间矛盾结论（如同一材料性能数值差异大、"
+                "  机理解释不一致）\n"
+                "- unexplored：未被探索的方向（如某材料在特定温度区间/掺杂范围"
+                "  数据缺失、某工艺组合无人尝试）\n"
+                "- missing_link：缺失的知识连接（如性能与晶体结构/合成工艺间"
+                "  缺少关联研究、材料有性能但无对应结构数据）\n"
+                "要求：\n"
+                "1. 每个 Gap 必须能追溯到证据（evidence 至少 1 条，可引用论文标题）\n"
+                "2. 宁缺毋滥：只输出真正有依据的缺口，3-10 条\n"
+                "3. 给出可操作性（能否被后续 ideation/discovery 直接消费）与优先级\n"
+                "4. 关联相关材料与建议行动\n"
+            ),
+            prompt=(
+                f"交叉验证报告：\n"
+                f"  总体置信度：{confidence}\n"
+                f"  已知缺口（子问题粒度）：{base_gaps}\n"
+                f"  矛盾结论：{json.dumps(conflicts, ensure_ascii=False)[:2000]}\n"
+                f"  共识陈述：{consensus[:10]}\n\n"
+                f"代表性论文摘要：\n{abstracts_block}"
+            ),
+        )
+        gaps: list[dict] = []
+        for item in resp.gaps:
+            gaps.append({
+                "gap_id": KnowledgeStore.new_id(),
+                "gap_type": item.gap_type,
+                "statement": item.statement,
+                "detail": item.detail,
+                "evidence": item.evidence or [],
+                "related_materials": item.related_materials or [],
+                "actionability": item.actionability or "medium",
+                "priority": int(item.priority or 3),
+                "source": "llm",
+                "suggested_actions": item.suggested_actions or [],
+                "subquery": item.subquery,
+            })
+        return gaps[: self.MAX_LLM_GAPS]
+
+    # ===== 通道 B：数据驱动断链检测（纯规则）=====
+
+    def _data_driven_detect(self, store: KnowledgeStore) -> list[dict]:
+        """数据驱动断链检测：从材料库统计识别缺失知识连接。"""
+        materials = store.list_materials(limit=2000)
+        props = store.list_material_properties(limit=5000)
+        syns = store.list_material_synthesis(limit=5000)
+
+        # 建立 material_id → 数据索引
+        prop_by_mat: dict[str, list] = {}
+        for p in props:
+            prop_by_mat.setdefault(p.material_id, []).append(p)
+        syn_by_mat: dict[str, list] = {}
+        for s in syns:
+            syn_by_mat.setdefault(s.material_id, []).append(s)
+
+        gaps: list[dict] = []
+
+        # 规则 1：有性能无合成工艺（工艺知识断链）
+        no_syn = []
+        for m in materials:
+            if m.material_id in prop_by_mat and m.material_id not in syn_by_mat:
+                no_syn.append(m)
+        no_syn.sort(
+            key=lambda m: -len(prop_by_mat.get(m.material_id, []))
+        )
+        for m in no_syn[:5]:
+            p = prop_by_mat[m.material_id][0]
+            gaps.append(self._make_data_gap(
+                gap_type="missing_link",
+                statement=f"{m.name} 有性能数据但缺少合成工艺记录",
+                detail=(
+                    f"材料 {m.name} 已有 {len(prop_by_mat[m.material_id])} 条性能数据"
+                    f"（如 {p.property_name}），但库内未检索到其合成工艺"
+                    f"（方法/温度/前驱体）记录，构效关系链路在「工艺→结构→性能」"
+                    "的源头处断链。"
+                ),
+                materials=[m],
+                actionability="high",
+                priority=1,
+                suggested_actions=[
+                    "补充检索该材料的合成工艺文献",
+                    "将其纳入 discovery 搜索空间的前驱体/工艺变量",
+                ],
+            ))
+
+        # 规则 2：有合成无性能数据（性能数据断链）
+        no_prop = []
+        for m in materials:
+            if m.material_id in syn_by_mat and m.material_id not in prop_by_mat:
+                no_prop.append(m)
+        no_prop.sort(
+            key=lambda m: -len(syn_by_mat.get(m.material_id, []))
+        )
+        for m in no_prop[:4]:
+            gaps.append(self._make_data_gap(
+                gap_type="missing_link",
+                statement=f"{m.name} 有合成工艺但无性能数据",
+                detail=(
+                    f"材料 {m.name} 已报道合成方法"
+                    f"（{syn_by_mat[m.material_id][0].method}），"
+                    "但缺少性能（ZT/电导率/热导率等）数据，"
+                    "无法评估其热电潜力，存在性能数据缺口。"
+                ),
+                materials=[m],
+                actionability="high",
+                priority=2,
+                suggested_actions=[
+                    "检索该材料的热电性能报道",
+                    "用相似结构材料做性能外推作为初始假设",
+                ],
+            ))
+
+        # 规则 3：孤立材料（无性能无合成，仅名称）
+        isolated = [
+            m for m in materials
+            if m.material_id not in prop_by_mat
+            and m.material_id not in syn_by_mat
+        ]
+        for m in isolated[:2]:
+            gaps.append(self._make_data_gap(
+                gap_type="unexplored",
+                statement=f"{m.name} 仅被提及名称，缺乏结构化知识",
+                detail=(
+                    f"材料 {m.name} 在文献中被提及但未抽取到性能与合成信息，"
+                    "可能是边缘提及或抽取遗漏，需要人工/补充检索确认其研究价值。"
+                ),
+                materials=[m],
+                actionability="low",
+                priority=4,
+                suggested_actions=[
+                    "回读原文确认该材料的研究地位",
+                    "若为边缘提及则标注低优先，避免误导下游",
+                ],
+            ))
+
+        return gaps[: self.MAX_DATA_DRIVEN_GAPS]
+
+    @staticmethod
+    def _make_data_gap(
+        gap_type: str,
+        statement: str,
+        detail: str,
+        materials: list,
+        actionability: str,
+        priority: int,
+        suggested_actions: list[str],
+    ) -> dict:
+        """构造数据驱动 Gap dict（evidence 取自首个材料）。"""
+        m = materials[0]
+        evidence = []
+        if getattr(m, "paper_id", None):
+            evidence.append({
+                "paper_id": m.paper_id,
+                "title": getattr(m, "paper_title", "") or "",
+                "snippet": (getattr(m, "source_snippet", "") or "")[:300],
+            })
+        return {
+            "gap_id": KnowledgeStore.new_id(),
+            "gap_type": gap_type,
+            "statement": statement,
+            "detail": detail,
+            "evidence": evidence,
+            "related_materials": [m.name],
+            "actionability": actionability,
+            "priority": priority,
+            "source": "data_driven",
+            "suggested_actions": suggested_actions,
+            "subquery": "",
+        }
+
+    # ===== 合并 / 占位 / 落库 =====
+
+    @staticmethod
+    def _merge_gaps(llm_gaps: list[dict], data_gaps: list[dict]) -> list[dict]:
+        """合并双通道结果：同 statement 去重（保留 LLM 版，标注 hybrid）。"""
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for g in llm_gaps:
+            key = (g.get("statement") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(g)
+        for g in data_gaps:
+            key = (g.get("statement") or "").strip().lower()
+            if key in seen:
+                # 已存在（LLM 版）：把 LLM 版标记为 hybrid
+                for m in merged:
+                    if (m.get("statement") or "").strip().lower() == key:
+                        if m.get("source") == "llm":
+                            m["source"] = "hybrid"
+                        break
+                continue
+            seen.add(key)
+            merged.append(g)
+        # 按优先级排序（1 最高在前）
+        merged.sort(key=lambda g: g.get("priority", 5))
+        return merged
+
+    @staticmethod
+    def _placeholder_gaps(subqueries: list[str]) -> list[dict]:
+        """dry_run 占位 Gap（验证拓扑用）。"""
+        sq = subqueries[0] if subqueries else "研究主题"
+        return [{
+            "gap_id": KnowledgeStore.new_id(),
+            "gap_type": "unexplored",
+            "statement": f"[占位] {sq[:40]} 存在未被探索的研究方向",
+            "detail": "dry_run 占位缺口，真实模式将由 LLM + 数据驱动双通道生成",
+            "evidence": [],
+            "related_materials": [],
+            "actionability": "medium",
+            "priority": 3,
+            "source": "placeholder",
+            "suggested_actions": [],
+            "subquery": sq,
+        }]
+
+    @staticmethod
+    def _persist(store: KnowledgeStore, gaps: list[dict]) -> int:
+        """落库 research_gaps 表，返回成功条数。"""
+        objs: list[ResearchGap] = []
+        for g in gaps:
+            try:
+                objs.append(ResearchGap(
+                    gap_id=g.get("gap_id") or KnowledgeStore.new_id(),
+                    gap_type=g.get("gap_type", "unexplored"),
+                    statement=g.get("statement", ""),
+                    detail=g.get("detail", ""),
+                    evidence=g.get("evidence") or [],
+                    related_materials=g.get("related_materials") or [],
+                    actionability=g.get("actionability", "medium"),
+                    priority=int(g.get("priority", 3)),
+                    source=g.get("source", "llm"),
+                    suggested_actions=g.get("suggested_actions") or [],
+                    subquery=g.get("subquery", ""),
+                ))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Research Gap 构造失败: %s", e)
+        return store.save_research_gaps(objs)

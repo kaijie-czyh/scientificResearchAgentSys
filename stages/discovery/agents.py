@@ -59,6 +59,7 @@ from stages.common import (
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
     RESEARCH_CROSS_VALIDATION_REPORT,
+    RESEARCH_GAP_REPORT,
     RESEARCH_PAPER_IDS,
     RESEARCH_TOPIC,
 )
@@ -186,9 +187,21 @@ class HypothesisSeedAgent(AgentNode):
 
     def _build_input(self, ctx: ExecutionContext) -> HypothesisSeedInput:
         report = ctx.get(RESEARCH_CROSS_VALIDATION_REPORT, {}) or {}
+        # 研究缺口（Task 3 结构化优先）：[{gap_id, statement, gap_type, priority, ...}]
+        gap_report = ctx.get(RESEARCH_GAP_REPORT, []) or []
+        if gap_report:
+            # 按优先级升序取前 8 条，statement 附 gap_id 便于下游强关联
+            sorted_gaps = sorted(gap_report, key=lambda g: g.get("priority", 5))
+            gaps = [
+                f"[{g.get('gap_id', '')}] {g.get('statement', '')}"
+                for g in sorted_gaps[:8]
+            ]
+        else:
+            # 回退：cross_validate 的字符串 gaps
+            gaps = report.get("gaps", []) or []
         return HypothesisSeedInput(
             topic=ctx.get(RESEARCH_TOPIC, ""),
-            gaps=report.get("gaps", []) or [],
+            gaps=gaps,
             conflicts=report.get("conflicts", []) or [],
             consensus=report.get("consensus", []) or [],
             paper_ids=ctx.get(RESEARCH_PAPER_IDS, []) or [],

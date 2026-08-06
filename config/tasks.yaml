@@ -83,6 +83,13 @@ tasks:
     temperature: 0.1
     description: "借鉴 GPT-Researcher，对多源信息冲突做交叉验证，给出可信度评分"
 
+  # 研究缺口识别（Task 3）：双通道（LLM 语义 + 数据驱动断链检测）输出结构化 Gap 清单
+  research_gap_identify:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.2
+    description: "识别研究缺口：矛盾结论/未被探索方向/缺失知识连接，输出带证据链的结构化 Gap 清单"
+
   # ===== 思路探讨阶段 =====
   ideation_brainstorm:
     provider: minimax

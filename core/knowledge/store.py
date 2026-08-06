@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -40,11 +41,15 @@ from core.knowledge.schema import (
     PaperChunk,
     Relation,
     RelationType,
+    ResearchGap,
 )
 
 
 class StoreError(Exception):
     """知识库存储错误。"""
+
+
+logger = logging.getLogger(__name__)
 
 
 _SCHEMA_SQL = """
@@ -151,6 +156,15 @@ CREATE TABLE IF NOT EXISTS material_synthesis (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_matsyn_material ON material_synthesis(material_id);
+
+-- Task 3：研究缺口（Research Gap）识别结果
+-- 结构化 Gap 清单（类型/证据链/可操作性/优先级），供 ideation/discovery/报告消费
+CREATE TABLE IF NOT EXISTS research_gaps (
+    gap_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gaps_created ON research_gaps(created_at);
 """
 
 
@@ -592,6 +606,66 @@ class KnowledgeStore:
             "properties": n_prop,
             "synthesis": n_syn,
             "complete_triples": len(full),
+        }
+
+    # ===== Research Gap（Task 3：研究缺口识别）=====
+
+    def save_research_gap(self, gap: ResearchGap) -> None:
+        """保存一条研究缺口。按 gap_id 幂等覆盖（重跑不产生重复）。"""
+        gap.gap_id = gap.gap_id or self.new_id()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO research_gaps "
+                "(gap_id, content, created_at) VALUES (?, ?, ?)",
+                (
+                    gap.gap_id,
+                    gap.model_dump_json(),
+                    gap.created_at.isoformat(),
+                ),
+            )
+
+    def save_research_gaps(self, gaps: list[ResearchGap]) -> int:
+        """批量保存研究缺口，返回保存条数。"""
+        n = 0
+        for g in gaps:
+            try:
+                self.save_research_gap(g)
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Research Gap 落库失败（gap_id=%r）: %s", g.gap_id, e)
+        return n
+
+    def list_research_gaps(self, limit: int = 200) -> list[ResearchGap]:
+        """列出全部研究缺口（按优先级升序、创建时间降序）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT content FROM research_gaps "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        gaps = [ResearchGap.model_validate_json(r["content"]) for r in rows]
+        # 优先级 1 最高在前，其次按创建时间
+        gaps.sort(key=lambda g: (g.priority, -g.created_at.timestamp()))
+        return gaps
+
+    def clear_research_gaps(self) -> None:
+        """清空研究缺口表（仅供验证/重跑场景，生产勿用）。"""
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM research_gaps")
+
+    def gap_stats(self) -> dict:
+        """研究缺口统计：总数 / 按类型分布。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT content FROM research_gaps"
+            ).fetchall()
+        gaps = [ResearchGap.model_validate_json(r["content"]) for r in rows]
+        by_type: dict[str, int] = {}
+        for g in gaps:
+            by_type[g.gap_type] = by_type.get(g.gap_type, 0) + 1
+        return {
+            "total": len(gaps),
+            "by_type": by_type,
         }
 
     # ===== Evidence Log（检索证据链，可审计轨迹）=====

@@ -40,6 +40,7 @@ from stages.common import (
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
     RESEARCH_CROSS_VALIDATION_REPORT,
+    RESEARCH_GAP_REPORT,
     RESEARCH_PAPER_IDS,
 )
 from stages.ideation.io_schema import (
@@ -116,6 +117,7 @@ class BrainstormAgent(AgentNode):
         return BrainstormInput(
             paper_ids=ctx.get(RESEARCH_PAPER_IDS, []),
             cross_validation_report=ctx.get(RESEARCH_CROSS_VALIDATION_REPORT, {}),
+            gap_report=ctx.get(RESEARCH_GAP_REPORT, []),
         )
 
     def _execute(self, input_obj: BrainstormInput, ctx: ExecutionContext) -> NodeResult:
@@ -124,10 +126,25 @@ class BrainstormAgent(AgentNode):
         dry_run: bool = ctx.get(DRY_RUN, True)
 
         report = input_obj.cross_validation_report or {}
-        gaps = report.get("gaps", []) or []
         conflicts = report.get("conflicts", []) or []
         consensus = report.get("consensus", []) or []
         paper_ids = input_obj.paper_ids or []
+
+        # 研究缺口（Task 3 结构化优先，回退旧字符串 gaps）：
+        # gap_report: [{statement, gap_type, priority, evidence, ...}]
+        gap_report = input_obj.gap_report or []
+        gaps: list = []
+        if gap_report:
+            # 结构化 Gap：按优先级升序取 statement（带类型标记，提升 prompt 质量）
+            sorted_gaps = sorted(gap_report, key=lambda g: g.get("priority", 5))
+            gaps = [
+                f"[{g.get('gap_type', 'unexplored')}|P{g.get('priority', 3)}] "
+                f"{g.get('statement', '')}"
+                for g in sorted_gaps[:8]
+            ]
+        else:
+            # 回退：cross_validate 的字符串 gaps
+            gaps = report.get("gaps", []) or []
 
         # 加载 paper 摘要作为 prompt 素材
         paper_summaries: list[str] = []

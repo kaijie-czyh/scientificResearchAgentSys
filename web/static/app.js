@@ -115,6 +115,7 @@
         paper_ingest: "论文入库与 URL 补全",
         material_extraction: "材料知识抽取（材料-性能-合成三元组）",
         cross_validate: "多源信息交叉验证",
+        research_gap: "研究缺口识别（Research Gap 清单）",
         // ideation 阶段
         brainstorm: "候选思路生成（与用户探讨）",
         idea_discuss: "思路讨论（等待人工输入）",
@@ -216,6 +217,7 @@
             progress: "研究进度",
             papers: "论文浏览",
             materials: "材料知识",
+            gaps: "研究缺口",
             claims: "Claim 列表",
             experiments: "实验列表",
             discovery: "构效关系发现",
@@ -280,6 +282,7 @@
         const counts = data.counts || {};
         setBadge("badge-papers", counts.papers);
         setBadge("badge-materials", counts.materials);
+        setBadge("badge-gaps", counts.gaps);
         setBadge("badge-claims", counts.claims);
         setBadge("badge-experiments", counts.experiments);
         setBadge("badge-notes", (data.notes_count != null) ? data.notes_count : null);
@@ -314,6 +317,7 @@
             case "progress": renderProgress(content); break;
             case "papers": renderPapers(content); break;
             case "materials": renderMaterials(content); break;
+            case "gaps": renderGaps(content); break;
             case "claims": renderClaims(content); break;
             case "experiments": renderExperiments(content); break;
             case "discovery": renderDiscovery(content); break;
@@ -1419,6 +1423,141 @@
         renderMaterialList();
     }
 
+    // ===== 3.5 研究缺口页（Task 3：Research Gap 识别） =====
+
+    let gapsFilter = "all";
+
+    const GAP_TYPE_META = {
+        contradiction: { label: "矛盾结论", cls: "gap-tag-danger" },
+        unexplored: { label: "未被探索方向", cls: "gap-tag-info" },
+        missing_link: { label: "缺失知识连接", cls: "gap-tag-warning" },
+    };
+    const GAP_ACTION_META = {
+        high: { label: "高可操作性", cls: "gap-act-high" },
+        medium: { label: "中", cls: "gap-act-medium" },
+        low: { label: "低", cls: "gap-act-low" },
+    };
+
+    async function renderGaps(content) {
+        content.appendChild(el("div", { class: "loading" }, "加载研究缺口…"));
+        let data;
+        try {
+            data = await api("GET", `/api/projects/${state.currentProjectId}/gaps`);
+        } catch (e) {
+            content.appendChild(el("div", { class: "status-banner danger" },
+                "加载失败：" + (e.message || e)));
+            return;
+        }
+        clear(content);
+        const gaps = data.gaps || [];
+        const stats = data.stats || {};
+
+        content.appendChild(el("h2", { class: "page-title" }, "研究缺口（Research Gap）"));
+        const byType = stats.by_type || {};
+        const typeBrief = Object.entries(byType)
+            .map(([k, v]) => `${GAP_TYPE_META[k] ? GAP_TYPE_META[k].label : k} ${v} 个`)
+            .join(" · ") || "暂无";
+        content.appendChild(el("p", { class: "page-desc" },
+            `共 ${gaps.length} 个研究缺口（${typeBrief}）。` +
+            `由 research 阶段「研究缺口识别」节点在交叉验证后生成：` +
+            `双通道（LLM 语义分析 + 数据驱动断链检测）输出带证据链的结构化 Gap 清单，` +
+            `供思路生成（ideation）与构效关系发现（discovery）消费。`));
+
+        if (!gaps.length) {
+            content.appendChild(el("div", { class: "card mat-empty" },
+                "暂无研究缺口。完成 research 阶段的「交叉验证 → 研究缺口识别」节点后自动生成。"));
+            return;
+        }
+
+        // 类型筛选条
+        const bar = el("div", { class: "filter-bar" });
+        bar.appendChild(el("span", { class: "filter-label", text: "类型筛选：" }));
+        ["all", "contradiction", "unexplored", "missing_link"].forEach(t => {
+            const label = t === "all" ? "全部" : (GAP_TYPE_META[t] ? GAP_TYPE_META[t].label : t);
+            bar.appendChild(el("span", {
+                class: "filter-chip" + (gapsFilter === t ? " active" : ""),
+                text: label,
+                onclick: () => {
+                    gapsFilter = t;
+                    renderPage();
+                },
+            }));
+        });
+        content.appendChild(bar);
+
+        // Gap 卡片列表（按优先级 1 最高在前，接口已排序）
+        const sorted = gapsFilter === "all"
+            ? gaps
+            : gaps.filter(g => g.gap_type === gapsFilter);
+        const list = el("div", { class: "gap-list" });
+        for (const g of sorted) {
+            list.appendChild(renderGapCard(g));
+        }
+        content.appendChild(list);
+    }
+
+    function renderGapCard(g) {
+        const typeMeta = GAP_TYPE_META[g.gap_type] || { label: g.gap_type || "未知", cls: "gap-tag-neutral" };
+        const actMeta = GAP_ACTION_META[g.actionability] || { label: g.actionability || "中", cls: "gap-act-medium" };
+        const sourceLabel = g.source === "data_driven" ? "数据驱动"
+            : g.source === "hybrid" ? "LLM + 数据"
+            : g.source === "placeholder" ? "占位"
+            : "LLM 分析";
+
+        const card = el("div", { class: "gap-card" });
+
+        // 头部：类型徽章 + 优先级 + 来源 + statement
+        const head = el("div", { class: "gap-head" });
+        head.appendChild(el("span", { class: `gap-tag ${typeMeta.cls}`, text: typeMeta.label }));
+        head.appendChild(el("span", { class: "gap-priority", text: `优先级 P${g.priority || 3}` }));
+        head.appendChild(el("span", { class: "gap-source", text: sourceLabel }));
+        head.appendChild(el("span", { class: `gap-act ${actMeta.cls}`, text: `可操作性：${actMeta.label}` }));
+        card.appendChild(head);
+
+        card.appendChild(el("div", { class: "gap-statement", text: g.statement || "（无陈述）" }));
+
+        if (g.detail) {
+            card.appendChild(el("div", { class: "gap-detail", text: g.detail }));
+        }
+
+        // 关联材料
+        const mats = g.related_materials || [];
+        if (mats.length) {
+            const row = el("div", { class: "gap-mats" });
+            row.appendChild(el("span", { class: "gap-row-label", text: "关联材料：" }));
+            mats.forEach(m => row.appendChild(el("span", { class: "mat-chip", text: m })));
+            card.appendChild(row);
+        }
+
+        // 证据链（可溯源）
+        const evs = g.evidence || [];
+        if (evs.length) {
+            const evBlock = el("div", { class: "gap-evidence" });
+            evBlock.appendChild(el("div", { class: "gap-row-label", text: `证据链（${evs.length} 条，可溯源）：` }));
+            evs.slice(0, 3).forEach(ev => {
+                const title = ev.title || ev.paper_id || "来源论文";
+                const snippet = ev.snippet ? ` — ${ev.snippet.slice(0, 120)}${ev.snippet.length > 120 ? "…" : ""}` : "";
+                evBlock.appendChild(el("div", { class: "gap-ev-item" },
+                    `[${ev.paper_id ? ev.paper_id.slice(-8) : "?"}] ${title}${snippet}`));
+            });
+            if (evs.length > 3) {
+                evBlock.appendChild(el("div", { class: "gap-ev-more", text: `…另有 ${evs.length - 3} 条证据` }));
+            }
+            card.appendChild(evBlock);
+        }
+
+        // 建议行动
+        const acts = g.suggested_actions || [];
+        if (acts.length) {
+            const actRow = el("div", { class: "gap-actions" });
+            actRow.appendChild(el("span", { class: "gap-row-label", text: "建议行动：" }));
+            acts.forEach(a => actRow.appendChild(el("span", { class: "gap-act-chip", text: a })));
+            card.appendChild(actRow);
+        }
+
+        return card;
+    }
+
     // ===== 4. Claim 页 =====
 
     let claimsFilter = "all";
@@ -2000,7 +2139,7 @@
             state.currentProjectId = urlProject;
             updateProjectIdDisplay();
             startPolling();
-            if (urlPage && ["progress", "papers", "materials", "claims", "experiments", "discovery", "notes", "human"].includes(urlPage)) {
+            if (urlPage && ["progress", "papers", "materials", "gaps", "claims", "experiments", "discovery", "notes", "human"].includes(urlPage)) {
                 setActivePage(urlPage);
             } else {
                 setActivePage("progress");
