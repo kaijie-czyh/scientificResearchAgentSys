@@ -668,3 +668,71 @@ config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
 - CDP（6/6 PASS）：冲突卡片内「查看论文」再次跳转定位；布局零横向溢出零重叠
 - dry_run 全管线跑通（4 claims 落库），conflicts 在 dry_run 为空表（占位正常）
 
+
+## 2026-08-06 第十一轮：材料覆盖度重抽 + 假设可验证性评分（Quick Wins 3&4）
+
+### 背景
+按优化矩阵「优先做」象限继续落地两项优化：
+1. **材料覆盖度重抽**：Task 2 抽取后仍有「仅名称」材料（无性能/无合成），
+   真实项目 141 材料中 29 个仅名称（12 泛称 + 17 具体）→ 对具体材料跨论文
+   二次抽取补全。
+2. **假设可验证性评分**：ideation/discovery 产出的假设此前只有文本，无量化
+   可验证性指标 → 给每个假设打三维评分（新颖性/可行性/缺口关联度），Web 排序展示。
+
+### 实现清单
+1. **泛称判别（normalize.py）**：`is_generic_material_name(name, formula)`——
+   化学式匹配（≥2 元素/含数字）→ 具体；名称以 `_GENERIC_SUFFIXES`（约 60 个
+   集合名词词尾：materials/alloys/phases/catalysts…）结尾 → 泛称；否则保守判具体。
+   实测 12 泛称 / 17 具体全部正确。
+2. **覆盖度重抽（research/agents.py）**：
+   - `_find_name_only_materials(store)`：过滤已有性能/合成的材料 + 泛称，返回
+     [(Material, 关键词)]，有化学式优先排序
+   - `_re_extract_name_only(store, registry, max_materials=15)`：跨论文聚合含
+     材料名的摘要片段（最多 3 篇，命中处前后 200/600 字符）→ 专门 prompt 只抽取
+     该材料性能/合成（不臆造）→ 沿用 MaterialExtractSchema → 名称/公式别名匹配
+     落库（confidence=0.7，source_snippet 用片段）。纯容错：单材料失败跳过。
+   - `_execute` 末尾自动触发（dry_run/无 registry 时跳过）
+3. **手动重抽 API（web/api.py）**：`POST /api/projects/{id}/materials/re-extract`
+   异步线程执行，拒绝 running 并发，结果写 state.summary/error。
+4. **假设三维评分（discovery/agents.py）**：`HypothesisItem` 增
+   novelty_score/feasibility_score/gap_relevance_score（0~1，默认 0.5）；
+   HypothesisSeedAgent prompt 要求 LLM 输出三维评分且「不要全部给高分」；
+   `_placeholder` 补合理默认分。
+5. **假设三维评分（ideation/agents.py）**：`IdeaDraftItem` 同步加三维字段；
+   BrainstormAgent prompt 要求输出评分；落库写入 Idea.validation_notes（含
+   overall_score=0.4×新颖+0.3×可行+0.3×缺口）；`_placeholder_drafts` 带分。
+   **修复**：IdeaValidateAgent 原逻辑覆盖 validation_notes（丢掉三维分）→
+   改为合并保留（`{**prev, feasibility, novelty, contribution, reason}`）。
+6. **数据透出（runtime/pipeline.py）**：run_discovery 结果把带评分的假设列表写入
+   `result.extra["hypotheses"]`。
+7. **API 扩展（web/api.py）**：`_extract_discovery_summary` 增 hypothesis_list
+   （假设 + 三维评分 + overall_score，按综合分降序）。
+8. **前端（app.js + style.css）**：Discovery 页新增「假设可验证性评分」卡片——
+   每条假设：排名徽章 + 假设文本 + 目标性能/变量/Gap 元信息 + rationale + 右侧
+   综合分；下方三条评分进度条（≥0.7 绿 / ≥0.4 蓝 / <0.4 橙），按综合分降序。
+
+### 问题与修复
+- **list_papers(limit=200) 参数错误**：KnowledgeStore.list_papers() 无 limit 参数，
+  首次真实重抽直接失败（`unexpected keyword argument 'limit'`）→ 去掉参数后重抽成功。
+- **GeTe/Mg2Ge 重抽 JSON 解析失败**：LLM 偶发返回非合法 JSON（仅 2 个材料），
+  属 LLM 输出质量问题，单材料失败跳过不影响整体（其余材料补全正常）。
+- **IdeaValidateAgent 覆盖三维评分**：validation_notes 被验证结果整体替换 →
+  改为合并保留，dry_run 验证 3/3 idea 同时具备三维评分 + 验证评估。
+
+### 验证
+- 真实重抽：性能 324→343、合成 103→107，补全 23 条知识；材料页 Germanium
+  selenide 显示「性能 4 + 合成 1」（补全前 0+0）；总览 111 种含性能、82 种含合成
+- dry_run discovery：假设带三维评分、综合分计算正确（0.4×新颖+0.3×可行+0.3×缺口）、
+  hypothesis_list 按综合分降序 ✓
+- dry_run 全管线：ideation 3/3 idea 落库 validation_notes 三维评分 + validate 合并 ✓
+- CDP（8/8 PASS）：fetch 覆写 mock /discoveries → 评分卡片 3 条假设渲染、评分条 9 条、
+  综合分降序 0.83/0.69/0.51、首条宽度 85%/72%/90%、零横向溢出 ✓
+- CDP 材料页：141 材料渲染、Germanium selenide 性能/合成展示 ✓
+- 全改动文件语法检查通过；git 提交 fdf0e49
+
+### 下一步
+- Task 4：结构化调研报告（含研究缺口章节）仍在队列
+- 闭环回流（材料知识 → research 输入）为暂缓项
+- 可选战略项：性能对比可视化
+
+
