@@ -41,6 +41,7 @@ from core.tools import (
     search_semantic_scholar,
     split_into_chunks,
 )
+from core.tools.url_resolve import resolve_paper_url
 
 from stages.common import (
     DRY_RUN,
@@ -107,11 +108,30 @@ class PaperMetaSchema(BaseModel):
 
 
 class RelevanceScoreSchema(BaseModel):
-    """相关性打分 schema（PaperQA filter）。"""
+    """相关性打分 schema（PaperQA filter，单篇）。"""
 
     score: float = Field(description="相关性分数 0~1")
     reason: str = Field(description="打分理由")
     covered_subqueries: list[str] = Field(default_factory=list, description="覆盖的子问题")
+
+
+class BatchScoreItem(BaseModel):
+    """批量打分中的单篇条目（index 对应输入列表下标）。"""
+
+    index: int = Field(description="候选论文在输入列表中的下标（从 0 开始）")
+    score: float = Field(description="相关性分数 0~1")
+    reason: str = Field(default="", description="打分理由")
+    covered_subqueries: list[str] = Field(default_factory=list, description="覆盖的子问题")
+
+
+class BatchScoreSchema(BaseModel):
+    """批量相关性打分 schema（一次 LLM 调用为多篇论文打分，减少调用次数）。
+
+    真实模式下 LLM 调用是 research 阶段的主要耗时（100+ 候选 × 单篇调用 ≈ 15-25 分钟）。
+    批量打分将调用次数从 N 次降到 N/6 次，是论文浏览提速的关键优化。
+    """
+
+    items: list[BatchScoreItem] = Field(description="对输入列表中每篇论文的打分结果")
 
 
 class ConflictItem(BaseModel):
@@ -563,6 +583,9 @@ class PaperRelevanceFilterAgent(AgentNode):
     }
 
     DEFAULT_THRESHOLD = 0.5
+    # 批量打分：每批 6 篇（一次 LLM 调用），将调用次数从 N 降至 N/6。
+    # 这是 research 阶段提速的核心：此前 100+ 候选逐篇打分耗时 15-25 分钟。
+    BATCH_SIZE = 6
 
     def _build_input(self, ctx: ExecutionContext) -> PaperRelevanceFilterInput:
         return PaperRelevanceFilterInput(
@@ -581,40 +604,38 @@ class PaperRelevanceFilterAgent(AgentNode):
         rejected: list[dict] = []
 
         if not dry_run and registry is not None:
-            for meta in input_obj.paper_metas:
-                try:
-                    resp = registry.structured_output(
-                        task_type=self.task_type,
-                        output_schema=RelevanceScoreSchema,
-                        system=(
-                            "你是文献筛选助手。对候选论文按主题相关性与子问题覆盖度打分（0~1）。"
-                            "考虑：摘要与主题的语义相关度、是否覆盖关键子问题、发表年份新近度、"
-                            "引用数（若有）。给出具体打分理由。"
-                        ),
-                        prompt=(
-                            f"主题：{input_obj.topic}\n"
-                            f"子问题：{input_obj.subqueries}\n"
-                            f"候选论文：标题={meta.get('title')}\n"
-                            f"摘要={(meta.get('abstract') or '')[:500]}\n"
-                            f"年份={meta.get('year')}\n"
-                            f"引用数={meta.get('citation_count', 'N/A')}"
-                        ),
-                    )
-                    meta = dict(meta)
-                    meta["relevance_score"] = float(resp.score)
-                    meta["relevance_reason"] = resp.reason
-                    meta["covered_subqueries"] = resp.covered_subqueries
-                    if resp.score >= self.DEFAULT_THRESHOLD:
-                        filtered.append(meta)
-                    else:
-                        rejected.append(meta)
-                except Exception as e:
-                    logger.warning("RelevanceFilter 打分失败（title=%r），保留候选: %s",
-                                   meta.get("title"), e)
-                    meta = dict(meta)
-                    meta["relevance_score"] = 0.5
-                    meta["relevance_reason"] = f"打分失败，默认保留: {e}"
+            # 分批处理：Sciverse 候选免 LLM 打分（直接用语义检索分），
+            # 其余（arxiv/S2）按批批量打分。
+            sciverse_metas = [
+                m for m in input_obj.paper_metas
+                if (m.get("source") or "").startswith("sciverse")
+            ]
+            llm_metas = [
+                m for m in input_obj.paper_metas
+                if not (m.get("source") or "").startswith("sciverse")
+            ]
+
+            for meta in sciverse_metas:
+                meta = dict(meta)
+                # Sciverse agentic-search 的 score 即为查询-证据语义相关性分（0~1），
+                # 直接复用为论文相关性分，免去逐篇 LLM 调用（省时 15+ 分钟）。
+                sc = float(meta.get("evidence_score") or 0.0)
+                meta["relevance_score"] = sc if sc > 0 else 0.5
+                meta["relevance_reason"] = (
+                    f"Sciverse 语义检索相关性分 {meta['relevance_score']:.3f}"
+                    "（agentic-search score，免 LLM 打分）"
+                )
+                if meta["relevance_score"] >= self.DEFAULT_THRESHOLD:
                     filtered.append(meta)
+                else:
+                    rejected.append(meta)
+
+            # 非 Sciverse 候选（arxiv/S2）批量打分
+            batch_filtered, batch_rejected = self._batch_score(
+                input_obj, llm_metas, registry
+            )
+            filtered.extend(batch_filtered)
+            rejected.extend(batch_rejected)
         else:
             # 占位：保留全部候选，分数 0.7
             for meta in input_obj.paper_metas:
@@ -654,6 +675,110 @@ class PaperRelevanceFilterAgent(AgentNode):
             output=output,
             summary=f"相关性筛选完成：保留 {len(filtered)} 篇，剔除 {len(rejected)} 篇",
         )
+
+    def _batch_score(
+        self,
+        input_obj: PaperRelevanceFilterInput,
+        llm_metas: list[dict],
+        registry: LLMRegistry,
+    ) -> tuple[list[dict], list[dict]]:
+        """对非 Sciverse 候选批量 LLM 打分（每批 BATCH_SIZE 篇一次调用）。
+
+        Returns:
+            (filtered, rejected)：与单篇打分同构的结果列表。
+            某批调用失败时降级为该批逐篇打分（原逻辑），保证不丢候选。
+        """
+        filtered: list[dict] = []
+        rejected: list[dict] = []
+
+        for start in range(0, len(llm_metas), self.BATCH_SIZE):
+            batch = llm_metas[start:start + self.BATCH_SIZE]
+            try:
+                batch_block = "\n\n".join(
+                    f"[{i}] 标题={m.get('title')}\n"
+                    f"    摘要={(m.get('abstract') or '')[:300]}\n"
+                    f"    年份={m.get('year')} | 引用数={m.get('citation_count', 'N/A')} | "
+                    f"来源={m.get('source', '')}"
+                    for i, m in enumerate(batch)
+                )
+                resp = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=BatchScoreSchema,
+                    system=(
+                        "你是文献筛选助手。对以下候选论文按主题相关性与子问题覆盖度"
+                        f"打分（0~1）。考虑：摘要与主题语义相关度、是否覆盖关键子问题、"
+                        "发表年份新近度、引用数。"
+                        f"必须为每篇输出一条 items 记录（index 对应 [i] 下标），"
+                        "不要遗漏任何一篇。"
+                    ),
+                    prompt=(
+                        f"主题：{input_obj.topic}\n"
+                        f"子问题：{input_obj.subqueries}\n"
+                        f"候选论文（共 {len(batch)} 篇）：\n{batch_block}"
+                    ),
+                )
+                scores: dict[int, BatchScoreItem] = {}
+                for it in resp.items:
+                    scores[int(it.index)] = it
+                for i, m in enumerate(batch):
+                    meta = dict(m)
+                    item = scores.get(i)
+                    if item is not None:
+                        meta["relevance_score"] = float(item.score)
+                        meta["relevance_reason"] = item.reason or "批量打分"
+                        meta["covered_subqueries"] = list(item.covered_subqueries)
+                    else:
+                        # 模型漏了某篇：默认保留（不因一次遗漏饿死候选）
+                        meta["relevance_score"] = 0.5
+                        meta["relevance_reason"] = "批量打分遗漏该篇，默认保留"
+                    if meta["relevance_score"] >= self.DEFAULT_THRESHOLD:
+                        filtered.append(meta)
+                    else:
+                        rejected.append(meta)
+            except Exception as e:
+                # 批量调用失败（如长 JSON 解析失败）：降级为该批逐篇打分
+                logger.warning(
+                    "批量打分失败（%d 篇），降级逐篇: %s", len(batch), e
+                )
+                for m in batch:
+                    try:
+                        resp = registry.structured_output(
+                            task_type=self.task_type,
+                            output_schema=RelevanceScoreSchema,
+                            system=(
+                                "你是文献筛选助手。对候选论文按主题相关性与子问题"
+                                "覆盖度打分（0~1）。考虑：摘要与主题的语义相关度、"
+                                "是否覆盖关键子问题、发表年份新近度、引用数（若有）。"
+                                "给出具体打分理由。"
+                            ),
+                            prompt=(
+                                f"主题：{input_obj.topic}\n"
+                                f"子问题：{input_obj.subqueries}\n"
+                                f"候选论文：标题={m.get('title')}\n"
+                                f"摘要={(m.get('abstract') or '')[:500]}\n"
+                                f"年份={m.get('year')}\n"
+                                f"引用数={m.get('citation_count', 'N/A')}"
+                            ),
+                        )
+                        meta = dict(m)
+                        meta["relevance_score"] = float(resp.score)
+                        meta["relevance_reason"] = resp.reason
+                        meta["covered_subqueries"] = resp.covered_subqueries
+                        if resp.score >= self.DEFAULT_THRESHOLD:
+                            filtered.append(meta)
+                        else:
+                            rejected.append(meta)
+                    except Exception as e2:  # noqa: BLE001
+                        logger.warning(
+                            "RelevanceFilter 打分失败（title=%r），保留候选: %s",
+                            m.get("title"), e2,
+                        )
+                        meta = dict(m)
+                        meta["relevance_score"] = 0.5
+                        meta["relevance_reason"] = f"打分失败，默认保留: {e2}"
+                        filtered.append(meta)
+
+        return filtered, rejected
 
 
 # ===== PaperIngestAgent =====
@@ -705,6 +830,10 @@ class PaperIngestAgent(AgentNode):
                 error="KnowledgeStore 未注入",
                 summary="论文入库失败：KnowledgeStore 未注入",
             )
+
+        # URL 增强：Sciverse 来源且无 URL 的论文，并发反查 DOI（CrossRef）补全链接。
+        # Sciverse 真实 API 不含 URL/DOI 字段，补全后前端论文卡片才能点击溯源。
+        self._enrich_urls(input_obj.paper_metas)
 
         # 真实入库
         paper_ids: list[str] = []
@@ -794,6 +923,29 @@ class PaperIngestAgent(AgentNode):
                 f"（关联 {linked_count} 条，未入库 {unmatched} 条）"
             ),
         )
+
+    @staticmethod
+    def _enrich_urls(paper_metas: list[dict], max_workers: int = 8) -> None:
+        """为无 URL 的论文补全可访问链接（并发，仅网络查询，不抛错）。
+
+        - arxiv/S2 来源自带 url，跳过
+        - Sciverse 来源（真实 API 无 URL）：CrossRef 反查 DOI →
+          https://doi.org/<doi>；失败回退 Google Scholar 搜索链接
+        """
+        need = [m for m in paper_metas if not (m.get("url") or "").strip()]
+        if not need:
+            return
+
+        def _resolve(m: dict) -> None:
+            try:
+                m["url"] = resolve_paper_url(
+                    m.get("title", ""), m.get("venue", ""), m.get("year")
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug("URL 解析失败（%r）: %s", m.get("title"), e)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            list(pool.map(_resolve, need))
 
 
 # ===== CrossValidateAgent（借鉴 GPT-Researcher）=====
