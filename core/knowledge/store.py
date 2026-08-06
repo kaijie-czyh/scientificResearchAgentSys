@@ -42,6 +42,7 @@ from core.knowledge.schema import (
     Relation,
     RelationType,
     ResearchGap,
+    ResearchConflict,
 )
 
 
@@ -165,6 +166,15 @@ CREATE TABLE IF NOT EXISTS research_gaps (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gaps_created ON research_gaps(created_at);
+
+-- 文献冲突（交叉验证产出落库）
+-- 冲突陈述 + 立场证据（support/refute）+ 处置建议，供 Claim 冲突可视化
+CREATE TABLE IF NOT EXISTS research_conflicts (
+    conflict_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conflicts_created ON research_conflicts(created_at);
 """
 
 
@@ -667,6 +677,91 @@ class KnowledgeStore:
             "total": len(gaps),
             "by_type": by_type,
         }
+
+    # ===== Research Conflict（文献冲突，交叉验证落库）=====
+
+    def save_research_conflict(self, conflict: ResearchConflict) -> None:
+        """保存一条文献冲突（幂等：同 conflict_id 覆盖）。"""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO research_conflicts "
+                "(conflict_id, content, created_at) VALUES (?, ?, ?)",
+                (
+                    conflict.conflict_id,
+                    conflict.model_dump_json(),
+                    conflict.created_at.isoformat(),
+                ),
+            )
+
+    def save_research_conflicts(self, conflicts: list[ResearchConflict]) -> int:
+        """批量保存文献冲突，返回成功条数。"""
+        n = 0
+        for c in conflicts:
+            try:
+                self.save_research_conflict(c)
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Research Conflict 落库失败（conflict_id=%r）: %s", c.conflict_id, e)
+        return n
+
+    def list_research_conflicts(self, limit: int = 200) -> list[ResearchConflict]:
+        """列出全部文献冲突（按创建时间降序）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT content FROM research_conflicts "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [ResearchConflict.model_validate_json(r["content"]) for r in rows]
+
+    def clear_research_conflicts(self) -> None:
+        """清空文献冲突表（仅供验证/重跑场景，生产勿用）。"""
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM research_conflicts")
+
+    def conflict_stats(self) -> dict:
+        """文献冲突统计：总数 / 涉及论文数。"""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT content FROM research_conflicts").fetchall()
+        conflicts = [ResearchConflict.model_validate_json(r["content"]) for r in rows]
+        papers: set[str] = set()
+        for c in conflicts:
+            for s in c.sources:
+                if s.get("paper_id"):
+                    papers.add(s["paper_id"])
+        return {"total": len(conflicts), "papers": len(papers)}
+
+    def conflicts_for_claim(self, evidence_refs: list[dict]) -> list[ResearchConflict]:
+        """找出与某 Claim 相关的冲突（争议标记）。
+
+        关联规则：conflict.sources 的 paper_id 与 claim.evidence_refs 中
+        type=paper 的 id 有交集 → 该 Claim 处于争议中。
+        返回按 confidence 降序的冲突列表。
+        """
+        claim_papers = {
+            r.get("id") for r in (evidence_refs or [])
+            if r.get("type") == "paper" and r.get("id")
+        }
+        if not claim_papers:
+            return []
+        conflicts = self.list_research_conflicts(limit=500)
+        hits: list[ResearchConflict] = []
+        for c in conflicts:
+            src_papers = {s.get("paper_id") for s in c.sources if s.get("paper_id")}
+            if src_papers & claim_papers:
+                hits.append(c)
+        hits.sort(key=lambda c: -c.confidence)
+        return hits
+
+    def conflicts_for_paper(self, paper_id: str) -> list[ResearchConflict]:
+        """找出与某篇论文相关的全部冲突（论文页溯源用）。"""
+        if not paper_id:
+            return []
+        conflicts = self.list_research_conflicts(limit=500)
+        return [
+            c for c in conflicts
+            if any(s.get("paper_id") == paper_id for s in c.sources)
+        ]
 
     # ===== Evidence Log（检索证据链，可审计轨迹）=====
 

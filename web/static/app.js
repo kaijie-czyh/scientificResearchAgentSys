@@ -13,6 +13,8 @@
         discoveryCache: null,   // 最近一次 /discoveries 结果
         humanFingerprint: null, // 最近一次 pending_human 的指纹（用于跳过无变化的整页重建）
         humanDraft: "",         // 人工输入草稿（轮询重建时恢复）
+        pendingPaperId: null,   // 待定位论文（证据溯源跳转：gaps/claims → papers 定位高亮）
+        pendingExperimentId: null, // 待定位实验（Claim 证据 → experiments 定位高亮）
     };
 
     const STAGES = ["research", "ideation", "design", "experiment", "writing"];
@@ -227,6 +229,18 @@
         document.getElementById("topbar-title").textContent = titles[page] || "科研 Agent 系统";
         renderPage();
     }
+
+    // 证据溯源全局跳转：Claim 证据/冲突 → 论文页定位 / 实验页
+    window.__sraGoPaper = function (paperId) {
+        state.pendingPaperId = paperId;
+        setActivePage("papers");
+        return false;
+    };
+    window.__sraGoExperiment = function (expId) {
+        state.pendingExperimentId = expId;
+        setActivePage("experiments");
+        return false;
+    };
 
     function updateProjectIdDisplay() {
         document.getElementById("current-project-id").textContent =
@@ -938,6 +952,29 @@
             const list = el("div", { class: "list" });
             papers.forEach(p => list.appendChild(renderPaperItem(p)));
             content.appendChild(list);
+
+            // 证据溯源定位：跳转本页后定位到指定论文（滚动 + 高亮 + 展开）
+            const targetId = state.pendingPaperId;
+            if (targetId) {
+                state.pendingPaperId = null;
+                const cards = list.querySelectorAll(".list-item");
+                for (const card of cards) {
+                    if (card.getAttribute("data-paper-id") === targetId) {
+                        card.scrollIntoView({ behavior: "smooth", block: "center" });
+                        card.classList.add("paper-flash");
+                        setTimeout(() => card.classList.remove("paper-flash"), 2600);
+                        // 自动展开详情
+                        if (!card.classList.contains("expanded")) {
+                            card.classList.add("expanded");
+                            if (!card.querySelector(".list-item-body")) {
+                                const p = papers.find(x => x.paper_id === targetId);
+                                if (p) card.appendChild(buildPaperBody(p));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
         } catch (e) {
             clear(content);
             content.appendChild(el("div", { class: "status-banner danger" },
@@ -1023,6 +1060,7 @@
 
     function renderPaperItem(p) {
         const item = el("div", { class: "list-item" });
+        item.setAttribute("data-paper-id", p.paper_id || "");
         const headChildren = [
             el("span", { class: "list-item-title", text: p.title || "(无标题)" }),
             p.year ? el("span", { class: "badge badge-info badge-stage", text: String(p.year) }) : null,
@@ -1048,8 +1086,15 @@
         item.addEventListener("click", () => {
             const expanded = item.classList.toggle("expanded");
             if (expanded && !item.querySelector(".list-item-body")) {
-                const body = el("div", { class: "list-item-body" });
-                body.innerHTML = `
+                item.appendChild(buildPaperBody(p));
+            }
+        });
+        return item;
+    }
+
+    function buildPaperBody(p) {
+        const body = el("div", { class: "list-item-body" });
+        body.innerHTML = `
                     <dl>
                         <dt>Paper ID</dt><dd class="mono">${escapeHtml(p.paper_id)}</dd>
                         <dt>作者</dt><dd>${escapeHtml((p.authors || []).join(", ") || "—")}</dd>
@@ -1066,10 +1111,7 @@
                     </dl>
                     ${p.abstract ? `<div class="mt-8"><strong>摘要：</strong><br>${escapeHtml(p.abstract)}</div>` : ""}
                 `;
-                item.appendChild(body);
-            }
-        });
-        return item;
+        return body;
     }
 
     // ===== 3.5 材料知识页（Task 2：材料-性能-合成三元组；Task 3：搜索跳转）=====
@@ -1537,8 +1579,22 @@
             evs.slice(0, 3).forEach(ev => {
                 const title = ev.title || ev.paper_id || "来源论文";
                 const snippet = ev.snippet ? ` — ${ev.snippet.slice(0, 120)}${ev.snippet.length > 120 ? "…" : ""}` : "";
-                evBlock.appendChild(el("div", { class: "gap-ev-item" },
-                    `[${ev.paper_id ? ev.paper_id.slice(-8) : "?"}] ${title}${snippet}`));
+                const row = el("div", { class: "gap-ev-item" });
+                row.appendChild(el("span", { text: `[${ev.paper_id ? ev.paper_id.slice(-8) : "?"}] ${title}${snippet}` }));
+                if (ev.paper_id) {
+                    row.appendChild(el("a", {
+                        class: "gap-ev-link",
+                        text: "查看论文 →",
+                        href: "#",
+                        onclick: (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            state.pendingPaperId = ev.paper_id;
+                            setActivePage("papers");
+                        },
+                    }));
+                }
+                evBlock.appendChild(row);
             });
             if (evs.length > 3) {
                 evBlock.appendChild(el("div", { class: "gap-ev-more", text: `…另有 ${evs.length - 3} 条证据` }));
@@ -1609,11 +1665,22 @@
 
     function renderClaimItem(c) {
         const item = el("div", { class: "list-item" });
-        item.appendChild(el("div", { class: "list-item-head" }, [
+        const conflicts = c.conflicts || [];
+        const hasConflict = conflicts.length > 0;
+        const headChildren = [
             el("span", { class: "list-item-title", text: c.statement || "(无陈述)" }),
             el("span", { class: "badge badge-info", text: c.role || "contribution" }),
             el("span", { class: "badge badge-neutral", text: `证据 ${c.evidence_count}` }),
-        ]));
+        ];
+        // 争议徽章：相关文献冲突非空 → 争议中（红色）；否则按状态
+        if (hasConflict) {
+            headChildren.push(el("span", {
+                class: "badge badge-danger claim-conflict-badge",
+                text: `争议中 ${conflicts.length}`,
+                title: "该 Claim 的证据来源存在文献冲突，点击展开查看争议双方",
+            }));
+        }
+        item.appendChild(el("div", { class: "list-item-head" }, headChildren));
         // 状态徽章单独一行（便于颜色识别）
         item.appendChild(el("div", { class: "mt-8" }));
         item.insertAdjacentHTML("beforeend", `<div class="mt-8">${statusBadge(c.status)}</div>`);
@@ -1633,14 +1700,67 @@
                         <dt>创建时间</dt><dd class="mono">${escapeHtml(formatTime(c.created_at))}</dd>
                         <dt>验证时间</dt><dd class="mono">${escapeHtml(formatTime(c.verified_at))}</dd>
                     </dl>
-                    ${c.evidence_refs && c.evidence_refs.length
-                        ? `<div class="mt-8"><strong>证据引用：</strong></div><pre class="code-block">${escapeHtml(JSON.stringify(c.evidence_refs, null, 2))}</pre>`
+                    ${(c.evidence_refs && c.evidence_refs.length)
+                        ? `<div class="mt-8"><strong>证据引用（可点击溯源）：</strong></div><div class="claim-ev-refs">${c.evidence_refs.map(r => renderClaimEvidenceRef(r)).join("")}</div>`
+                        : ""}
+                    ${hasConflict
+                        ? `<div class="mt-8"><strong class="claim-conflict-title">文献冲突（争议中）：</strong></div>
+                           <div class="claim-conflicts">${conflicts.map(cf => renderConflictCard(cf)).join("")}</div>`
                         : ""}
                 `;
                 item.appendChild(body);
             }
         });
         return item;
+    }
+
+    // 渲染 Claim 的一条证据引用（type=paper → 跳转论文页定位；type=experiment → 跳转实验页）
+    function renderClaimEvidenceRef(r) {
+        const id = r.id || "";
+        const label = r.type === "paper" ? "论文" : (r.type === "experiment" ? "实验" : "证据");
+        const chunk = r.chunk_id ? ` · chunk ${escapeHtml(String(r.chunk_id).slice(-8))}` : "";
+        if (r.type === "paper" && id) {
+            return `<span class="claim-ev-ref">
+                <span class="badge badge-neutral">${label}</span>
+                <a href="#" class="claim-ev-link" data-ev-type="paper" data-ev-id="${escapeHtml(id)}"
+                   onclick="return window.__sraGoPaper && window.__sraGoPaper('${escapeHtml(id)}')">
+                   ${escapeHtml(id.slice(-12))}</a>${chunk}</span>`;
+        }
+        if (r.type === "experiment" && id) {
+            return `<span class="claim-ev-ref">
+                <span class="badge badge-neutral">${label}</span>
+                <a href="#" class="claim-ev-link" data-ev-type="experiment" data-ev-id="${escapeHtml(id)}"
+                   onclick="return window.__sraGoExperiment && window.__sraGoExperiment('${escapeHtml(id)}')">
+                   ${escapeHtml(id.slice(-12))}</a>${chunk}</span>`;
+        }
+        return `<span class="claim-ev-ref"><span class="badge badge-neutral">${label}</span> ${escapeHtml(id.slice(-12))}${chunk}</span>`;
+    }
+
+    // 渲染一条文献冲突（争议双方来源 + 处置建议）
+    function renderConflictCard(cf) {
+        const sources = (cf.sources || []).map(s => {
+            const stance = s.stance === "refute" ? "反对" : "支持";
+            const stanceCls = s.stance === "refute" ? "conflict-stance-refute" : "conflict-stance-support";
+            const title = s.title || s.paper_id || "来源论文";
+            const link = s.paper_id
+                ? `<a href="#" class="claim-ev-link" onclick="return window.__sraGoPaper && window.__sraGoPaper('${escapeHtml(s.paper_id)}')">查看论文 →</a>`
+                : "";
+            return `<div class="conflict-src ${stanceCls}">
+                <span class="conflict-stance-tag">${stance}</span>
+                <span class="conflict-src-title">${escapeHtml(title)}</span>
+                ${link}</div>`;
+        }).join("");
+        const conf = Number(cf.confidence || 0);
+        return `<div class="conflict-card">
+            <div class="conflict-head">
+                <span class="gap-tag gap-tag-danger">文献冲突</span>
+                <span class="gap-priority">置信度 ${conf.toFixed(2)}</span>
+                ${cf.subquery ? `<span class="gap-source">子问题：${escapeHtml(cf.subquery)}</span>` : ""}
+            </div>
+            <div class="conflict-claim">${escapeHtml(cf.claim || "(无冲突陈述)")}</div>
+            <div class="conflict-srcs">${sources}</div>
+            ${cf.resolution ? `<div class="conflict-resolution"><strong>处置建议：</strong>${escapeHtml(cf.resolution)}</div>` : ""}
+        </div>`;
     }
 
     // ===== 5. 实验页 =====
@@ -1661,6 +1781,31 @@
             const list = el("div", { class: "list" });
             data.experiments.forEach(e => list.appendChild(renderExperimentItem(e)));
             content.appendChild(list);
+
+            // 实验定位（Claim 证据溯源跳转）
+            const targetId = state.pendingExperimentId;
+            if (targetId) {
+                state.pendingExperimentId = null;
+                const cards = list.querySelectorAll(".list-item");
+                for (const card of cards) {
+                    if (card.getAttribute("data-exp-id") === targetId) {
+                        card.scrollIntoView({ behavior: "smooth", block: "center" });
+                        card.classList.add("paper-flash");
+                        setTimeout(() => card.classList.remove("paper-flash"), 2600);
+                        if (!card.classList.contains("expanded")) {
+                            card.classList.add("expanded");
+                            const exp = data.experiments.find(x => x.experiment_id === targetId);
+                            if (exp && !card.querySelector(".list-item-body")) {
+                                // 复用 renderExperimentItem 的展开逻辑：触发一次展开
+                                const body = el("div", { class: "list-item-body" });
+                                body.innerHTML = buildExperimentBody(exp);
+                                card.appendChild(body);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
         } catch (e) {
             clear(content);
             content.appendChild(el("div", { class: "status-banner danger" },
@@ -1670,6 +1815,7 @@
 
     function renderExperimentItem(e) {
         const item = el("div", { class: "list-item" });
+        item.setAttribute("data-exp-id", e.experiment_id || "");
         item.appendChild(el("div", { class: "list-item-head" }, [
             el("span", { class: "list-item-title", text: e.name || "(无名称)" }),
         ]));
@@ -1680,7 +1826,15 @@
             const expanded = item.classList.toggle("expanded");
             if (expanded && !item.querySelector(".list-item-body")) {
                 const body = el("div", { class: "list-item-body" });
-                body.innerHTML = `
+                body.innerHTML = buildExperimentBody(e);
+                item.appendChild(body);
+            }
+        });
+        return item;
+    }
+
+    function buildExperimentBody(e) {
+        return `
                     <dl>
                         <dt>Experiment ID</dt><dd class="mono">${escapeHtml(e.experiment_id)}</dd>
                         <dt>名称</dt><dd>${escapeHtml(e.name)}</dd>
@@ -1696,10 +1850,6 @@
                         ? `<div class="mt-8"><strong>实验配置：</strong></div><pre class="code-block">${escapeHtml(JSON.stringify(e.config, null, 2))}</pre>`
                         : ""}
                 `;
-                item.appendChild(body);
-            }
-        });
-        return item;
     }
 
     // ===== 5b. 构效关系发现页（路线 A）=====
@@ -2131,13 +2281,18 @@
         // 默认页
         setActivePage("create");
 
-        // URL 深链支持：?project=<project_id>&page=<page>（如材料页直达，便于分享/调试）
+        // URL 深链支持：?project=<project_id>&page=<page>&paper=<paper_id>&exp=<exp_id>
+        //（page 直达页面；paper/exp 用于证据溯源定位到具体论文/实验）
         const params = new URLSearchParams(window.location.search);
         const urlProject = (params.get("project") || "").trim();
         const urlPage = (params.get("page") || "").trim();
+        const urlPaper = (params.get("paper") || "").trim();
+        const urlExp = (params.get("exp") || "").trim();
         if (urlProject) {
             state.currentProjectId = urlProject;
             updateProjectIdDisplay();
+            if (urlPaper) state.pendingPaperId = urlPaper;
+            if (urlExp) state.pendingExperimentId = urlExp;
             startPolling();
             if (urlPage && ["progress", "papers", "materials", "gaps", "claims", "experiments", "discovery", "notes", "human"].includes(urlPage)) {
                 setActivePage(urlPage);

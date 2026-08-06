@@ -33,6 +33,7 @@ from core.knowledge.schema import (
     MaterialProperty,
     MaterialSynthesis,
     ResearchGap,
+    ResearchConflict,
 )
 from core.knowledge.store import KnowledgeStore, StoreError
 from core.knowledge.vector_store import VectorStore, ChromaVectorStore
@@ -56,6 +57,7 @@ __all__ = [
     "MaterialProperty",
     "MaterialSynthesis",
     "ResearchGap",
+    "ResearchConflict",
     "KnowledgeStore",
     "StoreError",
     "VectorStore",

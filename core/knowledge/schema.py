@@ -361,3 +361,30 @@ class ResearchGap(BaseModel):
     subquery: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ResearchConflict(BaseModel):
+    """文献冲突实体（交叉验证产出，Task：冲突可视化）。
+
+    由 CrossValidateAgent 的 conflicts（子问题粒度冲突项）落库：
+    - claim：冲突陈述（同一问题下相互矛盾的论断）
+    - sources：立场证据 [{paper_id, title, stance}]，stance ∈ support / refute，
+      供 Web 展示「争议双方来源」（可点击跳转论文页溯源）
+    - resolution：处置建议（采纳来源 / 标记存疑 / 需进一步检索）
+    - 通过 conflict 关联的 paper_id 与 Claim.evidence_refs 求交集，
+      实现「Claim 处于争议中」的标记
+    """
+
+    conflict_id: EntityId
+    # 冲突陈述（子问题粒度）
+    claim: str = ""
+    # 立场证据：[{paper_id, title, stance}]，stance ∈ support / refute
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    # 处置建议
+    resolution: str = ""
+    confidence: float = 0.0
+    # 来源子问题
+    subquery: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"

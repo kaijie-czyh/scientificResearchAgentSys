@@ -907,6 +907,38 @@ def list_research_gaps(project_id: str) -> dict:
     }
 
 
+@app.get("/api/projects/{project_id}/conflicts")
+def list_research_conflicts(project_id: str) -> dict:
+    """获取文献冲突清单（交叉验证落库，供 Claim 冲突可视化与论文溯源）。
+
+    每条冲突：冲突陈述 + 立场证据（support/refute 双方来源，可点击跳转
+    论文页溯源）+ 处置建议 + 置信度 + 来源子问题。
+    """
+    _require_project(project_id)
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        conflicts = store.list_research_conflicts(limit=200)
+        stats = store.conflict_stats()
+    except Exception as e:  # noqa: BLE001
+        return {"conflicts": [], "stats": {"total": 0, "papers": 0},
+                "error": f"读取失败: {e}"}
+    return {
+        "conflicts": [
+            {
+                "conflict_id": c.conflict_id,
+                "claim": c.claim,
+                "sources": c.sources,
+                "resolution": c.resolution,
+                "confidence": c.confidence,
+                "subquery": c.subquery,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in conflicts
+        ],
+        "stats": stats,
+    }
+
+
 @app.get("/api/projects/{project_id}/evidence")
 def list_evidence(project_id: str) -> dict:
     """获取检索证据链（审计轨迹：query → source → 命中 → paper 关联）。
@@ -939,6 +971,12 @@ def list_claims(project_id: str, status: Optional[str] = None) -> dict:
         return {"claims": [], "error": f"读取失败: {e}"}
     items = []
     for c in claims:
+        # 争议检测：claim 证据引用的论文与冲突 sources 有交集 → 争议中
+        related_conflicts = []
+        try:
+            related_conflicts = store.conflicts_for_claim(c.evidence_refs)
+        except Exception:  # noqa: BLE001
+            related_conflicts = []
         item = {
             "claim_id": c.claim_id,
             "statement": c.statement,
@@ -949,6 +987,18 @@ def list_claims(project_id: str, status: Optional[str] = None) -> dict:
             "source_idea_id": c.source_idea_id,
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "verified_at": c.verified_at.isoformat() if c.verified_at else None,
+            # 冲突可视化：相关文献冲突（非空 → 该 Claim 处于争议中）
+            "conflicts": [
+                {
+                    "conflict_id": x.conflict_id,
+                    "claim": x.claim,
+                    "sources": x.sources,
+                    "resolution": x.resolution,
+                    "confidence": x.confidence,
+                    "subquery": x.subquery,
+                }
+                for x in related_conflicts
+            ],
         }
         items.append(item)
     if status:

@@ -1868,3 +1868,154 @@ mark.mat-hl {
         margin-left: 0;
     }
 }
+
+/* ===== 证据溯源 + Claim 冲突可视化（可点击溯源 / 争议徽章）===== */
+
+/* 论文页定位高亮（证据溯源跳转目标） */
+.paper-flash {
+    animation: paperFlash 2.6s ease-out;
+    border-color: var(--color-info, #185fa5) !important;
+}
+@keyframes paperFlash {
+    0%   { background: color-mix(in srgb, var(--color-info, #185fa5) 22%, #fff); }
+    60%  { background: color-mix(in srgb, var(--color-info, #185fa5) 10%, #fff); }
+    100% { background: transparent; }
+}
+
+/* 研究缺口证据链：可点击溯源链接 */
+.gap-ev-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    line-height: 1.5;
+    padding: 2px 0;
+    font-family: var(--font-mono, monospace);
+}
+.gap-ev-link,
+.claim-ev-link {
+    color: var(--color-info, #185fa5);
+    text-decoration: none;
+    font-family: var(--font-sans, system-ui);
+    font-size: 12px;
+    font-weight: 500;
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--color-info, #185fa5) 30%, transparent);
+}
+.gap-ev-link:hover,
+.claim-ev-link:hover {
+    background: color-mix(in srgb, var(--color-info, #185fa5) 8%, #fff);
+    text-decoration: underline;
+}
+
+/* Claim 证据引用列表（可点击溯源） */
+.claim-ev-refs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+}
+.claim-ev-ref {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono, monospace);
+    padding: 4px 8px;
+    background: var(--color-bg-alt, #f7f8fa);
+    border-radius: 8px;
+    width: fit-content;
+}
+.claim-ev-ref .badge {
+    font-family: var(--font-sans, system-ui);
+}
+
+/* Claim 争议徽章 */
+.claim-conflict-badge {
+    cursor: pointer;
+}
+
+/* 冲突详情卡片（争议双方来源 + 处置建议） */
+.claim-conflicts {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 6px;
+}
+.conflict-card {
+    border: 1px solid color-mix(in srgb, var(--color-danger, #a32d2d) 30%, var(--color-border));
+    border-left: 3px solid var(--color-danger, #a32d2d);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--color-bg-alt, #f7f8fa);
+}
+.conflict-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.conflict-claim {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-primary);
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
+.conflict-srcs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.conflict-src {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    background: var(--color-background-primary, #fff);
+}
+.conflict-src-support {
+    border-left: 3px solid var(--color-success, #18794e);
+}
+.conflict-src-refute {
+    border-left: 3px solid var(--color-danger, #a32d2d);
+}
+.conflict-stance-tag {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 1px 8px;
+    border-radius: 12px;
+    flex-shrink: 0;
+}
+.conflict-src-support .conflict-stance-tag {
+    background: color-mix(in srgb, var(--color-success, #18794e) 12%, #fff);
+    color: var(--color-success, #18794e);
+}
+.conflict-src-refute .conflict-stance-tag {
+    background: color-mix(in srgb, var(--color-danger, #a32d2d) 12%, #fff);
+    color: var(--color-danger, #a32d2d);
+}
+.conflict-src-title {
+    color: var(--color-text-primary);
+    font-weight: 500;
+    font-family: var(--font-sans, system-ui);
+}
+.conflict-resolution {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    line-height: 1.5;
+    padding-top: 4px;
+    border-top: 1px dashed var(--color-border);
+}
+

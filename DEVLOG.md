@@ -627,3 +627,44 @@ config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
   深链 reload 落 gaps 页；布局 1280px 零重叠零溢出
 - API：GET /api/projects/{id}/gaps 返回 12 条 + stats（by_type 分布）
 
+## 2026-08-06 第十轮：证据可点击溯源 + Claim 冲突可视化（Quick Wins）
+
+### 背景
+按优化矩阵「优先做」象限落地两项赛题硬指标：
+1. **证据可点击溯源**（文献溯源完整性）：此前 gaps/claims 的证据只有 paper_id +
+   snippet 纯文本，评委无法跳回原文核验 → 全部改为可点击跳转论文页并定位。
+2. **Claim 冲突可视化**（交叉验证能力）：cross_validate 的 conflicts 只存在于
+   context 报告、未落库，Claim 页无法体现「争议中」状态 → 落库 + 争议徽章 +
+   冲突双方来源展开。
+
+### 实现清单
+1. **数据层**：schema.py + ResearchConflict（conflict_id/claim/sources[{paper_id,
+   title, stance}]/resolution/confidence/subquery）；store.py + research_conflicts 表
+   + save/list/clear/conflict_stats + conflicts_for_claim（sources.paper_id 与
+   claim.evidence_refs 交集 → 争议标记）+ conflicts_for_paper；__init__.py 导出。
+2. **落库**：CrossValidateAgent._execute 后调用 _persist_conflicts（幂等：先清空
+   再写，补 paper title），真实模式自动落库、dry_run 占位空表。
+3. **API**：GET /api/projects/{id}/conflicts（列表+stats）；claims 接口每条附加
+   conflicts（关联冲突数组，非空 → 争议中）。
+4. **前端（app.js + style.css）**：
+   - gaps 证据链每条加「查看论文 →」链接（gap-ev-link）
+   - papers 页支持定位：pendingPaperId + data-paper-id + scrollIntoView +
+     paper-flash 高亮动画 + 自动展开 buildPaperBody
+   - Claim 卡片：争议徽章「争议中 N」（badge-danger，带 title 提示）；展开后
+     证据引用渲染为可点击列表（claim-ev-ref，paper → 论文页 / experiment → 实验页）；
+     冲突详情卡片（conflict-card：冲突陈述 + 支持/反对立场来源 + 处置建议）
+   - experiments 页支持定位（pendingExperimentId + buildExperimentBody）
+   - 深链扩展：?project=&page=&paper=<id>&exp=<id>
+   - 全局跳转：window.__sraGoPaper / __sraGoExperiment
+
+### 验证
+- 种入 2 条 Claim（1 争议 + 1 已验证）+ 1 条 conflict（关联 2 篇论文）：
+  conflicts_for_claim 命中 claim1（1 条）/claim2（0 条）✓
+- API：/conflicts 返回 1 条 + stats{papers:2}；/claims 中 claim1.conflicts=1（争议）、
+  claim2.conflicts=0 ✓
+- CDP（12/12 PASS）：gaps 证据「查看论文」12 个链接；点击跳转论文页 + paper-flash
+  高亮 + 自动展开；claims 争议徽章「争议中 1」；展开显示冲突卡片（支持/反对双方
+  来源 + 处置建议）；Claim 证据引用 4 个可点击链接；深链 page=claims 直达
+- CDP（6/6 PASS）：冲突卡片内「查看论文」再次跳转定位；布局零横向溢出零重叠
+- dry_run 全管线跑通（4 claims 落库），conflicts 在 dry_run 为空表（占位正常）
+

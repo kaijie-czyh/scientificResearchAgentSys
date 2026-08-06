@@ -31,6 +31,7 @@ from core.knowledge import (
     Paper,
     PaperChunk,
     ResearchGap,
+    ResearchConflict,
 )
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
@@ -1005,6 +1006,9 @@ class CrossValidateAgent(AgentNode):
         else:
             report = self._real_validate(input_obj, registry, store)
 
+        # 冲突落库（重跑幂等：先清空再写入），供 Claim 冲突可视化 / 论文溯源
+        self._persist_conflicts(store, report.get("conflicts", []))
+
         output = CrossValidateOutput(report=report)
         summary = (
             f"交叉验证完成：overall_confidence={report['overall_confidence']:.2f}，"
@@ -1104,6 +1108,52 @@ class CrossValidateAgent(AgentNode):
             "gaps": gaps,
             "overall_confidence": round(overall, 3),
         }
+
+    def _persist_conflicts(
+        self, store: Optional[KnowledgeStore], conflicts: list[dict]
+    ) -> None:
+        """将交叉验证的冲突项落库（幂等：先清空再写入）。
+
+        conflicts 项结构（CrossValidateOutput.report.conflicts）：
+        {claim, sources: [{paper_id, chunk_id, stance}], resolution, confidence, subquery}
+        落库时补齐 paper title，供 Web 溯源展示。
+        """
+        if store is None:
+            return
+        try:
+            entities: list[ResearchConflict] = []
+            paper_titles: dict[str, str] = {}
+            for c in conflicts:
+                sources = []
+                for s in c.get("sources") or []:
+                    pid = s.get("paper_id") or ""
+                    title = paper_titles.get(pid)
+                    if title is None and pid:
+                        try:
+                            p = store.get_paper(pid)
+                            title = p.title if p else ""
+                        except Exception:  # noqa: BLE001
+                            title = ""
+                        paper_titles[pid] = title
+                    sources.append({
+                        "paper_id": pid,
+                        "title": title or "",
+                        "stance": s.get("stance", "support"),
+                    })
+                entities.append(ResearchConflict(
+                    conflict_id=KnowledgeStore.new_id(),
+                    claim=c.get("claim", ""),
+                    sources=sources,
+                    resolution=c.get("resolution", ""),
+                    confidence=c.get("confidence", 0.0),
+                    subquery=c.get("subquery", ""),
+                ))
+            store.clear_research_conflicts()
+            saved = store.save_research_conflicts(entities)
+            if saved:
+                logger.info("交叉验证冲突落库：%d 条", saved)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("交叉验证冲突落库失败: %s", e)
 
     @staticmethod
     def _placeholder(input_obj: CrossValidateInput) -> dict:
