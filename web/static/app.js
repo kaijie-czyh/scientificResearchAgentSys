@@ -302,10 +302,52 @@
         ]);
         card.appendChild(btnRow);
 
+        // 继续已有项目（配合服务端启动恢复机制：重启后旧项目自动恢复）
+        const resumeRow = el("div", { class: "field mt-16" }, [
+            el("label", { class: "field-label", for: "resume-project-input" }, "继续已有项目"),
+            el("div", { class: "btn-row" }, [
+                el("input", {
+                    class: "input",
+                    id: "resume-project-input",
+                    placeholder: "粘贴已有 Project ID（服务重启后项目自动恢复，可直接查看数据）",
+                    style: "flex:1;min-width:0;",
+                }),
+                el("button", { class: "btn btn-outline", id: "resume-project-btn" }, "继续"),
+            ]),
+        ]);
+        card.appendChild(resumeRow);
+
         const resultArea = el("div", { id: "create-result" });
         card.appendChild(resultArea);
 
         content.appendChild(card);
+
+        // 绑定「继续已有项目」
+        document.getElementById("resume-project-btn").addEventListener("click", async () => {
+            const pid = document.getElementById("resume-project-input").value.trim();
+            if (!pid) {
+                showToast("请输入项目 ID", "error");
+                return;
+            }
+            const btn = document.getElementById("resume-project-btn");
+            btn.disabled = true;
+            btn.textContent = "恢复中…";
+            try {
+                const st = await api("GET", `/api/projects/${pid}/status`);
+                state.currentProjectId = pid;
+                updateProjectIdDisplay();
+                startPolling();
+                renderSidebarNotes();
+                renderCreateResult(resultArea, { project_id: pid, topic: st.topic || "" });
+                showToast("已恢复项目，可查看数据", "success");
+                setActivePage("papers");
+            } catch (e) {
+                showToast("项目不存在：" + e.message, "error");
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "继续";
+            }
+        });
 
         // 绑定按钮
         document.getElementById("create-btn").addEventListener("click", async () => {
