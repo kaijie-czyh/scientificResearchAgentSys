@@ -1209,6 +1209,18 @@ pre.code-block {
     color: #1e7a4a;
     border-color: #bfe3cd;
 }
+/* 材料知识页（Task 2）：化学式/跨文献徽章 */
+.badge-formula {
+    background: #eef3fb;
+    color: #33518f;
+    border-color: #c9d8ef;
+    font-family: var(--font-mono);
+}
+.badge-s2 {
+    background: #e9f7ee;
+    color: #1e7a4a;
+    border-color: #bfe3cd;
+}
 .ev-empty {
     font-size: 12px;
     color: var(--color-text-muted);

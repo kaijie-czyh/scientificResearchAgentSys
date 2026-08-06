@@ -7,6 +7,7 @@ from core.state.lifecycle import LifecycleStage
 from stages.common import StageCheckpoint
 from stages.research.agents import (
     CrossValidateAgent,
+    MaterialKnowledgeExtractionAgent,
     PaperFetchAgent,
     PaperIngestAgent,
     PaperRelevanceFilterAgent,
@@ -27,10 +28,11 @@ def build_research_graph() -> Graph:
         → PaperFetchAgent（按子问题并行检索 arxiv/S2）
         → PaperRelevanceFilterAgent（PaperQA filter：相关性打分+筛选）
         → PaperIngestAgent（chunk 摘要 + 向量入库）
+        → MaterialKnowledgeExtractionAgent（Task 2：材料-性能-合成三元组抽取）
         → CrossValidateAgent（GPT-Researcher：多源交叉验证，输出可信度报告）
 
     检查点置于用户确认前（关键决策点），便于回滚到子问题分解阶段。
-    交叉验证在入库后执行，可信度低时由后续阶段决策回滚。
+    材料知识抽取在入库后执行（依赖入库论文），交叉验证在其后。
     """
     graph = Graph(name="research", stage=LifecycleStage.RESEARCH.value)
 
@@ -42,6 +44,7 @@ def build_research_graph() -> Graph:
     graph.add_node(PaperFetchAgent("paper_fetch"))
     graph.add_node(PaperRelevanceFilterAgent("paper_filter"))
     graph.add_node(PaperIngestAgent("paper_ingest"))
+    graph.add_node(MaterialKnowledgeExtractionAgent("material_extraction"))
     graph.add_node(CrossValidateAgent("cross_validate"))
 
     # 边
@@ -51,7 +54,8 @@ def build_research_graph() -> Graph:
     graph.add_edge("topic_confirm", "paper_fetch")
     graph.add_edge("paper_fetch", "paper_filter")
     graph.add_edge("paper_filter", "paper_ingest")
-    graph.add_edge("paper_ingest", "cross_validate")
+    graph.add_edge("paper_ingest", "material_extraction")
+    graph.add_edge("material_extraction", "cross_validate")
 
     graph.validate()
     return graph

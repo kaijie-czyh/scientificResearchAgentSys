@@ -29,6 +29,9 @@ from core.knowledge.schema import (
     EntityType,
     Relation,
     RelationType,
+    Material,
+    MaterialProperty,
+    MaterialSynthesis,
 )
 from core.knowledge.store import KnowledgeStore, StoreError
 from core.knowledge.vector_store import VectorStore, ChromaVectorStore
@@ -48,6 +51,9 @@ __all__ = [
     "EntityType",
     "Relation",
     "RelationType",
+    "Material",
+    "MaterialProperty",
+    "MaterialSynthesis",
     "KnowledgeStore",
     "StoreError",
     "VectorStore",

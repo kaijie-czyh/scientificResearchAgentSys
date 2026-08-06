@@ -45,6 +45,11 @@ class RelationType(str, Enum):
     ARTIFACT_CITES_CLAIM = "artifact_cites_claim"              # Artifact → Claim
     ARTIFACT_CITES_EXPERIMENT = "artifact_cites_experiment"    # Artifact → Experiment
     IDEA_RELATED_TO_IDEA = "idea_related_to_idea"              # Idea → Idea（关联思路）
+    # 材料知识（Task 2）：Material → Paper 来源
+    MATERIAL_EXTRACTED_FROM_PAPER = "material_extracted_from_paper"  # Material → Paper
+    # 材料性能：Material → Property（via MaterialKnowledge）
+    MATERIAL_HAS_PROPERTY = "material_has_property"            # Material → MaterialProperty
+    MATERIAL_HAS_SYNTHESIS = "material_has_synthesis"          # Material → MaterialSynthesis
 
 
 # ===== Paper =====
@@ -245,3 +250,79 @@ class Relation(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     # 关系元数据（如引证的具体页码、置信度等）
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ===== 材料知识实体（Task 2：材料-性能-合成三元组）=====
+
+class Material(BaseModel):
+    """材料实体：从论文中抽取的材料成分/结构。
+
+    满足赛题「知识抽取」要求：材料成分（化学式、元素组成、掺杂比例）、
+    晶体结构（空间群、晶格参数、对称性）。
+    """
+
+    material_id: EntityId
+    # 材料名称/化学式（规范化，如 "CH3NH3PbI3"、"MAPbI3"）
+    name: str
+    # 化学式（若可解析，如 "Cs0.05FA0.95PbI3"）
+    formula: str = ""
+    # 晶体结构：空间群 / 晶格参数 / 对称性
+    crystal_structure: str = ""
+    space_group: str = ""
+    lattice_parameters: str = ""  # 自由文本（如 "a=8.85 Å, cubic"）
+    symmetry: str = ""
+    # 组成描述（元素/掺杂比例，自由文本）
+    composition: str = ""
+    # 来源论文（证据链溯源）
+    paper_id: Optional[EntityId] = None
+    paper_title: str = ""
+    # 归一化名称（小写去空格，用于跨文献实体链接/去重）
+    norm_name: str = ""
+    # 结构化抽取置信度（0~1）
+    confidence: float = 0.0
+    # 抽取来源 chunk 片段（证据）
+    source_snippet: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"
+
+
+class MaterialProperty(BaseModel):
+    """材料性能实体（性能指标）：ZT、功率因子、热导率等。"""
+
+    property_id: EntityId
+    material_id: EntityId  # 归属材料
+    property_name: str  # 性能名称（如 "ZT"、"thermal_conductivity"）
+    property_name_cn: str = ""  # 中文名（如 "热电优值"）
+    value: str = ""  # 数值（含单位，如 "1.05 at 800K"）
+    value_num: Optional[float] = None  # 数值部分（若可解析）
+    unit: str = ""  # 单位（如 "W/mK"）
+    condition: str = ""  # 测试条件（温度/压力等）
+    paper_id: Optional[EntityId] = None
+    paper_title: str = ""
+    confidence: float = 0.0
+    source_snippet: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"
+
+
+class MaterialSynthesis(BaseModel):
+    """材料合成方法实体（合成条件）：温度、压力、时间、前驱体、工艺步骤。"""
+
+    synthesis_id: EntityId
+    material_id: EntityId  # 归属材料
+    method: str = ""  # 工艺方法（如 "solid-state reaction"、"CVD"）
+    precursors: list[str] = Field(default_factory=list)  # 前驱体
+    temperature: str = ""  # 温度条件（如 "500°C for 12h"）
+    pressure: str = ""  # 压力条件
+    atmosphere: str = ""  # 气氛（如 "Ar"、"N2"）
+    duration: str = ""  # 时间
+    steps: str = ""  # 工艺步骤描述
+    paper_id: Optional[EntityId] = None
+    paper_title: str = ""
+    confidence: float = 0.0
+    source_snippet: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"

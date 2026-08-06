@@ -164,3 +164,28 @@ class CrossValidateOutput(NodeOutput):
     """
 
     report: dict[str, Any]
+
+
+# ===== MaterialKnowledgeExtractionAgent（Task 2：材料-性能-合成三元组）=====
+
+class MaterialExtractionInput(NodeInput):
+    """材料知识抽取输入：从入库论文摘要中抽取三元组。"""
+
+    paper_ids: list[str]
+
+
+class MaterialExtractionOutput(NodeOutput):
+    """材料知识抽取输出：结构化材料知识（三元组）。
+
+    materials: [{name, formula, crystal_structure, space_group, lattice_parameters,
+                 symmetry, composition, paper_id, paper_title, confidence,
+                 source_snippet}]
+    properties: [{material_name, property_name, property_name_cn, value, value_num,
+                  unit, condition, paper_id, confidence, source_snippet}]
+    synthesis: [{material_name, method, precursors, temperature, pressure,
+                 atmosphere, duration, steps, paper_id, confidence, source_snippet}]
+    """
+
+    materials: list[dict[str, Any]] = []
+    properties: list[dict[str, Any]] = []
+    synthesis: list[dict[str, Any]] = []

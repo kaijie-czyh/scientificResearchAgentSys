@@ -48,6 +48,9 @@ RESEARCH_PAPER_IDS = ContextKey[list[str]]("research.paper_ids")
 RESEARCH_EVIDENCE_CHAIN = ContextKey[list[dict]]("research.evidence_chain")
 # 交叉验证报告（借鉴 GPT-Researcher）：多源冲突时的可信度评分与处置
 RESEARCH_CROSS_VALIDATION_REPORT = ContextKey[dict]("research.cross_validation_report")
+# 材料知识抽取（Task 2）：{materials: [...], properties: [...], synthesis: [...]}
+# 从入库论文摘要中抽取「材料-性能-合成」三元组，供 ideation/design 复用
+RESEARCH_MATERIAL_KNOWLEDGE = ContextKey[dict]("research.material_knowledge")
 
 
 # ===== ideation 阶段域键 =====

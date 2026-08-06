@@ -160,6 +160,7 @@
             "topic-discovery": "方向推荐",
             progress: "研究进度",
             papers: "论文浏览",
+            materials: "材料知识",
             claims: "Claim 列表",
             experiments: "实验列表",
             discovery: "构效关系发现",
@@ -223,6 +224,7 @@
     function updateBadges(data) {
         const counts = data.counts || {};
         setBadge("badge-papers", counts.papers);
+        setBadge("badge-materials", counts.materials);
         setBadge("badge-claims", counts.claims);
         setBadge("badge-experiments", counts.experiments);
         setBadge("badge-notes", (data.notes_count != null) ? data.notes_count : null);
@@ -256,6 +258,7 @@
             case "topic-discovery": renderTopicDiscovery(content); break;
             case "progress": renderProgress(content); break;
             case "papers": renderPapers(content); break;
+            case "materials": renderMaterials(content); break;
             case "claims": renderClaims(content); break;
             case "experiments": renderExperiments(content); break;
             case "discovery": renderDiscovery(content); break;
@@ -914,6 +917,108 @@
             }
         });
         return item;
+    }
+
+    // ===== 3.5 材料知识页（Task 2：材料-性能-合成三元组）=====
+
+    async function renderMaterials(content) {
+        content.appendChild(el("div", { class: "loading" }, "加载材料知识库…"));
+        let data;
+        try {
+            data = await api("GET", `/api/projects/${state.currentProjectId}/materials`);
+        } catch (e) {
+            content.appendChild(el("div", { class: "status-banner danger" },
+                "加载失败：" + (e.message || e)));
+            return;
+        }
+        clear(content);
+        const mats = data.materials || [];
+        const stats = data.stats || {};
+        content.appendChild(el("h2", { class: "page-title" }, "材料知识库"));
+        content.appendChild(el("p", { class: "page-desc" },
+            `共 ${mats.length} 种材料 · ${stats.properties || 0} 条性能 · ${stats.synthesis || 0} 条合成方法 · 完整三元组 ${stats.complete_triples || 0} 条。由 research 阶段「材料知识抽取」节点从论文摘要中自动抽取。`));
+
+        // 统计卡片
+        const statCard = el("div", { class: "card" });
+        const grid = el("div", { class: "counts-grid" });
+        [
+            { label: "材料", value: mats.length, extra: "去重合并后" },
+            { label: "性能指标", value: stats.properties || 0, extra: "ZT/热导率等" },
+            { label: "合成方法", value: stats.synthesis || 0, extra: "工艺+条件" },
+            { label: "完整三元组", value: stats.complete_triples || 0, extra: "材料+性能+合成" },
+        ].forEach(c => grid.appendChild(el("div", { class: "count-card" }, [
+            el("div", { class: "count-num", text: String(c.value) }),
+            el("div", { class: "count-label", text: c.label }),
+            el("div", { class: "count-extra", text: c.extra }),
+        ])));
+        statCard.appendChild(grid);
+        content.appendChild(statCard);
+
+        if (!mats.length) {
+            content.appendChild(el("div", { class: "list-empty" },
+                "暂无材料知识：运行 research 阶段后，材料抽取节点自动从入库论文中抽取材料-性能-合成三元组。"));
+            return;
+        }
+
+        // 材料卡片列表（每种材料一张卡：结构 + 性能 + 合成）
+        mats.forEach((m, idx) => {
+            const item = el("div", { class: "paper-item" });
+            const head = el("div", { class: "paper-head" }, [
+                el("span", { class: "paper-idx", text: String(idx + 1) }),
+                el("span", { class: "paper-title", text: m.name || "未命名材料" }),
+                el("span", { class: "badge badge-neutral", text: `置信度 ${Number(m.confidence || 0).toFixed(2)}` }),
+                m.formula ? el("span", { class: "badge badge-formula", text: m.formula }) : null,
+                (m.source_paper_ids && m.source_paper_ids.length) ?
+                    el("span", { class: "badge badge-s2", text: `跨文献 ${m.source_paper_ids.length + 1} 篇` }) : null,
+            ]);
+            item.appendChild(head);
+
+            // 结构信息
+            const structBits = [];
+            if (m.crystal_structure) structBits.push(`结构 ${m.crystal_structure}`);
+            if (m.space_group) structBits.push(`空间群 ${m.space_group}`);
+            if (m.lattice_parameters) structBits.push(`晶格 ${m.lattice_parameters}`);
+            if (m.symmetry) structBits.push(`对称 ${m.symmetry}`);
+            if (m.composition) structBits.push(`组成 ${m.composition}`);
+            if (structBits.length) {
+                item.insertAdjacentHTML("beforeend",
+                    `<div class="mt-8"><strong>结构/组成：</strong>${structBits.map(escapeHtml).join(" · ")}</div>`);
+            }
+
+            // 性能列表
+            const props = m.properties || [];
+            if (props.length) {
+                const propHtml = props.map(p => `
+                    <div class="ev-entry">
+                        <span class="ev-entry-title">${escapeHtml(p.property_name || "")}${p.property_name_cn ? `（${escapeHtml(p.property_name_cn)}）` : ""}</span>
+                        <span class="ev-entry-score">${escapeHtml(p.value || "—")}${p.condition ? ` @ ${escapeHtml(p.condition)}` : ""}</span>
+                        ${p.paper_title ? `<span class="ev-entry-src">${escapeHtml(String(p.paper_title).slice(0, 50))}</span>` : ""}
+                    </div>`).join("");
+                item.insertAdjacentHTML("beforeend", `
+                    <div class="mt-8"><strong>性能指标（${props.length}）</strong></div>
+                    <div class="ev-list">${propHtml}</div>`);
+            }
+
+            // 合成列表
+            const syns = m.synthesis || [];
+            if (syns.length) {
+                const synHtml = syns.map(s => `
+                    <div class="ev-entry">
+                        <span class="ev-entry-title">${escapeHtml(s.method || "合成")}</span>
+                        ${s.temperature ? `<span class="ev-entry-score">${escapeHtml(s.temperature)}</span>` : ""}
+                        ${s.precursors && s.precursors.length ? `<span class="ev-entry-src">前驱体: ${escapeHtml(s.precursors.join(", "))}</span>` : ""}
+                        ${s.paper_title ? `<span class="ev-entry-src">${escapeHtml(String(s.paper_title).slice(0, 50))}</span>` : ""}
+                    </div>`).join("");
+                item.insertAdjacentHTML("beforeend", `
+                    <div class="mt-8"><strong>合成方法（${syns.length}）</strong></div>
+                    <div class="ev-list">${synHtml}</div>`);
+            }
+
+            // 来源
+            item.insertAdjacentHTML("beforeend",
+                `<div class="muted mt-8">来源论文：${escapeHtml(m.paper_title || "—")}</div>`);
+            content.appendChild(item);
+        });
     }
 
     // ===== 4. Claim 页 =====

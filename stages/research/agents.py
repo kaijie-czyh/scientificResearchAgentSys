@@ -22,7 +22,14 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from core.knowledge import KnowledgeStore, Paper, PaperChunk
+from core.knowledge import (
+    KnowledgeStore,
+    Material,
+    MaterialProperty,
+    MaterialSynthesis,
+    Paper,
+    PaperChunk,
+)
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -51,6 +58,7 @@ from stages.common import (
     RESEARCH_EVIDENCE_CHAIN,
     RESEARCH_FILTERED_PAPER_METAS,
     RESEARCH_KEYWORDS,
+    RESEARCH_MATERIAL_KNOWLEDGE,
     RESEARCH_PAPER_IDS,
     RESEARCH_PAPER_METAS,
     RESEARCH_QUERY_STRATEGY,
@@ -61,6 +69,8 @@ from stages.common import (
 from stages.research.io_schema import (
     CrossValidateInput,
     CrossValidateOutput,
+    MaterialExtractionInput,
+    MaterialExtractionOutput,
     PaperFetchInput,
     PaperFetchOutput,
     PaperIngestInput,
@@ -1098,3 +1108,309 @@ class CrossValidateAgent(AgentNode):
             "gaps": [],
             "overall_confidence": 0.8,
         }
+
+
+
+# ===== MaterialKnowledgeExtractionAgent（Task 2：材料-性能-合成三元组）=====
+
+class MaterialExtractItem(BaseModel):
+    """材料实体抽取 schema 条目。"""
+
+    name: str = Field(description="材料名称/化学式（规范化，如 CH3NH3PbI3、MAPbI3）")
+    formula: str = Field(default="", description="化学式（若可解析）")
+    crystal_structure: str = Field(default="", description="晶体结构（如 perovskite、wurtzite）")
+    space_group: str = Field(default="", description="空间群（如 Pm-3m）")
+    lattice_parameters: str = Field(default="", description="晶格参数（如 a=8.85 Å）")
+    symmetry: str = Field(default="", description="对称性")
+    composition: str = Field(default="", description="组成/掺杂（如 Cs0.05FA0.95PbI3、5% Mn-doped）")
+    # 性能指标（可能多条，需与材料绑定）
+    properties: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "[{property_name, property_name_cn, value, value_num, unit, condition}], "
+            "property_name 如 ZT / power_factor / thermal_conductivity / "
+            "electrical_conductivity / seebeck_coefficient"
+        ),
+    )
+    # 合成条件（可能多条）
+    synthesis: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "[{method, precursors, temperature, pressure, atmosphere, duration, steps}], "
+            "method 如 solid-state reaction / CVD / sol-gel / hot-pressing"
+        ),
+    )
+
+
+class MaterialExtractSchema(BaseModel):
+    """材料知识抽取输出 schema。"""
+
+    materials: list[MaterialExtractItem] = Field(
+        default_factory=list, description="从论文中抽取的材料实体列表（可为空）"
+    )
+
+
+class MaterialKnowledgeExtractionAgent(AgentNode):
+    """材料知识抽取 Agent（Task 2）。
+
+    从已入库论文的摘要/标题中抽取「材料-性能-合成」三元组：
+    - 材料成分：化学式、元素组成、掺杂比例（Material）
+    - 晶体结构：空间群、晶格参数、对称性（Material）
+    - 性能指标：ZT、功率因子、热导率等（MaterialProperty）
+    - 合成条件：温度、压力、时间、前驱体、工艺步骤（MaterialSynthesis）
+
+    赛题要求：知识抽取结构化 + 跨文献实体链接。本节点在论文入库后执行，
+    每个材料按归一化名去重合并（同名材料跨文献聚合 source_paper_ids），
+    每条抽取结果都带 paper_id + source_snippet（可溯源）。
+
+    设计要点：
+    - 逐篇调用 LLM 抽取（每篇论文独立 prompt，避免跨论文信息混淆）
+    - dry_run 或 LLM 失败时用占位数据兜底，不阻塞流程
+    - 结果写入 context（RESEARCH_MATERIAL_KNOWLEDGE）并落库 KnowledgeStore
+    """
+
+    node_type = "research_material_extraction"
+    task_type = "material_knowledge_extract"
+    input_schema = MaterialExtractionInput
+    output_schema = MaterialExtractionOutput
+    # 输出已由 _execute 显式写入 RESEARCH_MATERIAL_KNOWLEDGE（整体 dict），
+    # 这里不再用默认逐字段映射（output_keys 值必须是 ContextKey 实例，
+    # 若写字符串会在 ctx.set 时抛 AttributeError: 'str' object has no attribute 'name'）
+    output_keys = {}
+
+    def _build_input(self, ctx: ExecutionContext) -> MaterialExtractionInput:
+        return MaterialExtractionInput(paper_ids=ctx.get(RESEARCH_PAPER_IDS, []))
+
+    def _execute(self, input_obj: MaterialExtractionInput, ctx: ExecutionContext) -> NodeResult:
+        registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
+
+        # 加载论文（标题 + 摘要，作为抽取源文本）
+        papers: list[Paper] = []
+        for pid in input_obj.paper_ids:
+            try:
+                papers.append(store.get_paper(pid))
+            except Exception:
+                pass
+
+        if dry_run or registry is None or store is None:
+            materials, properties, synthesis = self._placeholder(papers)
+        else:
+            materials, properties, synthesis = self._real_extract(papers, registry)
+
+        # 落库 KnowledgeStore（材料实体 + 性能 + 合成）
+        material_id_map: dict[str, str] = {}
+        for m in materials:
+            try:
+                norm = (m.get("name") or "").strip().lower()
+                mat = Material(
+                    material_id=KnowledgeStore.new_id(),
+                    name=m.get("name", ""),
+                    formula=m.get("formula", ""),
+                    crystal_structure=m.get("crystal_structure", ""),
+                    space_group=m.get("space_group", ""),
+                    lattice_parameters=m.get("lattice_parameters", ""),
+                    symmetry=m.get("symmetry", ""),
+                    composition=m.get("composition", ""),
+                    paper_id=m.get("paper_id"),
+                    paper_title=m.get("paper_title", ""),
+                    norm_name=norm,
+                    confidence=float(m.get("confidence", 0.0) or 0.0),
+                    source_snippet=m.get("source_snippet", "")[:800],
+                    source_stage="research",
+                )
+                store.save_material(mat)
+                material_id_map[norm] = mat.material_id
+            except Exception as e:
+                logger.warning("材料落库失败（name=%r）: %s", m.get("name"), e)
+
+        for p in properties:
+            try:
+                norm = (p.get("material_name") or "").strip().lower()
+                mid = material_id_map.get(norm)
+                if not mid:
+                    continue
+                # 规范化 LLM 返回（value_num 可能是空串/不可解析字符串）
+                raw_vn = p.get("value_num")
+                value_num: Optional[float] = None
+                if raw_vn is not None and str(raw_vn).strip():
+                    try:
+                        value_num = float(str(raw_vn).strip().rstrip("%"))
+                    except ValueError:
+                        value_num = None
+                store.save_material_property(MaterialProperty(
+                    property_id=KnowledgeStore.new_id(),
+                    material_id=mid,
+                    property_name=p.get("property_name") or "",
+                    property_name_cn=p.get("property_name_cn") or "",
+                    value=p.get("value") or "",
+                    value_num=value_num,
+                    unit=p.get("unit") or "",
+                    condition=p.get("condition") or "",
+                    paper_id=p.get("paper_id"),
+                    paper_title=p.get("paper_title") or "",
+                    confidence=float(p.get("confidence", 0.0) or 0.0),
+                    source_snippet=p.get("source_snippet", "")[:800],
+                    source_stage="research",
+                ))
+            except Exception as e:
+                logger.warning("性能落库失败: %s", e)
+
+        for s in synthesis:
+            try:
+                norm = (s.get("material_name") or "").strip().lower()
+                mid = material_id_map.get(norm)
+                if not mid:
+                    continue
+                # LLM 可能把 precursors 返回为字符串或列表，统一转 list
+                _raw_pre = s.get("precursors", []) or []
+                if isinstance(_raw_pre, str):
+                    _raw_pre = [_raw_pre]
+                # steps 可能是 list，统一转字符串
+                _raw_steps = s.get("steps", "") or ""
+                if isinstance(_raw_steps, list):
+                    _raw_steps = "; ".join(str(x) for x in _raw_steps)
+                store.save_material_synthesis(MaterialSynthesis(
+                    synthesis_id=KnowledgeStore.new_id(),
+                    material_id=mid,
+                    method=s.get("method") or "",
+                    precursors=list(_raw_pre),
+                    temperature=s.get("temperature") or "",
+                    pressure=s.get("pressure") or "",
+                    atmosphere=s.get("atmosphere") or "",
+                    duration=s.get("duration") or "",
+                    steps=_raw_steps,
+                    paper_id=s.get("paper_id"),
+                    paper_title=s.get("paper_title", ""),
+                    confidence=float(s.get("confidence", 0.0) or 0.0),
+                    source_snippet=s.get("source_snippet", "")[:800],
+                    source_stage="research",
+                ))
+            except Exception as e:
+                logger.warning("合成落库失败: %s", e)
+
+        # 写入 context（供下游阶段复用）
+        ctx.set(RESEARCH_MATERIAL_KNOWLEDGE, {
+            "materials": materials,
+            "properties": properties,
+            "synthesis": synthesis,
+        })
+
+        stats = store.material_stats()
+        output = MaterialExtractionOutput(
+            materials=materials,
+            properties=properties,
+            synthesis=synthesis,
+        )
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=(
+                f"材料知识抽取完成：{len(materials)} 种材料、{len(properties)} 条性能、"
+                f"{len(synthesis)} 条合成方法"
+                f"（库内三元组完整 {stats['complete_triples']} 条）"
+            ),
+        )
+
+    def _real_extract(
+        self, papers: list[Paper], registry: LLMRegistry
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """真实 LLM 抽取：逐篇论文抽取材料-性能-合成三元组。"""
+        materials: list[dict] = []
+        properties: list[dict] = []
+        synthesis: list[dict] = []
+
+        for p in papers:
+            title = p.title or ""
+            abstract = p.abstract or ""
+            if not abstract.strip() and not title.strip():
+                continue
+            try:
+                resp = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=MaterialExtractSchema,
+                    system=(
+                        "你是材料科学知识抽取专家。从论文标题与摘要中抽取结构化材料知识：\n"
+                        "1. 材料：化学式/名称、晶体结构、空间群、晶格参数、对称性、组成掺杂\n"
+                        "2. 性能：ZT、功率因子、热导率、电导率、Seebeck 系数等（带数值/条件）\n"
+                        "3. 合成：工艺方法、前驱体、温度、压力、气氛、时间、步骤\n"
+                        "只抽取文本中明确提到的信息，不要臆造。每篇论文列出研究的主要材料。"
+                    ),
+                    prompt=(
+                        f"论文标题：{title}\n"
+                        f"摘要：{(abstract or '')[:1500]}"
+                    ),
+                )
+                for item in resp.materials:
+                    m = {
+                        "name": item.name,
+                        "formula": item.formula,
+                        "crystal_structure": item.crystal_structure,
+                        "space_group": item.space_group,
+                        "lattice_parameters": item.lattice_parameters,
+                        "symmetry": item.symmetry,
+                        "composition": item.composition,
+                        "paper_id": p.paper_id,
+                        "paper_title": title,
+                        "confidence": 0.8,
+                        "source_snippet": (abstract or "")[:300],
+                    }
+                    materials.append(m)
+                    for prop in item.properties or []:
+                        properties.append({
+                            "material_name": item.name,
+                            "property_name": prop.get("property_name", ""),
+                            "property_name_cn": prop.get("property_name_cn", ""),
+                            "value": prop.get("value", ""),
+                            "value_num": prop.get("value_num"),
+                            "unit": prop.get("unit", ""),
+                            "condition": prop.get("condition", ""),
+                            "paper_id": p.paper_id,
+                            "paper_title": title,
+                            "confidence": 0.8,
+                            "source_snippet": (abstract or "")[:300],
+                        })
+                    for syn in item.synthesis or []:
+                        synthesis.append({
+                            "material_name": item.name,
+                            "method": syn.get("method", ""),
+                            "precursors": syn.get("precursors", []),
+                            "temperature": syn.get("temperature", ""),
+                            "pressure": syn.get("pressure", ""),
+                            "atmosphere": syn.get("atmosphere", ""),
+                            "duration": syn.get("duration", ""),
+                            "steps": syn.get("steps", ""),
+                            "paper_id": p.paper_id,
+                            "paper_title": title,
+                            "confidence": 0.8,
+                            "source_snippet": (abstract or "")[:300],
+                        })
+            except Exception as e:
+                logger.warning("材料抽取失败（title=%r）: %s", title, e)
+
+        return materials, properties, synthesis
+
+    @staticmethod
+    def _placeholder(papers: list[Paper]) -> tuple[list[dict], list[dict], list[dict]]:
+        """dry_run 占位：从论文标题生成一条占位材料记录。"""
+        materials: list[dict] = []
+        properties: list[dict] = []
+        synthesis: list[dict] = []
+        for p in papers:
+            title = p.title or ""
+            abstract = p.abstract or ""
+            materials.append({
+                "name": f"[{title[:30]}] 占位材料",
+                "formula": "",
+                "crystal_structure": "",
+                "space_group": "",
+                "lattice_parameters": "",
+                "symmetry": "",
+                "composition": "",
+                "paper_id": p.paper_id,
+                "paper_title": title,
+                "confidence": 0.5,
+                "source_snippet": (abstract or "")[:300],
+            })
+        return materials, properties, synthesis

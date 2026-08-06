@@ -213,6 +213,57 @@ _BRIDGE = HumanCallbackBridge()
 _LOCK = threading.Lock()
 
 
+def _scan_existing_projects() -> None:
+    """启动时从磁盘扫描已存在项目并恢复内存状态。
+
+    项目数据（knowledge.db / snapshots）持久化在 projects/ 目录，
+    但 ProjectState 是进程内存单例，服务重启即丢失。此函数让重启后
+    旧项目仍可通过 Web 访问（论文/材料/证据等数据按 project_id 读取）。
+    topic 不持久化（ProjectSession 快照不含），恢复项目显示 topic 为空，
+    重新运行前需在 UI 确认主题。
+    """
+    projects_dir = _CONFIG.paths.projects
+    if not projects_dir.exists():
+        return
+    for pdir in sorted(projects_dir.iterdir()):
+        if not pdir.is_dir() or pdir.name in _PROJECTS:
+            continue
+        if not (pdir / "knowledge.db").exists():
+            continue
+        pid = pdir.name
+        # created_at 从目录名解析：proj_YYYYMMDD_HHMMSS_xxxx
+        created_at = datetime.utcnow().isoformat()
+        try:
+            _, ts = pid.split("_", 1)
+            created_at = datetime.strptime(ts[:13], "%Y%m%d_%H%M%S").isoformat()
+        except Exception:
+            pass
+        # 从 session 快照推断运行状态
+        status, summary = "created", ""
+        try:
+            session = ProjectSession.load(pid, _CONFIG.paths)
+            cur = session.current_stage().value
+            done = [s for s in LifecycleStage.ordered()
+                    if session.status_of(s).value in ("completed", "blocked", "failed")]
+            if done or cur != LifecycleStage.RESEARCH.value:
+                status = "completed"
+                summary = f"服务重启后自动恢复（最近阶段: {cur}）"
+            else:
+                summary = "服务重启后自动恢复（数据可查看，重新运行需确认主题）"
+        except Exception:
+            status, summary = "created", "服务重启后自动恢复"
+        _PROJECTS[pid] = ProjectState(
+            project_id=pid,
+            topic="",
+            created_at=created_at,
+            status=status,
+            summary=summary,
+        )
+
+
+_scan_existing_projects()
+
+
 # ===== Pipeline 工作线程 =====
 
 
@@ -480,7 +531,8 @@ def get_status(project_id: str) -> dict:
         pass
 
     # 产出物计数
-    counts = {"papers": 0, "ideas": 0, "claims": 0, "experiments": 0, "evidence": 0}
+    counts = {"papers": 0, "ideas": 0, "claims": 0, "experiments": 0, "evidence": 0,
+              "materials": 0, "properties": 0, "synthesis": 0}
     try:
         store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
         counts["papers"] = len(store.list_papers())
@@ -488,6 +540,10 @@ def get_status(project_id: str) -> dict:
         counts["claims"] = len(store.list_claims())
         counts["experiments"] = len(store.list_experiments())
         counts["evidence"] = store.evidence_stats()["total"]
+        mstats = store.material_stats()
+        counts["materials"] = mstats["materials"]
+        counts["properties"] = mstats["properties"]
+        counts["synthesis"] = mstats["synthesis"]
     except Exception:  # noqa: BLE001
         pass
 
@@ -521,6 +577,11 @@ def run_project(project_id: str) -> dict:
             status_code=409,
             detail="当前等待人工响应，请先提交 human-response 或中止",
         )
+    if not state.topic.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="项目主题为空（服务重启后恢复的项目不持久化 topic），请重新创建项目或补充主题",
+        )
     resume = state.status not in ("created",)
     thread = threading.Thread(
         target=_run_pipeline_thread,
@@ -546,6 +607,11 @@ def run_discovery(project_id: str) -> dict:
         raise HTTPException(
             status_code=409,
             detail="当前等待人工响应，请先提交 human-response 或中止",
+        )
+    if not state.topic.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="项目主题为空（服务重启后恢复的项目不持久化 topic），请重新创建项目或补充主题",
         )
     resume = state.status not in ("created",)
     thread = threading.Thread(
@@ -662,6 +728,73 @@ def list_papers(project_id: str) -> dict:
             for p in papers
         ]
     }
+
+
+@app.get("/api/projects/{project_id}/materials")
+def list_materials(project_id: str) -> dict:
+    """获取材料知识库（Task 2：材料-性能-合成三元组）。
+
+    返回按材料聚合的知识：每种材料含其性能指标与合成方法，
+    均带来源论文与证据片段（可溯源）。满足赛题「知识抽取结构化」要求。
+    """
+    _require_project(project_id)
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        materials = store.list_materials(limit=500)
+        stats = store.material_stats()
+        # 聚合：材料 → 性能列表 + 合成列表
+        properties = store.list_material_properties()
+        synthesis = store.list_material_synthesis()
+        props_by_mat: dict[str, list[dict]] = {}
+        for p in properties:
+            props_by_mat.setdefault(p.material_id, []).append({
+                "property_name": p.property_name,
+                "property_name_cn": p.property_name_cn,
+                "value": p.value,
+                "value_num": p.value_num,
+                "unit": p.unit,
+                "condition": p.condition,
+                "paper_title": p.paper_title,
+                "confidence": p.confidence,
+                "source_snippet": p.source_snippet,
+            })
+        syn_by_mat: dict[str, list[dict]] = {}
+        for s in synthesis:
+            syn_by_mat.setdefault(s.material_id, []).append({
+                "method": s.method,
+                "precursors": s.precursors,
+                "temperature": s.temperature,
+                "pressure": s.pressure,
+                "atmosphere": s.atmosphere,
+                "duration": s.duration,
+                "steps": s.steps,
+                "paper_title": s.paper_title,
+                "confidence": s.confidence,
+                "source_snippet": s.source_snippet,
+            })
+        items = [
+            {
+                "material_id": m.material_id,
+                "name": m.name,
+                "formula": m.formula,
+                "crystal_structure": m.crystal_structure,
+                "space_group": m.space_group,
+                "lattice_parameters": m.lattice_parameters,
+                "symmetry": m.symmetry,
+                "composition": m.composition,
+                "paper_id": m.paper_id,
+                "paper_title": m.paper_title,
+                "source_paper_ids": m.metadata.get("source_paper_ids", []),
+                "confidence": m.confidence,
+                "source_snippet": m.source_snippet,
+                "properties": props_by_mat.get(m.material_id, []),
+                "synthesis": syn_by_mat.get(m.material_id, []),
+            }
+            for m in materials
+        ]
+    except Exception as e:  # noqa: BLE001
+        return {"materials": [], "stats": {}, "error": f"读取失败: {e}"}
+    return {"materials": items, "stats": stats}
 
 
 @app.get("/api/projects/{project_id}/evidence")

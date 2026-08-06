@@ -69,6 +69,13 @@ tasks:
     temperature: 0.2
     description: "对论文 chunk 生成摘要用于检索增强"
 
+  # 材料知识抽取（赛题核心）：从论文抽取 材料-性能-合成 三元组
+  material_knowledge_extract:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.0
+    description: "从论文全文抽取材料知识三元组（材料成分/晶体结构/性能指标/合成条件/模拟方法），结构化入库"
+
   # 交叉验证：借鉴 GPT-Researcher，多源信息冲突时做交叉验证
   research_cross_validate:
     provider: minimax

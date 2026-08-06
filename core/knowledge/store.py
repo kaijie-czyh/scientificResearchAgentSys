@@ -33,6 +33,9 @@ from core.knowledge.schema import (
     EntityType,
     Experiment,
     Idea,
+    Material,
+    MaterialProperty,
+    MaterialSynthesis,
     Paper,
     PaperChunk,
     Relation,
@@ -123,6 +126,31 @@ CREATE TABLE IF NOT EXISTS evidence_log (
 );
 CREATE INDEX IF NOT EXISTS idx_evlog_paper ON evidence_log(paper_id);
 CREATE INDEX IF NOT EXISTS idx_evlog_source ON evidence_log(source);
+
+-- Task 2：材料知识抽取（材料-性能-合成三元组）
+-- 实体以 JSON 存 content，便于 Pydantic schema 演化（与 papers 等一致）
+CREATE TABLE IF NOT EXISTS materials (
+    material_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_materials_created ON materials(created_at);
+
+CREATE TABLE IF NOT EXISTS material_properties (
+    property_id TEXT PRIMARY KEY,
+    material_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_matprop_material ON material_properties(material_id);
+
+CREATE TABLE IF NOT EXISTS material_synthesis (
+    synthesis_id TEXT PRIMARY KEY,
+    material_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_matsyn_material ON material_synthesis(material_id);
 """
 
 
@@ -419,6 +447,152 @@ class KnowledgeStore:
                 )
                 for r in rows
             ]
+
+    # ===== Material（材料知识抽取：材料-性能-合成三元组）=====
+
+    def save_material(self, material: Material) -> None:
+        """保存/更新材料实体。按归一化名查重，重复则合并 paper 来源。"""
+        norm = material.norm_name or material.name.strip().lower()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT content FROM materials WHERE "
+                "json_extract(content, '$.norm_name') = ?",
+                (norm,),
+            ).fetchall()
+            if rows:
+                # 已有同名材料：合并 paper_id 来源（跨文献实体链接）
+                existing = Material.model_validate_json(rows[0]["content"])
+                if material.paper_id and existing.paper_id != material.paper_id:
+                    existing.metadata = {
+                        **existing.metadata,
+                        "source_paper_ids": list(
+                            dict.fromkeys(
+                                existing.metadata.get("source_paper_ids", [])
+                                + [material.paper_id]
+                            )
+                        ),
+                    }
+                material = existing
+            material.material_id = material.material_id or self.new_id()
+            conn.execute(
+                "INSERT OR REPLACE INTO materials (material_id, content, created_at) "
+                "VALUES (?, ?, ?)",
+                (
+                    material.material_id,
+                    material.model_dump_json(),
+                    material.created_at.isoformat(),
+                ),
+            )
+
+    def get_material(self, material_id: EntityId) -> Optional[Material]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT content FROM materials WHERE material_id = ?",
+                (material_id,),
+            ).fetchone()
+            return Material.model_validate_json(row["content"]) if row else None
+
+    def list_materials(self, limit: int = 500) -> list[Material]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT content FROM materials ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [Material.model_validate_json(r["content"]) for r in rows]
+
+    def save_material_property(self, prop: MaterialProperty) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO material_properties "
+                "(property_id, material_id, content, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    prop.property_id,
+                    prop.material_id,
+                    prop.model_dump_json(),
+                    prop.created_at.isoformat(),
+                ),
+            )
+
+    def list_material_properties(
+        self, material_id: Optional[EntityId] = None, limit: int = 1000
+    ) -> list[MaterialProperty]:
+        with self._connect() as conn:
+            if material_id:
+                rows = conn.execute(
+                    "SELECT content FROM material_properties WHERE material_id = ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (material_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT content FROM material_properties "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [MaterialProperty.model_validate_json(r["content"]) for r in rows]
+
+    def save_material_synthesis(self, syn: MaterialSynthesis) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO material_synthesis "
+                "(synthesis_id, material_id, content, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    syn.synthesis_id,
+                    syn.material_id,
+                    syn.model_dump_json(),
+                    syn.created_at.isoformat(),
+                ),
+            )
+
+    def list_material_synthesis(
+        self, material_id: Optional[EntityId] = None, limit: int = 1000
+    ) -> list[MaterialSynthesis]:
+        with self._connect() as conn:
+            if material_id:
+                rows = conn.execute(
+                    "SELECT content FROM material_synthesis WHERE material_id = ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (material_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT content FROM material_synthesis "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [MaterialSynthesis.model_validate_json(r["content"]) for r in rows]
+
+    def _reset_material_tables(self) -> None:
+        """清空材料三表（仅供验证/重跑场景，生产勿用）。"""
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM material_synthesis")
+            conn.execute("DELETE FROM material_properties")
+            conn.execute("DELETE FROM materials")
+
+    def material_stats(self) -> dict:
+        """材料知识统计：材料数 / 性能数 / 合成方法数 / 各材料关联度。"""
+        with self._connect() as conn:
+            n_mat = conn.execute("SELECT COUNT(*) AS c FROM materials").fetchone()["c"]
+            n_prop = conn.execute(
+                "SELECT COUNT(*) AS c FROM material_properties"
+            ).fetchone()["c"]
+            n_syn = conn.execute(
+                "SELECT COUNT(*) AS c FROM material_synthesis"
+            ).fetchone()["c"]
+            # 每种材料的三元组完整性（材料+性能+合成）
+            full = conn.execute(
+                "SELECT m.material_id FROM materials m "
+                "WHERE EXISTS (SELECT 1 FROM material_properties p "
+                "              WHERE p.material_id = m.material_id) "
+                "AND EXISTS (SELECT 1 FROM material_synthesis s "
+                "            WHERE s.material_id = m.material_id)"
+            ).fetchall()
+        return {
+            "materials": n_mat,
+            "properties": n_prop,
+            "synthesis": n_syn,
+            "complete_triples": len(full),
+        }
 
     # ===== Evidence Log（检索证据链，可审计轨迹）=====
 
