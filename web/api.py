@@ -222,6 +222,24 @@ def _set_state_status(state: ProjectState, status: str) -> None:
         state.status = status
 
 
+def _make_progress_callback(state: ProjectState) -> Callable[[list[dict]], None]:
+    """构造节点级实时进度回调：每完成一个节点就把最新节点历史写入 state。
+
+    这是解决“页面长时间无反应”的关键：research 阶段真实运行需 15-25 分钟，
+    若只在 pipeline 结束后才写 node_history，前端会一直空白。此回调让
+    /status 轮询能实时看到节点进度。
+
+    注意：只写 node_history，不改 state.status。status 由线程函数与
+    on_pending/on_resume（pending_human ↔ running）统一管理，避免回调
+    在人工等待期间误覆盖状态。
+    """
+    def _on_progress(history: list[dict]) -> None:
+        with _LOCK:
+            state.node_history = history
+
+    return _on_progress
+
+
 def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
     """工作线程函数：执行 Pipeline 并更新项目状态。"""
     state = _PROJECTS.get(project_id)
@@ -242,6 +260,7 @@ def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
             topic=topic,
             human_callback=human_cb,
             resume=resume,
+            on_progress=_make_progress_callback(state),
         )
         state.last_result = result
         state.status = result.status
@@ -273,6 +292,7 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
             topic=topic,
             human_callback=human_cb,
             resume=resume,
+            on_progress=_make_progress_callback(state),
         )
         state.last_result = result
         state.status = result.status
@@ -346,6 +366,7 @@ def _run_topic_discovery_thread(project_id: str, interest: str, resume: bool) ->
             auto_research=False,
             resume=resume,
             on_recommendations=_publish_recommendations,
+            on_progress=_make_progress_callback(state),
         )
         state.last_result = result
         state.status = result.status

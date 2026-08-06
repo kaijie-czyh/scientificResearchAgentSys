@@ -200,6 +200,7 @@ class Pipeline:
         ctx: ExecutionContext,
         stage: LifecycleStage,
         human_callback: Optional[HumanCallback] = None,
+        on_progress: Optional[Callable[[list[dict]], None]] = None,
     ) -> StageResult:
         """运行单个阶段。
 
@@ -209,12 +210,14 @@ class Pipeline:
             stage: 要运行的阶段
             human_callback: 人工节点回调。若为 None 且遇到人工节点，
                            返回 status=pending_human 的 StageResult。
+            on_progress: 节点级实时进度回调（每完成一个节点触发，
+                         参数为当前节点历史快照）。用于 UI 实时进度同步。
 
         Returns:
             StageResult
         """
         graph = self._build_stage_graph(stage)
-        runner = GraphRunner(graph, ctx)
+        runner = GraphRunner(graph, ctx, on_node_recorded=on_progress)
 
         # 启动阶段（状态机流转）
         if session.status_of(stage) == StageStatus.NOT_STARTED:
@@ -282,6 +285,7 @@ class Pipeline:
         stop_before: Optional[LifecycleStage] = None,
         resume: bool = False,
         force_writing: bool = False,
+        on_progress: Optional[Callable[[list[dict]], None]] = None,
     ) -> PipelineResult:
         """运行全流程：research → ideation → design → experiment → writing(可选)。
 
@@ -301,6 +305,8 @@ class Pipeline:
             stop_before: 在某阶段前停止（如 stop_before=WRITING 跳过写作）
             resume: 是否从已有项目恢复
             force_writing: 强制进入 writing 阶段（绕过实验成败判断）
+            on_progress: 节点级实时进度回调（每完成一个节点触发，
+                         参数为当前节点历史快照）。用于 UI 实时进度同步。
 
         Returns:
             PipelineResult
@@ -327,7 +333,9 @@ class Pipeline:
                 continue
 
             # 执行阶段
-            stage_result = self.run_stage(session, ctx, stage, human_callback)
+            stage_result = self.run_stage(
+                session, ctx, stage, human_callback, on_progress=on_progress
+            )
             result.current_stage = stage
             result.node_history = stage_result.node_history
 
@@ -399,6 +407,7 @@ class Pipeline:
         topic: str,
         human_callback: Optional[HumanCallback] = None,
         resume: bool = False,
+        on_progress: Optional[Callable[[list[dict]], None]] = None,
     ) -> PipelineResult:
         """运行构效关系发现（路线 A）。
 
@@ -413,6 +422,7 @@ class Pipeline:
             topic: 研究主题（如「热电材料的构效关系与性能优化」）
             human_callback: 人工节点回调
             resume: 是否从已有项目恢复（复用已完成的 research 阶段）
+            on_progress: 节点级实时进度回调（每完成一个节点触发）
 
         Returns:
             PipelineResult，summary 含发现概览，node_history 含 discovery 节点历史
@@ -427,7 +437,8 @@ class Pipeline:
         # 1. 先跑 research 阶段（若未完成）
         if not session.is_stage_done(LifecycleStage.RESEARCH):
             research_result = self.run_stage(
-                session, ctx, LifecycleStage.RESEARCH, human_callback
+                session, ctx, LifecycleStage.RESEARCH, human_callback,
+                on_progress=on_progress,
             )
             result.node_history = research_result.node_history
             if research_result.status == "pending_human":
@@ -446,7 +457,7 @@ class Pipeline:
         from stages.discovery.graph import build_discovery_graph
 
         graph = build_discovery_graph()
-        runner = GraphRunner(graph, ctx)
+        runner = GraphRunner(graph, ctx, on_node_recorded=on_progress)
         ctx.current_stage = "discovery"
 
         if session.status_of(LifecycleStage.RESEARCH) == StageStatus.NOT_STARTED:
@@ -506,6 +517,7 @@ class Pipeline:
         auto_research: bool = False,
         resume: bool = False,
         on_recommendations: Optional[Callable[[list[dict]], None]] = None,
+        on_progress: Optional[Callable[[list[dict]], None]] = None,
     ) -> PipelineResult:
         """运行方向推荐（topic_discovery 子图）。
 
@@ -526,6 +538,8 @@ class Pipeline:
             resume: 是否从已有项目恢复
             on_recommendations: 推荐结果就绪时回调（在进入人工等待前触发），
                 供 Web 层在 pending_human 状态下提前展示推荐卡片
+            on_progress: 节点级实时进度回调（每完成一个节点触发，
+                参数为当前完整的节点历史列表），供 Web 层实时刷新进度
 
         Returns:
             PipelineResult，summary 含推荐与选择概览
@@ -544,7 +558,7 @@ class Pipeline:
         from stages.topic_discovery.graph import build_topic_discovery_graph
 
         graph = build_topic_discovery_graph()
-        runner = GraphRunner(graph, ctx)
+        runner = GraphRunner(graph, ctx, on_node_recorded=on_progress)
         ctx.current_stage = "topic_discovery"
 
         runner.start()
@@ -604,7 +618,8 @@ class Pipeline:
         # 可选：自动进入 research 阶段
         if auto_research and selected_topic:
             research_result = self.run_stage(
-                session, ctx, LifecycleStage.RESEARCH, human_callback
+                session, ctx, LifecycleStage.RESEARCH, human_callback,
+                on_progress=on_progress,
             )
             result.node_history = research_result.node_history
             if research_result.status == "pending_human":

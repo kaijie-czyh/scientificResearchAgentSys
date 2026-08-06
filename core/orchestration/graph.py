@@ -12,7 +12,7 @@ GraphRunner: 执行引擎，拓扑序执行，处理人工节点阻塞与失败�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -152,12 +152,26 @@ class GraphRunner:
         result = runner.final_result()
     """
 
-    def __init__(self, graph: Graph, ctx: ExecutionContext):
+    def __init__(
+        self,
+        graph: Graph,
+        ctx: ExecutionContext,
+        on_node_recorded: Optional[Callable[[list[dict]], None]] = None,
+    ):
+        """初始化执行引擎。
+
+        Args:
+            graph: 要执行的 DAG 图
+            ctx: 执行上下文
+            on_node_recorded: 每个节点完成后触发的回调，参数为当前
+                节点历史快照（ctx.history()）。用于 UI 实时进度同步。
+        """
         graph.validate()
         self._graph = graph
         self._ctx = ctx
         self._state = GraphRunnerState()
         self._last_result: Optional[NodeResult] = None
+        self._on_node_recorded = on_node_recorded
 
     # ===== 执行控制 =====
 
@@ -333,3 +347,9 @@ class GraphRunner:
             status=result.status.value,
             summary=result.summary,
         )
+        # 实时进度回调（UI 层借此同步节点历史，避免阶段结束才一次性可见）
+        if self._on_node_recorded is not None:
+            try:
+                self._on_node_recorded(list(self._ctx.history()))
+            except Exception:  # noqa: BLE001 回调异常不应阻断执行
+                pass
