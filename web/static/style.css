@@ -1369,16 +1369,25 @@ pre.code-block {
 
 /* ===== 材料知识页增强（Task 2 美化 + Task 3 搜索）===== */
 
-/* 搜索条 */
+/* 搜索条：图标 + 输入框 + 命中徽章 + 按钮（按钮不被压缩/遮挡） */
 .mat-search-bar {
     display: flex;
+    align-items: center;
     gap: 8px;
     margin: 4px 0 16px;
     flex-wrap: wrap;
+    position: relative;
+}
+.mat-search-icon {
+    font-size: 17px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    user-select: none;
+    line-height: 1;
 }
 .mat-search-input {
-    flex: 1;
-    min-width: 240px;
+    flex: 1 1 260px;
+    min-width: 180px;
     padding: 9px 12px;
     font-size: 13px;
     border: 1px solid var(--color-border);
@@ -1395,14 +1404,36 @@ pre.code-block {
 .mat-search-input::placeholder {
     color: var(--color-text-muted);
 }
+.mat-search-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.mat-hit-badge {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--color-bg-alt, #f0f4f8);
+    border: 1px solid var(--color-border, #ddd);
+}
+
+/* 命中高亮 mark */
+mark.mat-hl {
+    background: #ffe58a;
+    color: #6b4d00;
+    border-radius: 3px;
+    padding: 0 1px;
+}
 
 /* 聚合分布卡片 */
 .mat-agg-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     flex-wrap: wrap;
-    padding: 6px 0;
+    padding: 7px 0;
 }
 .mat-agg-row + .mat-agg-row {
     border-top: 1px dashed var(--color-border, #ddd);
@@ -1413,12 +1444,13 @@ pre.code-block {
     color: var(--color-text-muted);
     width: 64px;
     flex-shrink: 0;
+    line-height: 24px;
 }
 .mat-agg-chip {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 3px 10px;
+    padding: 2px 9px;
     border-radius: 12px;
     font-size: 12px;
     background: var(--color-bg-alt, #f0f4f8);
@@ -1433,20 +1465,26 @@ pre.code-block {
 }
 .mat-agg-chip[data-clickable="1"]:hover {
     border-color: var(--color-accent, #4a9eff);
-    color: var(--color-accent, #4a9eff);
+    box-shadow: 0 0 0 2px rgba(74, 158, 255, .12);
 }
 .mat-agg-chip.active {
     background: var(--color-accent, #4a9eff);
     color: #fff;
     border-color: var(--color-accent, #4a9eff);
+    font-weight: 600;
+}
+.mat-agg-chip.active .mat-agg-num {
+    color: #fff;
 }
 .mat-agg-num {
     font-size: 11px;
     font-weight: 600;
-    opacity: .75;
+    opacity: .7;
 }
-.mat-agg-chip.active .mat-agg-num {
-    opacity: .9;
+.mat-agg-more {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    line-height: 24px;
 }
 
 /* 列表统计行 */
@@ -1491,6 +1529,16 @@ pre.code-block {
     margin-left: auto;
     display: flex;
     gap: 6px;
+    flex-shrink: 0;
+}
+.mat-card-head > .badge,
+.mat-card-head .mat-idx {
+    flex-shrink: 0;
+}
+.mat-card-head .mat-name {
+    flex: 1 1 auto;
+    min-width: 120px;
+    word-break: break-word;
 }
 .mat-count {
     font-size: 11px;
@@ -1521,6 +1569,13 @@ pre.code-block {
     font-size: 12px;
     color: var(--color-text-muted);
     border-bottom: 1px dashed var(--color-border);
+}
+.mat-empty {
+    padding: 12px 14px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    border-bottom: 1px dashed var(--color-border);
+    background: var(--color-bg-alt, #f7f8fa);
 }
 
 /* 性能/合成分组 */
@@ -1564,6 +1619,17 @@ pre.code-block {
 .mat-group-title {
     font-weight: 600;
     color: var(--color-text);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+.mat-cat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--cat-color, #4a9eff);
+    flex-shrink: 0;
+    display: inline-block;
 }
 .mat-group-count {
     font-size: 11px;
@@ -1621,6 +1687,7 @@ pre.code-block {
     padding: 1px 8px;
     font-size: 11px;
     font-weight: 600;
+    flex-shrink: 0;
 }
 .mat-src-tag {
     color: var(--color-text-muted);
@@ -1646,3 +1713,28 @@ pre.code-block {
     border-color: var(--color-accent, #4a9eff);
 }
 
+/* 窄屏适配 */
+@media (max-width: 720px) {
+    .mat-search-btn {
+        flex: 1 1 auto;
+    }
+    .mat-search-input {
+        flex-basis: 100%;
+        order: -1;
+    }
+    .mat-hit-badge {
+        order: 2;
+    }
+    .mat-agg-label {
+        width: 100%;
+    }
+    /* 窄屏：卡片头计数换行右对齐，避免与徽章重叠 */
+    .mat-card-head .mat-counts {
+        flex-basis: 100%;
+        justify-content: flex-end;
+        margin-left: 0;
+    }
+    .mat-card-head {
+        row-gap: 6px;
+    }
+}

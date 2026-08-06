@@ -69,7 +69,6 @@ _guard_single_instance()
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
-from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from core.config import get_config  # noqa: E402
@@ -1015,8 +1014,20 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
-# 挂载静态目录（/static/...）
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+@app.get("/static/{file_path:path}")
+def static_files(file_path: str) -> FileResponse:
+    """静态资源（强制 no-cache，避免前端更新后用户仍看到旧版缓存导致样式错乱）。"""
+    target = (STATIC_DIR / file_path).resolve()
+    if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(
+        target,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 if __name__ == "__main__":

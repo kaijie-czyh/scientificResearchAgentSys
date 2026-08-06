@@ -1071,7 +1071,7 @@
     // ===== 3.5 材料知识页（Task 2：材料-性能-合成三元组；Task 3：搜索跳转）=====
 
     // 材料页过滤状态（搜索词 + 体系筛选）
-    let materialsState = { query: "", catFilter: "" };
+    let materialsState = { query: "", catFilter: "", lastQuery: "" };
     const MAT_CAT_CLASSES = ["mat-cat-c0", "mat-cat-c1", "mat-cat-c2", "mat-cat-c3",
         "mat-cat-c4", "mat-cat-c5", "mat-cat-c6", "mat-cat-c7"];
     function matCatClass(cat) {
@@ -1079,8 +1079,13 @@
         for (const ch of String(cat)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
         return MAT_CAT_CLASSES[h % MAT_CAT_CLASSES.length];
     }
-    // 性能类别展示顺序（与后端 normalize.PROPERTY_CATEGORIES 一致）
+    // 性能类别展示顺序（与后端 normalize.PROPERTY_CATEGORIES 一致）+ 配色
     const PROP_CAT_ORDER = ["热电优值", "电输运", "热输运", "载流子", "能带结构", "稳定性", "器件性能", "其他"];
+    const PROP_CAT_COLORS = {
+        "热电优值": "#4a9eff", "电输运": "#f5a623", "热输运": "#e8643a",
+        "载流子": "#7a3eb1", "能带结构": "#1e8e6e", "稳定性": "#b3511a",
+        "器件性能": "#33518f", "其他": "#8a8f98",
+    };
 
     function groupByCat(list, getCat) {
         const groups = {};
@@ -1106,32 +1111,45 @@
         return parts.filter(Boolean).join(" ").toLowerCase().includes(q);
     }
 
-    function propEntryHtml(p) {
+    // 命中高亮：把搜索词在文本中加 <mark>
+    function highlightMatch(text, q) {
+        if (!q || !text) return escapeHtml(text);
+        const esc = escapeHtml(text);
+        const escQ = escapeHtml(q);
+        try {
+            const re = new RegExp(`(${escQ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+            return esc.replace(re, "<mark class='mat-hl'>$1</mark>");
+        } catch (e) {
+            return esc;
+        }
+    }
+
+    function propEntryHtml(p, q) {
         const sym = p.symbol ? `<span class="mat-sym">${escapeHtml(p.symbol)}</span>` : "";
         const stdName = p.norm_cn && p.norm_cn !== "其他" ? p.norm_cn : "";
         const orig = p.property_name || "";
         const nameBits = [];
         if (stdName) {
-            nameBits.push(escapeHtml(stdName));
+            nameBits.push(highlightMatch(stdName, q));
             if (orig && orig.toLowerCase() !== stdName.toLowerCase()) {
-                nameBits.push(`<span class="muted small">原文 ${escapeHtml(orig)}</span>`);
+                nameBits.push(`<span class="muted small">原文 ${highlightMatch(orig, q)}</span>`);
             }
         } else {
-            nameBits.push(escapeHtml(orig) || "未命名指标");
+            nameBits.push(highlightMatch(orig, q) || "未命名指标");
         }
-        const val = (p.value ? escapeHtml(p.value) : "—") + (p.unit ? ` ${escapeHtml(p.unit)}` : "");
-        const cond = p.condition ? ` @ ${escapeHtml(p.condition)}` : "";
+        const val = (p.value ? highlightMatch(p.value, q) : "<span class='muted'>—</span>") + (p.unit ? ` ${escapeHtml(p.unit)}` : "");
+        const cond = p.condition ? `<span class="mat-entry-cond">@ ${highlightMatch(p.condition, q)}</span>` : "";
         const src = p.paper_title
             ? `<span class="mat-src-tag" title="${escapeHtml(p.paper_title)}">${escapeHtml(String(p.paper_title).slice(0, 42))}${String(p.paper_title).length > 42 ? "…" : ""}</span>`
             : "";
-        return `<div class="mat-entry"><span class="mat-entry-name">${sym}${nameBits.join(" ")}</span><span class="mat-entry-val">${val}${cond}</span>${src}</div>`;
+        return `<div class="mat-entry"><span class="mat-entry-name">${sym}${nameBits.join(" ")}</span><span class="mat-entry-val">${val}</span>${cond}${src}</div>`;
     }
 
-    function synEntryHtml(s) {
+    function synEntryHtml(s, q) {
         const chip = s.method_label && s.method_label !== "其他工艺"
-            ? `<span class="mat-method-chip">${escapeHtml(s.method_label)}</span>` : "";
+            ? `<span class="mat-method-chip">${highlightMatch(s.method_label, q)}</span>` : "";
         const orig = s.method && s.method !== s.method_label
-            ? `<span class="muted small">${escapeHtml(s.method)}</span>` : "";
+            ? `<span class="muted small">${highlightMatch(s.method, q)}</span>` : "";
         const conds = [];
         if (s.temperature) conds.push(`温度 ${escapeHtml(s.temperature)}`);
         if (s.pressure) conds.push(`压力 ${escapeHtml(s.pressure)}`);
@@ -1145,11 +1163,11 @@
         return `<div class="mat-entry">${chip}${orig}${condHtml}${src}</div>`;
     }
 
-    function buildMaterialCard(m, idx) {
+    function buildMaterialCard(m, idx, q) {
         const item = el("div", { class: "mat-card" });
         const head = el("div", { class: "mat-card-head" }, [
             el("span", { class: "mat-idx", text: String(idx + 1) }),
-            el("span", { class: "mat-name", text: m.name || "未命名材料" }),
+            el("span", { class: "mat-name", html: highlightMatch(m.name || "未命名材料", q) }),
             m.formula ? el("span", { class: "badge badge-formula", text: m.formula }) : null,
             m.category && m.category !== "其他" ?
                 el("span", { class: `badge mat-cat-badge ${matCatClass(m.category)}`, text: m.category }) : null,
@@ -1175,48 +1193,54 @@
                 `<div class="mat-struct">${structBits.map(escapeHtml).join(" · ")}</div>`);
         }
 
-        // 性能指标（按类别分组展示）
+        // 性能指标（按类别分组展示；未知类别兜底追加）
         const props = m.properties || [];
         if (props.length) {
             const groups = groupByCat(props, p => p.category || "其他");
-            const gHtml = PROP_CAT_ORDER
-                .filter(c => groups[c])
-                .map(c => `
-                    <div class="mat-group">
+            const known = PROP_CAT_ORDER.filter(c => groups[c]);
+            const extraCats = Object.keys(groups).filter(c => !PROP_CAT_ORDER.includes(c)).sort();
+            const ordered = known.concat(extraCats.map(c => groups[c] ? c : null).filter(Boolean));
+            const gHtml = ordered.map(c => {
+                const color = PROP_CAT_COLORS[c] || "#8a8f98";
+                return `
+                    <div class="mat-group" style="--cat-color:${color}">
                         <div class="mat-group-head">
-                            <span class="mat-group-title">${escapeHtml(c)}</span>
+                            <span class="mat-group-title"><span class="mat-cat-dot"></span>${escapeHtml(c)}</span>
                             <span class="mat-group-count">${groups[c].length} 项</span>
                         </div>
-                        <div class="mat-group-body">${groups[c].map(propEntryHtml).join("")}</div>
-                    </div>`)
-                .join("");
+                        <div class="mat-group-body">${groups[c].map(p => propEntryHtml(p, q)).join("")}</div>
+                    </div>`;
+            }).join("");
             item.insertAdjacentHTML("beforeend", `
                 <div class="mat-section">
                     <div class="mat-section-title">性能指标 <span class="mat-section-sub">（${props.length} 条 · 已归一化为标准指标）</span></div>
                     <div class="mat-group-list">${gHtml}</div>
                 </div>`);
+        } else {
+            item.insertAdjacentHTML("beforeend",
+                `<div class="mat-empty">暂无性能记录（该论文未抽取到量化指标）</div>`);
         }
 
         // 合成方法（按工艺类别分组展示）
         const syns = m.synthesis || [];
         if (syns.length) {
             const groups = groupByCat(syns, s => s.method_category || "其他");
-            const gHtml = Object.keys(groups)
-                .sort()
-                .map(c => `
-                    <div class="mat-group">
-                        <div class="mat-group-head">
-                            <span class="mat-group-title">${escapeHtml(c)}</span>
-                            <span class="mat-group-count">${groups[c].length} 项</span>
-                        </div>
-                        <div class="mat-group-body">${groups[c].map(synEntryHtml).join("")}</div>
-                    </div>`)
-                .join("");
+            const gHtml = Object.keys(groups).sort().map(c => `
+                <div class="mat-group" style="--cat-color:#33518f">
+                    <div class="mat-group-head">
+                        <span class="mat-group-title"><span class="mat-cat-dot"></span>${escapeHtml(c)}</span>
+                        <span class="mat-group-count">${groups[c].length} 项</span>
+                    </div>
+                    <div class="mat-group-body">${groups[c].map(s => synEntryHtml(s, q)).join("")}</div>
+                </div>`).join("");
             item.insertAdjacentHTML("beforeend", `
                 <div class="mat-section">
                     <div class="mat-section-title">合成方法 <span class="mat-section-sub">（${syns.length} 条 · 已按工艺类别归类）</span></div>
                     <div class="mat-group-list">${gHtml}</div>
                 </div>`);
+        } else {
+            item.insertAdjacentHTML("beforeend",
+                `<div class="mat-empty">暂无合成记录（论文未提供工艺条件）</div>`);
         }
 
         item.insertAdjacentHTML("beforeend",
@@ -1244,28 +1268,39 @@
             `共 ${mats.length} 种材料 · ${stats.properties || 0} 条性能 · ${stats.synthesis || 0} 条合成方法 · 完整三元组 ${stats.complete_triples || 0} 条。` +
             `由 research 阶段「材料知识抽取」节点从论文摘要中自动抽取，指标 / 工艺 / 体系均已按材料科学标准归一化。`));
 
-        // 搜索条（实时过滤；回车或点「定位」滚动到首个命中卡片并高亮）
-        const searchBar = el("div", { class: "mat-search-bar" }, [
-            el("input", {
-                class: "mat-search-input",
-                type: "text",
-                placeholder: "搜索材料名 / 化学式 / 体系 / 性能（如 ZT、热导率、功率因子）/ 合成方法…",
-                value: materialsState.query,
-                oninput: (e) => {
-                    materialsState.query = e.target.value.trim();
-                    renderMaterialList();
-                },
-                onkeydown: (e) => {
-                    if (e.key === "Enter") jumpToMatch();
-                },
-            }),
-            el("button", { class: "btn btn-accent", onclick: jumpToMatch }, "定位"),
-            el("button", { class: "btn btn-secondary", onclick: () => {
+        // 搜索条：输入框 + 命中计数 + 定位 / 重置
+        const searchBar = el("div", { class: "mat-search-bar" });
+        const input = el("input", {
+            class: "mat-search-input",
+            type: "text",
+            placeholder: "搜索材料名 / 化学式 / 体系 / 性能（如 ZT、热导率、功率因子）/ 合成方法…",
+            value: materialsState.query,
+            oninput: (e) => {
+                materialsState.query = e.target.value;
+                renderMaterialList();
+            },
+            onkeydown: (e) => {
+                if (e.key === "Enter") { e.preventDefault(); jumpToMatch(); }
+                if (e.key === "Escape") { materialsState.query = ""; input.value = ""; renderMaterialList(); }
+            },
+        });
+        const searchIcon = el("span", { class: "mat-search-icon" }, "⌕");
+        searchBar.appendChild(searchIcon);
+        searchBar.appendChild(input);
+        const hitBadge = el("span", { class: "mat-hit-badge" });
+        searchBar.appendChild(hitBadge);
+        searchBar.appendChild(el("button", {
+            class: "btn btn-accent btn-sm mat-search-btn",
+            onclick: jumpToMatch,
+        }, "定位"));
+        searchBar.appendChild(el("button", {
+            class: "btn btn-secondary btn-sm mat-search-btn",
+            onclick: () => {
                 materialsState.query = "";
                 materialsState.catFilter = "";
                 renderMaterials(content);
-            } }, "重置"),
-        ]);
+            },
+        }, "重置"));
         content.appendChild(searchBar);
 
         // 统计卡片
@@ -1284,7 +1319,7 @@
         statCard.appendChild(grid);
         content.appendChild(statCard);
 
-        // 知识结构总览（材料体系 chips 可点击筛选，性能/工艺为统计展示）
+        // 知识结构总览（材料体系 chips 可点击筛选；性能/工艺为统计展示，超出折叠）
         const aggCard = el("div", { class: "card" });
         aggCard.appendChild(el("div", { class: "card-title" }, "知识结构总览"));
         const rows = [
@@ -1295,23 +1330,38 @@
         rows.forEach(r => {
             const row = el("div", { class: "mat-agg-row" }, [el("span", { class: "mat-agg-label", text: r.label })]);
             const entries = Object.entries(r.counters).sort((a, b) => b[1] - a[1]);
-            if (!entries.length) row.appendChild(el("span", { class: "muted small" }, "暂无数据"));
-            entries.forEach(([cat, n]) => {
-                const active = r.clickable && materialsState.catFilter === cat;
-                const chip = el("span", {
-                    class: "mat-agg-chip" + (active ? " active" : ""),
-                });
-                if (r.clickable) {
-                    chip.setAttribute("data-clickable", "1");
-                    chip.addEventListener("click", () => {
-                        materialsState.catFilter = materialsState.catFilter === cat ? "" : cat;
-                        renderMaterialList();
+            if (!entries.length) {
+                row.appendChild(el("span", { class: "muted small" }, "暂无数据"));
+            } else {
+                const MAX_CHIPS = 10;
+                const shown = entries.slice(0, MAX_CHIPS);
+                shown.forEach(([cat, n]) => {
+                    const active = r.clickable && materialsState.catFilter === cat;
+                    const chip = el("span", {
+                        class: "mat-agg-chip" + (active ? " active" : "") +
+                            (r.clickable ? ` mat-cat-badge ${matCatClass(cat)}` : ""),
                     });
+                    if (r.clickable) {
+                        chip.setAttribute("data-clickable", "1");
+                        chip.setAttribute("data-cat", cat);
+                        chip.addEventListener("click", () => {
+                            materialsState.catFilter = materialsState.catFilter === cat ? "" : cat;
+                            // 同步更新所有体系 chip 的 active 状态
+                            aggCard.querySelectorAll('.mat-agg-chip[data-clickable="1"]').forEach(c => {
+                                c.classList.toggle("active", c.getAttribute("data-cat") === materialsState.catFilter);
+                            });
+                            renderMaterialList();
+                        });
+                    }
+                    chip.appendChild(document.createTextNode(cat));
+                    chip.appendChild(el("span", { class: "mat-agg-num", text: String(n) }));
+                    row.appendChild(chip);
+                });
+                if (entries.length > MAX_CHIPS) {
+                    row.appendChild(el("span", { class: "mat-agg-more" },
+                        `… 等 ${entries.length - MAX_CHIPS} 类`));
                 }
-                chip.appendChild(document.createTextNode(cat));
-                chip.appendChild(el("span", { class: "mat-agg-num", text: String(n) }));
-                row.appendChild(chip);
-            });
+            }
             aggCard.appendChild(row);
         });
         content.appendChild(aggCard);
@@ -1327,32 +1377,40 @@
         content.appendChild(listWrap);
 
         function renderMaterialList() {
-            const q = materialsState.query;
+            const q = materialsState.query.trim();
             const cf = materialsState.catFilter;
             const filtered = mats.filter(m => materialMatches(m, q) && (!cf || m.category === cf));
             clear(listWrap);
+            // 命中计数
+            hitBadge.textContent = q || cf
+                ? `命中 ${filtered.length} / ${mats.length} 种材料`
+                : `共 ${mats.length} 种材料`;
             if (!filtered.length) {
                 listWrap.appendChild(el("div", { class: "list-empty" },
                     "没有匹配的材料，换个关键词试试（支持材料名 / 化学式 / 体系 / 性能 / 合成方法）。"));
                 return;
             }
             listWrap.appendChild(el("div", { class: "mat-list-summary" },
-                `共 ${filtered.length} 种材料${q ? ` · 匹配「${q}」` : ""}${cf ? ` · 体系「${cf}」` : ""}`));
-            filtered.forEach((m, i) => listWrap.appendChild(buildMaterialCard(m, i)));
+                `共 ${filtered.length} 种材料${q ? ` · 匹配「${q}」` : ""}${cf ? ` · 体系「${cf}」` : ""}` +
+                ` · 其中 ${filtered.filter(m => (m.properties || []).length).length} 种含性能、${filtered.filter(m => (m.synthesis || []).length).length} 种含合成`));
+            filtered.forEach((m, i) => listWrap.appendChild(buildMaterialCard(m, i, q)));
         }
 
         function jumpToMatch() {
-            const q = materialsState.query.trim().toLowerCase();
+            const q = materialsState.query.trim();
+            materialsState.lastQuery = q;
             if (!q) {
-                renderMaterialList();
+                showToast("请先输入要搜索的关键词", "error");
+                input.focus();
                 return;
             }
             renderMaterialList();
             const card = listWrap.querySelector(".mat-card");
             if (card) {
                 card.classList.add("mat-flash");
-                card.scrollIntoView({ behavior: "smooth", block: "center" });
+                card.scrollIntoView({ behavior: "smooth", block: "start" });
                 setTimeout(() => card.classList.remove("mat-flash"), 3400);
+                showToast(`已定位到「${q}」的首个匹配`, "success");
             } else {
                 showToast("未找到匹配材料", "error");
             }
@@ -1933,6 +1991,21 @@
         });
         // 默认页
         setActivePage("create");
+
+        // URL 深链支持：?project=<project_id>&page=<page>（如材料页直达，便于分享/调试）
+        const params = new URLSearchParams(window.location.search);
+        const urlProject = (params.get("project") || "").trim();
+        const urlPage = (params.get("page") || "").trim();
+        if (urlProject) {
+            state.currentProjectId = urlProject;
+            updateProjectIdDisplay();
+            startPolling();
+            if (urlPage && ["progress", "papers", "materials", "claims", "experiments", "discovery", "notes", "human"].includes(urlPage)) {
+                setActivePage(urlPage);
+            } else {
+                setActivePage("progress");
+            }
+        }
     }
 
     document.addEventListener("DOMContentLoaded", init);
