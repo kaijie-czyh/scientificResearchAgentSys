@@ -375,16 +375,21 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
         state.current_node = None
         state.next_nodes = []
         # 从 node_history 提取 discovery 产出摘要
-        state.discovery = _extract_discovery_summary(result.node_history)
+        state.discovery = _extract_discovery_summary(
+            result.node_history, result.extra.get("hypotheses") or []
+        )
     except Exception as e:  # noqa: BLE001
         state.status = "failed"
         state.error = f"{type(e).__name__}: {e}"
         state.summary = f"Discovery 执行异常: {e}"
 
 
-def _extract_discovery_summary(node_history: list[dict]) -> dict:
+def _extract_discovery_summary(node_history: list[dict], hypotheses: list[dict] | None = None) -> dict:
     """从节点历史提取 discovery 产出摘要。"""
-    summary = {"hypotheses": 0, "candidates": 0, "relationships": 0, "novel": 0, "nodes": []}
+    summary = {
+        "hypotheses": 0, "candidates": 0, "relationships": 0, "novel": 0,
+        "nodes": [], "hypothesis_list": [],
+    }
     for h in node_history or []:
         node_id = h.get("node_id", "")
         if node_id in ("hypothesis_seed", "search_space", "llm_guided_search",
@@ -408,6 +413,30 @@ def _extract_discovery_summary(node_history: list[dict]) -> dict:
                             h["summary"].split("其中 ")[1].split(" 条")[0])
                 except (IndexError, ValueError):
                     pass
+    # 假设列表（含三维可验证性评分），按综合分降序，供 Web 排序展示
+    h_list: list[dict] = []
+    for hyp in hypotheses or []:
+        if not isinstance(hyp, dict) or not hyp.get("hypothesis"):
+            continue
+        def _f(key: str) -> float:
+            try:
+                return float(hyp.get(key, 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+        n_, f_, g_ = _f("novelty_score"), _f("feasibility_score"), _f("gap_relevance_score")
+        h_list.append({
+            "hypothesis": hyp.get("hypothesis", ""),
+            "variables": hyp.get("variables", []) or [],
+            "target_property": hyp.get("target_property", ""),
+            "rationale": hyp.get("rationale", ""),
+            "gap_ref": hyp.get("gap_ref", ""),
+            "novelty_score": round(n_, 2),
+            "feasibility_score": round(f_, 2),
+            "gap_relevance_score": round(g_, 2),
+            "overall_score": round(0.4 * n_ + 0.3 * f_ + 0.3 * g_, 2),
+        })
+    h_list.sort(key=lambda x: x["overall_score"], reverse=True)
+    summary["hypothesis_list"] = h_list
     return summary
 
 
@@ -936,6 +965,44 @@ def list_research_conflicts(project_id: str) -> dict:
             for c in conflicts
         ],
         "stats": stats,
+    }
+
+
+@app.post("/api/projects/{project_id}/materials/re-extract")
+def re_extract_materials(project_id: str) -> dict:
+    """覆盖度重抽：对「仅名称」材料（无性能无合成）做针对性二次抽取补全。
+
+    仅名称材料是首轮抽取的召回遗漏（材料名出现但未抽到性能/合成）。
+    本接口跨论文聚合包含材料名的摘要片段，专门 prompt 补全其性能与合成。
+    异步执行（调用 LLM，可能耗时数十秒~数分钟），立即返回任务受理。
+    """
+    state = _require_project(project_id)
+    if state.status == "running":
+        raise HTTPException(status_code=409, detail="pipeline 正在运行中")
+
+    def _worker() -> None:
+        try:
+            store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+            from core.llm import LLMRegistry
+            from stages.research.agents import MaterialKnowledgeExtractionAgent
+            registry = LLMRegistry.from_config(_CONFIG)
+            agent = MaterialKnowledgeExtractionAgent("material_extraction")
+            n_added = agent._re_extract_name_only(store, registry)
+            mstats = store.material_stats()
+            state.error = None
+            state.summary = (
+                f"覆盖度重抽完成：补全 {n_added} 条知识"
+                f"（库内材料 {mstats['materials']} / 性能 {mstats['properties']} / "
+                f"合成 {mstats['synthesis']}）"
+            )
+        except Exception as e:  # noqa: BLE001
+            state.error = f"重抽失败: {type(e).__name__}: {e}"
+            state.summary = f"覆盖度重抽异常: {e}"
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {
+        "project_id": project_id,
+        "message": "覆盖度重抽已启动（异步执行），完成后可刷新材料页查看补全结果",
     }
 
 

@@ -737,6 +737,87 @@ body {
     box-shadow: var(--shadow-md);
 }
 
+/* ===== 假设可验证性评分卡片 ===== */
+.card-desc {
+    font-size: 12px;
+    color: var(--color-muted);
+    margin: 4px 0 12px;
+    line-height: 1.6;
+}
+.list-item.hy-item {
+    cursor: default;
+}
+.hy-item:hover {
+    border-color: var(--color-border);
+    box-shadow: none;
+}
+.hy-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+.hy-rank {
+    flex-shrink: 0;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--color-primary);
+    background: var(--color-primary-weak, rgba(47, 128, 237, 0.1));
+    border-radius: 6px;
+    padding: 2px 8px;
+    margin-top: 2px;
+}
+.hy-main {
+    flex: 1;
+    min-width: 0;
+}
+.hy-text {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.5;
+    color: var(--color-text);
+}
+.hy-meta {
+    font-size: 12px;
+    color: var(--color-muted);
+    margin-top: 3px;
+    line-height: 1.5;
+}
+.hy-rationale {
+    font-size: 12px;
+    color: var(--color-muted);
+    margin-top: 4px;
+    line-height: 1.5;
+    padding-left: 8px;
+    border-left: 2px solid var(--color-border);
+}
+.hy-overall {
+    flex-shrink: 0;
+    text-align: center;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: var(--color-primary-weak, rgba(47, 128, 237, 0.1));
+}
+.hy-overall-val {
+    font-size: 18px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-primary-dark);
+    line-height: 1.2;
+}
+.hy-overall-label {
+    font-size: 11px;
+    color: var(--color-muted);
+    margin-top: 2px;
+}
+.hy-bars {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--color-border);
+}
+.hy-bars .rec-popbar {
+    margin: 4px 0 2px;
+}
+
 .list-item.expanded {
     border-color: var(--color-primary-light);
 }

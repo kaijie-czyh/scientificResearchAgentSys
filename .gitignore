@@ -46,3 +46,7 @@ run_log.txt
 _test_api.py
 *.log
 diag_*.py
+
+# CDP 无头浏览器临时 profile（验证脚本运行时生成，不入库）
+_edge*_profile/
+_*.png

@@ -208,6 +208,60 @@ def categorize_material(name: str, formula: str = "") -> str:
     return "其他"
 
 
+# ===== 泛称材料判别（材料覆盖度重抽用）=====
+
+# 泛称后缀：分类性/集合性名词（不是具体材料，重抽无意义）
+_GENERIC_SUFFIXES = (
+    "materials", "material", "alloys", "alloy", "phases", "phase", "catalysts",
+    "catalyst", "batteries", "battery", "phosphors", "phosphor", "oxides",
+    "oxide", "composites", "composite", "devices", "device", "layers", "layer",
+    "systems", "system", "structures", "structure", "glasses", "glass",
+    "ceramics", "ceramic", "compounds", "compound", "families", "family",
+    "polymers", "polymer", "films", "film", "arrays", "array", "classes",
+    "class", "types", "type", "candidates", "candidate", "approaches",
+    "approach", "strategies", "strategy", "methods", "method", "techniques",
+    "technique", "topologies", "topology", "configurations", "configuration",
+    "nanostructures", "nanostructure", "architectures", "architecture",
+    "applications", "application", "cathodes", "cathode", "anodes", "anode",
+    "electrodes", "electrode", "interfaces", "interface", "junctions",
+    "junction", "contacts", "contact", "electrolytes", "electrolyte",
+)
+
+# 化学式模式：元素符号（大写+可选小写）+ 可选下标数字，至少 2 个元素或含数字
+_CHEM_FORMULA_RE = re.compile(r"^(?:[A-Z][a-z]?\d*){2,}$")
+# 含数字的类化学式（如 Ca14AlSb11、Bi0.07Ge0.90Te、Cs0.05FA0.95PbI3）
+_CHEM_FORMULA_NUM_RE = re.compile(r"[A-Z][a-z]?\d", re.I)
+
+
+def is_generic_material_name(name: str, formula: str = "") -> bool:
+    """判别材料名是否为「泛称/分类名」（如 catalysts、Thermoelectric materials）。
+
+    泛称 = 分类性集合名词，不是具体材料——重抽（二次抽取补全）对它们无意义。
+
+    判定规则（优先级从高到低）：
+    1. 有具体化学式（formula 或 name 本身匹配化学式模式）→ 具体材料
+    2. name 以泛称后缀结尾（materials/alloys/phases/catalysts/oxides/…）→ 泛称
+    3. 其他 → 具体（保守，交给重抽无结果自然跳过）
+    """
+    text = f"{name or ''} {formula or ''}".strip()
+    if not text:
+        return True  # 空名按泛称处理
+    # 1. 化学式 → 具体
+    if formula and _CHEM_FORMULA_RE.match(formula.strip()):
+        return False
+    if _CHEM_FORMULA_RE.match(name.strip()):
+        return False
+    if _CHEM_FORMULA_NUM_RE.search(name) and len(name.strip()) >= 3:
+        return False
+    # 2. 泛称后缀 → 泛称
+    lower = name.strip().lower()
+    for suffix in _GENERIC_SUFFIXES:
+        if lower.endswith(suffix):
+            return True
+    # 3. 保守：具体
+    return False
+
+
 # 性能指标类别 → 中文标签（前端分组用）
 PROPERTY_CATEGORIES = [
     "热电优值", "电输运", "热输运", "载流子", "能带结构", "稳定性", "器件性能", "其他",

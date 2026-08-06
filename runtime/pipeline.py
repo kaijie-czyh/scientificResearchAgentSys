@@ -525,6 +525,8 @@ class Pipeline:
         )
         result.node_history = ctx.history()
         result.recommendation = "discovery_completed"
+        # 假设列表（含三维可验证性评分）随结果透出，供 Web 展示排序
+        result.extra["hypotheses"] = hypotheses
         return result
 
     # ===== 方向推荐（topic_discovery）=====

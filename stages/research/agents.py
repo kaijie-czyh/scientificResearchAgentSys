@@ -1352,20 +1352,32 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
             "synthesis": synthesis,
         })
 
+        # 覆盖度重抽：首轮抽取后，对「仅名称」的具体材料做针对性二次抽取
+        # （跨论文聚合片段 + 专门 prompt，补全性能/合成，减少空壳材料）
+        re_extracted = 0
+        if not dry_run and registry is not None:
+            try:
+                re_extracted = self._re_extract_name_only(store, registry)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("覆盖度重抽失败（降级，不阻塞）: %s", e)
+
         stats = store.material_stats()
         output = MaterialExtractionOutput(
             materials=materials,
             properties=properties,
             synthesis=synthesis,
         )
+        summary = (
+            f"材料知识抽取完成：{len(materials)} 种材料、{len(properties)} 条性能、"
+            f"{len(synthesis)} 条合成方法"
+            f"（库内三元组完整 {stats['complete_triples']} 条）"
+        )
+        if re_extracted:
+            summary += f"；覆盖度重抽补全 {re_extracted} 条知识"
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary=(
-                f"材料知识抽取完成：{len(materials)} 种材料、{len(properties)} 条性能、"
-                f"{len(synthesis)} 条合成方法"
-                f"（库内三元组完整 {stats['complete_triples']} 条）"
-            ),
+            summary=summary,
         )
 
     def _real_extract(
@@ -1469,6 +1481,156 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                 "source_snippet": (abstract or "")[:300],
             })
         return materials, properties, synthesis
+
+    # ===== 覆盖度重抽（仅名称材料二次抽取补全）=====
+
+    def _find_name_only_materials(
+        self, store: KnowledgeStore
+    ) -> list[tuple[Material, list[str]]]:
+        """找出库内「仅名称」材料（无性能无合成），过滤泛称。
+
+        Returns:
+            [(Material, [候选来源片段关键词]), ...]，按优先级（有化学式优先）排序。
+        """
+        from core.knowledge.normalize import is_generic_material_name
+
+        mats = store.list_materials(limit=500)
+        props = store.list_material_properties(limit=2000)
+        syns = store.list_material_synthesis(limit=2000)
+        prop_mats = {p.material_id for p in props}
+        syn_mats = {s.material_id for s in syns}
+
+        candidates: list[tuple[Material, list[str]]] = []
+        for m in mats:
+            if m.material_id in prop_mats or m.material_id in syn_mats:
+                continue  # 已有知识，跳过
+            if is_generic_material_name(m.name, m.formula):
+                continue  # 泛称，重抽无意义
+            keywords = [m.name] + ([m.formula] if m.formula and m.formula.lower() != m.name.lower() else [])
+            candidates.append((m, keywords))
+        # 有化学式（更明确）优先
+        candidates.sort(key=lambda x: (0 if x[0].formula else 1, x[0].name))
+        return candidates
+
+    def _re_extract_name_only(
+        self, store: KnowledgeStore, registry: LLMRegistry, max_materials: int = 15
+    ) -> int:
+        """对「仅名称」材料做针对性二次抽取，补全性能/合成知识。
+
+        方法：跨论文聚合包含该材料名的摘要片段 → 专门 prompt 只抽取该材料
+        的性能与合成 → 落库关联回原材料。
+        纯容错：单材料失败跳过，不阻塞。
+        Returns:
+            补全的知识条数（性能 + 合成）。
+        """
+        candidates = self._find_name_only_materials(store)
+        if not candidates:
+            return 0
+
+        # 加载全部论文（用于聚合片段）
+        papers = store.list_papers()
+        logger.info("覆盖度重抽：%d 个仅名称材料（最多处理 %d）", len(candidates), max_materials)
+
+        n_added = 0
+        for mat, keywords in candidates[:max_materials]:
+            try:
+                kw_lower = [k.lower() for k in keywords if k]
+                # 收集包含材料名的论文片段（最多 3 篇，每篇取匹配处前后 400 字符）
+                snippets: list[str] = []
+                for p in papers:
+                    text = f"{p.title or ''}\n{(p.abstract or '')[:2000]}"
+                    text_lower = text.lower()
+                    hit = next((k for k in kw_lower if k and k in text_lower), None)
+                    if not hit:
+                        continue
+                    idx = text_lower.find(hit)
+                    start = max(0, idx - 200)
+                    end = min(len(text), idx + 600)
+                    snippets.append(f"[{p.title}] …{text[start:end]}…")
+                    if len(snippets) >= 3:
+                        break
+                if not snippets:
+                    continue  # 无匹配片段，跳过
+
+                resp = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=MaterialExtractSchema,
+                    system=(
+                        "你是材料科学知识抽取专家。目标：为指定材料补全缺失的知识。\n"
+                        "只抽取文本中明确提到的该材料的性能指标（数值/单位/条件）与"
+                        "合成条件（方法/前驱体/温度/压力/气氛/时间/步骤）。\n"
+                        "严格只输出目标材料的条目；找不到的信息留空，不要臆造。"
+                    ),
+                    prompt=(
+                        f"目标材料：{mat.name}"
+                        + (f"（化学式 {mat.formula}）" if mat.formula else "")
+                        + "\n\n相关论文片段：\n"
+                        + "\n\n".join(snippets)
+                    ),
+                )
+
+                # 落库补全（匹配库内该材料）
+                for item in resp.materials or []:
+                    if item.name.strip().lower() != mat.name.strip().lower():
+                        # 别名匹配：化学式一致也算
+                        if not (mat.formula and item.formula and
+                                mat.formula.lower() == item.formula.lower()):
+                            continue
+                    for prop in item.properties or []:
+                        raw_vn = prop.get("value_num")
+                        value_num: Optional[float] = None
+                        if raw_vn is not None and str(raw_vn).strip():
+                            try:
+                                value_num = float(str(raw_vn).strip().rstrip("%"))
+                            except ValueError:
+                                value_num = None
+                        store.save_material_property(MaterialProperty(
+                            property_id=KnowledgeStore.new_id(),
+                            material_id=mat.material_id,
+                            property_name=prop.get("property_name", ""),
+                            property_name_cn=prop.get("property_name_cn", ""),
+                            value=prop.get("value", ""),
+                            value_num=value_num,
+                            unit=prop.get("unit", ""),
+                            condition=prop.get("condition", ""),
+                            paper_id=mat.paper_id,
+                            paper_title=mat.paper_title,
+                            confidence=0.7,  # 二次抽取置信度略低
+                            source_snippet=(snippets[0] or "")[:800],
+                            source_stage="research",
+                        ))
+                        n_added += 1
+                    for syn in item.synthesis or []:
+                        _raw_pre = syn.get("precursors", []) or []
+                        if isinstance(_raw_pre, str):
+                            _raw_pre = [_raw_pre]
+                        _raw_steps = syn.get("steps", "") or ""
+                        if isinstance(_raw_steps, list):
+                            _raw_steps = "; ".join(str(x) for x in _raw_steps)
+                        store.save_material_synthesis(MaterialSynthesis(
+                            synthesis_id=KnowledgeStore.new_id(),
+                            material_id=mat.material_id,
+                            method=syn.get("method", ""),
+                            precursors=list(_raw_pre),
+                            temperature=syn.get("temperature", ""),
+                            pressure=syn.get("pressure", ""),
+                            atmosphere=syn.get("atmosphere", ""),
+                            duration=syn.get("duration", ""),
+                            steps=_raw_steps,
+                            paper_id=mat.paper_id,
+                            paper_title=mat.paper_title,
+                            confidence=0.7,
+                            source_snippet=(snippets[0] or "")[:800],
+                            source_stage="research",
+                        ))
+                        n_added += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning("覆盖度重抽失败（material=%r）: %s", mat.name, e)
+                continue
+
+        if n_added:
+            logger.info("覆盖度重抽完成：补全 %d 条知识", n_added)
+        return n_added
 
 
 # ===== ResearchGapIdentifyAgent（Task 3：研究缺口识别）=====

@@ -1902,6 +1902,11 @@
             const summary = data.discovery_summary || {};
             content.appendChild(renderDiscoverySummary(summary));
 
+            // 假设可验证性评分（三维评分 + 排序）
+            if (summary.hypothesis_list && summary.hypothesis_list.length) {
+                content.appendChild(renderHypothesisScores(summary.hypothesis_list));
+            }
+
             // discovery 节点执行状态
             if (summary.nodes && summary.nodes.length) {
                 content.appendChild(renderDiscoveryNodes(summary.nodes));
@@ -1932,6 +1937,62 @@
             ]));
         });
         return wrap;
+    }
+
+    function renderHypothesisScores(hypList) {
+        const card = el("div", { class: "card" });
+        card.appendChild(el("div", { class: "card-title" },
+            `假设可验证性评分（按综合分排序，共 ${hypList.length} 个）`));
+        card.appendChild(el("div", { class: "card-desc" },
+            "三维评分：新颖性（与已有文献差异）· 可行性（变量可量化/可搜索验证）· 缺口关联度（与 Research Gap 匹配）。综合分 = 0.4×新颖性 + 0.3×可行性 + 0.3×缺口关联度。"));
+
+        const list = el("div", { class: "list" });
+        hypList.forEach((h, idx) => {
+            const item = el("div", { class: "list-item hy-item" });
+            // 头部：排名 + 假设 + 综合分
+            const head = el("div", { class: "hy-head" });
+            head.appendChild(el("span", { class: "hy-rank", text: `#${idx + 1}` }));
+            head.appendChild(el("div", { class: "hy-main" }, [
+                el("div", { class: "hy-text", text: h.hypothesis || "" }),
+                el("div", { class: "hy-meta" },
+                    `目标性能：${escapeHtml(h.target_property || "—")}` +
+                    (h.variables && h.variables.length ? ` · 变量：${escapeHtml(h.variables.join(" / "))}` : "") +
+                    (h.gap_ref ? ` · Gap：${escapeHtml(String(h.gap_ref).slice(0, 24))}` : "")),
+                h.rationale ? el("div", { class: "hy-rationale", text: h.rationale }) : null,
+            ]));
+            head.appendChild(el("div", { class: "hy-overall" }, [
+                el("div", { class: "hy-overall-val", text: h.overall_score != null ? h.overall_score.toFixed(2) : "0.00" }),
+                el("div", { class: "hy-overall-label" }, "综合分"),
+            ]));
+            item.appendChild(head);
+            // 三维评分条
+            const bars = [
+                { label: "新颖性", val: h.novelty_score || 0 },
+                { label: "可行性", val: h.feasibility_score || 0 },
+                { label: "缺口关联度", val: h.gap_relevance_score || 0 },
+            ];
+            const barWrap = el("div", { class: "hy-bars" });
+            bars.forEach(b => {
+                const row = el("div", { class: "rec-popbar" });
+                row.appendChild(el("span", { class: "rec-popbar-label", text: b.label }));
+                const track = el("div", { class: "rec-popbar-track" });
+                const pct = Math.max(0, Math.min(100, Math.round((b.val || 0) * 100)));
+                const fill = el("span", { class: "rec-popbar-fill" });
+                fill.style.width = `${pct}%`;
+                // 高分绿、中分蓝、低分橙红
+                if (b.val >= 0.7) fill.style.background = "linear-gradient(90deg, #27ae60, #5dd39e)";
+                else if (b.val >= 0.4) fill.style.background = "linear-gradient(90deg, #2f80ed, #6ea8f5)";
+                else fill.style.background = "linear-gradient(90deg, #e67e22, #f0a35e)";
+                track.appendChild(fill);
+                row.appendChild(track);
+                row.appendChild(el("span", { class: "rec-popbar-val", text: b.val.toFixed(2) }));
+                barWrap.appendChild(row);
+            });
+            item.appendChild(barWrap);
+            list.appendChild(item);
+        });
+        card.appendChild(list);
+        return card;
     }
 
     function renderDiscoveryNodes(nodes) {

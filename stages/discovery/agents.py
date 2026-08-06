@@ -89,6 +89,15 @@ class HypothesisItem(BaseModel):
     target_property: str = Field(description="目标性能名（如 ZT）")
     rationale: str = Field(description="假设依据（关联 Gap/冲突/共识）")
     gap_ref: str = Field(default="", description="关联的 Research Gap")
+    novelty_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="新颖性评分 0~1（与已有文献/共识的差异程度）"
+    )
+    feasibility_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="可行性评分 0~1（变量可量化/可搜索验证/物理合法程度）"
+    )
+    gap_relevance_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="缺口关联度评分 0~1（与 Research Gap 的匹配程度）"
+    )
 
 
 class HypothesisBatchSchema(BaseModel):
@@ -223,7 +232,12 @@ class HypothesisSeedAgent(AgentNode):
                         "1. 每个假设必须关联一个 Research Gap（gap_ref）\n"
                         "2. 假设涉及可量化的变量（variables）与明确的目标性能（target_property）\n"
                         "3. 假设是可被搜索验证的方向，不是结论\n"
-                        "4. rationale 说明假设依据（关联哪个 Gap/冲突/共识）"
+                        "4. rationale 说明假设依据（关联哪个 Gap/冲突/共识）\n"
+                        "5. 为每个假设输出三维可验证性评分（各 0~1，保留两位小数）：\n"
+                        "   - novelty_score 新颖性：与已有文献结论/共识的差异程度，越新越高\n"
+                        "   - feasibility_score 可行性：变量可量化、可搜索验证、物理合法的程度\n"
+                        "   - gap_relevance_score 缺口关联度：与所关联 Research Gap 的匹配程度\n"
+                        "   评分须与 rationale/文本内容一致，不要全部给高分。"
                     ),
                     prompt=(
                         f"研究主题：{input_obj.topic}\n\n"
@@ -257,6 +271,9 @@ class HypothesisSeedAgent(AgentNode):
                 "target_property": "ZT",
                 "rationale": f"关联 Research Gap：{g[:60]}",
                 "gap_ref": g,
+                "novelty_score": round(0.4 + 0.1 * i, 2),
+                "feasibility_score": round(0.6 - 0.05 * i, 2),
+                "gap_relevance_score": 0.8,
             }
             for i, g in enumerate(gaps[:3])
         ]

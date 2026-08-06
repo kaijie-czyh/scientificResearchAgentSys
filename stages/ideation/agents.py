@@ -64,6 +64,15 @@ class IdeaDraftItem(BaseModel):
     text: str = Field(description="思路描述（一段话）")
     constraints: list[str] = Field(default_factory=list, description="思路约束")
     source_paper_ids: list[str] = Field(default_factory=list, description="来源 Paper ID")
+    novelty_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="新颖性评分 0~1（与已有文献/共识的差异程度）"
+    )
+    feasibility_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="可行性评分 0~1（可落地、证据充分、约束可满足程度）"
+    )
+    gap_relevance_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="缺口关联度评分 0~1（与 Research Gap / 未解决冲突的匹配程度）"
+    )
 
 
 class BrainstormSchema(BaseModel):
@@ -158,7 +167,7 @@ class BrainstormAgent(AgentNode):
                 except Exception:
                     pass
 
-        idea_drafts: list[tuple[str, list[str], list[str]]] = []
+        idea_drafts: list[tuple[str, list[str], list[str], float, float, float]] = []
 
         if not dry_run and registry is not None:
             try:
@@ -169,7 +178,12 @@ class BrainstormAgent(AgentNode):
                         "你是科研思路生成助手。基于调研的交叉验证报告与文献证据，"
                         "针对证据缺口（gaps）与未解决冲突（conflicts）提出 3-5 个可验证的研究假设。"
                         "每个假设给出：思路描述、约束条件、来源 Paper ID（从给定列表选取）。"
-                        "思路应当：可落地、相对已有工作有差异、有潜在学术贡献。"
+                        "思路应当：可落地、相对已有工作有差异、有潜在学术贡献。\n"
+                        "同时为每个假设输出三维可验证性评分（各 0~1，保留两位小数）：\n"
+                        "  - novelty_score 新颖性：与已有文献结论/共识的差异程度\n"
+                        "  - feasibility_score 可行性：可落地、证据充分、约束可满足的程度\n"
+                        "  - gap_relevance_score 缺口关联度：与 Research Gap / 未解决冲突的匹配程度\n"
+                        "评分须与思路内容一致，不要全部给高分。"
                     ),
                     prompt=(
                         f"文献证据：\n" + "\n".join(paper_summaries) + "\n\n"
@@ -180,7 +194,10 @@ class BrainstormAgent(AgentNode):
                     ),
                 )
                 for d in result.ideas:
-                    idea_drafts.append((d.text, d.constraints, d.source_paper_ids))
+                    idea_drafts.append((
+                        d.text, d.constraints, d.source_paper_ids,
+                        d.novelty_score, d.feasibility_score, d.gap_relevance_score,
+                    ))
             except Exception as e:
                 logger.warning("Brainstorm 真实调用失败，回退占位: %s", e)
                 idea_drafts = self._placeholder_drafts(gaps, conflicts, consensus, paper_ids)
@@ -193,12 +210,17 @@ class BrainstormAgent(AgentNode):
                 f"基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
                 ["需进一步文献确认新颖性"],
                 paper_ids[:2],
+                0.5, 0.5, 0.5,
             ))
 
         # 持久化 Idea 实体
         idea_ids: list[str] = []
         ideas_meta: list[dict] = []
-        for text, constraints, src_pids in idea_drafts:
+        for draft in idea_drafts:
+            text, constraints, src_pids = draft[0], draft[1], draft[2]
+            n_score = float(draft[3]) if len(draft) > 3 else 0.5
+            f_score = float(draft[4]) if len(draft) > 4 else 0.5
+            g_score = float(draft[5]) if len(draft) > 5 else 0.5
             idea_id = KnowledgeStore.new_id()
             idea = Idea(
                 idea_id=idea_id,
@@ -208,6 +230,17 @@ class BrainstormAgent(AgentNode):
                 status="draft",
                 created_by="agent",
                 source_stage="ideation",
+                validation_notes={
+                    "novelty_score": round(min(1.0, max(0.0, n_score)), 2),
+                    "feasibility_score": round(min(1.0, max(0.0, f_score)), 2),
+                    "gap_relevance_score": round(min(1.0, max(0.0, g_score)), 2),
+                    "overall_score": round(
+                        0.4 * min(1.0, max(0.0, n_score))
+                        + 0.3 * min(1.0, max(0.0, f_score))
+                        + 0.3 * min(1.0, max(0.0, g_score)),
+                        2,
+                    ),
+                },
             )
             if store is not None:
                 try:
@@ -220,6 +253,7 @@ class BrainstormAgent(AgentNode):
                 "text": text,
                 "constraints": constraints,
                 "source_paper_ids": src_pids,
+                "validation_notes": idea.validation_notes,
             })
 
         output = BrainstormOutput(idea_ids=idea_ids, ideas_meta=ideas_meta)
@@ -235,8 +269,8 @@ class BrainstormAgent(AgentNode):
     @staticmethod
     def _placeholder_drafts(
         gaps: list, conflicts: list, consensus: list, paper_ids: list
-    ) -> list[tuple[str, list[str], list[str]]]:
-        drafts: list[tuple[str, list[str], list[str]]] = []
+    ) -> list[tuple[str, list[str], list[str], float, float, float]]:
+        drafts: list[tuple[str, list[str], list[str], float, float, float]] = []
         if gaps:
             gap0 = gaps[0] if isinstance(gaps[0], str) else str(gaps[0])
             drafts.append((
@@ -244,6 +278,7 @@ class BrainstormAgent(AgentNode):
                 "并设计对照实验验证其有效性。",
                 ["需在现有公开数据集上可复现", "方法改动应可消融分析"],
                 paper_ids[:2],
+                0.7, 0.6, 0.9,
             ))
         if conflicts:
             c0 = conflicts[0]
@@ -253,6 +288,7 @@ class BrainstormAgent(AgentNode):
                 "在相同评测协议下重新检验冲突双方的结论。",
                 ["需严格控制变量", "评测协议须公开可复现"],
                 paper_ids[:2],
+                0.6, 0.5, 0.8,
             ))
         if consensus:
             cons0 = consensus[0] if isinstance(consensus[0], str) else str(consensus[0])
@@ -261,6 +297,7 @@ class BrainstormAgent(AgentNode):
                 "验证是否能进一步提升性能。",
                 ["新模块须有理论依据", "不得破坏原共识成立条件"],
                 paper_ids[:3],
+                0.5, 0.7, 0.6,
             ))
         while len(drafts) < 3:
             idx = len(drafts)
@@ -268,6 +305,7 @@ class BrainstormAgent(AgentNode):
                 f"占位候选思路 {idx + 1}：基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
                 ["需进一步文献确认新颖性"],
                 paper_ids[:2],
+                round(0.4 + 0.1 * idx, 2), 0.5, 0.5,
             ))
         return drafts
 
@@ -503,7 +541,10 @@ class IdeaValidateAgent(AgentNode):
                     try:
                         idea = store.get_idea(idea_id)
                         idea.status = "validated"
+                        # 保留 Brainstorm 阶段的三维评分，合并验证评估结果
+                        prev = idea.validation_notes or {}
                         idea.validation_notes = {
+                            **prev,
                             "feasibility": feasibility,
                             "novelty": novelty,
                             "contribution": contribution,
