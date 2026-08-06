@@ -544,3 +544,41 @@ config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
 ### 已知事项
 - 材料体系仍有 35 种归「其他」（Thermoelectric nanocomposite / MXene / Spiro-OMeTAD 等通用或器件名，正则无法可靠归类）；性能「其他」40 种多为 ML 指标/描述性指标
 - 临时验证脚本（_verify_normalize2.py 等）因系统删除钩子路径解析 bug 无法删除，保持不纳入 git
+
+
+---
+
+## 2026-08-06 第八轮修订：材料知识页问题修复（用户反馈后）
+
+### 背景
+用户反馈材料页「内容不全、美化没做到、定位/重置挡住文字且无效、搜索框不齐全」。
+排查后确认根因：**浏览器缓存旧版 app.js/style.css**（静态文件无缓存控制头，
+新 HTML 结构套旧样式导致布局错乱）；另发现窄屏真实布局 bug 与交互细节缺陷。
+
+### 修复清单
+1. **静态资源 no-cache**（web/api.py）：移除 StaticFiles 挂载，改自定义路由加
+   Cache-Control: no-store + Pragma: no-cache + Expires: 0，根除缓存错乱。
+2. **URL 深链**：?project=<id>&page=materials 直达材料页（init() 解析 URL 参数），
+   便于分享/调试/无头浏览器验证。
+3. **搜索条重构**：放大镜图标 + 输入框 + 实时命中计数徽章（命中 X / 总数）+ 定位/重置
+   按钮（flex-shrink:0 不被压缩）+ Esc 清空 + 空关键词定位 toast 提示。
+4. **搜索高亮**：材料名/性能/合成方法/条件中的关键词 <mark class=mat-hl> 高亮。
+5. **材料卡片**：性能按类别分组（类别色点 + 浅色标题条，--cat-color 变量）、合成按工艺
+   分组；无性能/无合成显示「暂无记录」占位（99 处与数据缺口精确对应：36 无性能 +
+   63 无合成）；聚合类别超 10 类折叠「等 N 类」。
+6. **窄屏(<720px)修复**：卡片头计数徽章 flex-basis:100% 换行右对齐（原 margin-left:auto
+   与 flex-shrink 导致与徽章重叠 85px）；搜索条元素换行（input order:-1 占首行）。
+7. **体系 chip active 同步**：点击筛选后遍历更新所有可点击 chip 的 active class。
+
+### 验证（CDP 驱动真实 Edge 无头浏览器）
+- 交互：初始 141 卡片 → 搜索「球磨」命中 5/141 + 6 个 mark 高亮 → 定位 flash+toast
+  → 重置恢复 141 → 体系 chip 筛选 35 卡片 + active 正确 → 空词定位 toast 提示
+- 布局（1280px）：搜索条 5 元素、卡片头 6 元素两两无重叠
+- 布局（676px）：修复后卡片头计数换行第二行，全页无重叠
+- DOM 结构：mat-empty 99 处、mat-cat-dot 285 处、聚合折叠 2 处均正确
+
+### 工具沉淀
+- **CDP 驱动无头 Edge 验证方案**：msedge --headless --remote-debugging-port=<p>
+  --remote-allow-origins=* + websocket-client 调 Runtime.evaluate 执行真实交互断言。
+  注意：Windows 上 Edge 单实例复用会导致调试端口被旧实例占用，需独立
+  --user-data-dir 且先清理残留进程；websocket 需 --remote-allow-origins=* 否则 403。
