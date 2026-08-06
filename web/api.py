@@ -195,6 +195,9 @@ class ProjectState:
     error: Optional[str] = None
     thread: Optional[threading.Thread] = None
     node_history: list[dict] = field(default_factory=list)
+    # 当前正在执行的节点 + 下一步候选（长任务实时进度提示）
+    current_node: Optional[dict] = None
+    next_nodes: list[str] = field(default_factory=list)
     notes: list[dict] = field(default_factory=list)
     recommendation: str = ""
     # 路线 A：构效关系发现产出（从 discovery 子图 context 收集）
@@ -273,22 +276,36 @@ def _set_state_status(state: ProjectState, status: str) -> None:
         state.status = status
 
 
-def _make_progress_callback(state: ProjectState) -> Callable[[list[dict]], None]:
-    """构造节点级实时进度回调：每完成一个节点就把最新节点历史写入 state。
+def _make_progress_callback(
+    state: ProjectState,
+) -> tuple[Callable[[list[dict]], None], Callable[[str, list[str]], None]]:
+    """构造节点级实时进度回调对（完成回调 + 开始回调）。
+
+    完成回调：每完成一个节点就把最新节点历史写入 state.node_history。
+    开始回调：每开始一个节点就把当前节点 ID 与下一步候选写入 state。
 
     这是解决“页面长时间无反应”的关键：research 阶段真实运行需 15-25 分钟，
     若只在 pipeline 结束后才写 node_history，前端会一直空白。此回调让
-    /status 轮询能实时看到节点进度。
+    /status 轮询能实时看到节点进度，并展示「正在执行 / 下一步」避免干等。
 
-    注意：只写 node_history，不改 state.status。status 由线程函数与
-    on_pending/on_resume（pending_human ↔ running）统一管理，避免回调
-    在人工等待期间误覆盖状态。
+    注意：只写 node_history / current_node，不改 state.status。status 由
+    线程函数与 on_pending/on_resume（pending_human ↔ running）统一管理，
+    避免回调在人工等待期间误覆盖状态。
     """
     def _on_progress(history: list[dict]) -> None:
         with _LOCK:
             state.node_history = history
 
-    return _on_progress
+    def _on_node_started(node_id: str, next_nodes: list[str]) -> None:
+        with _LOCK:
+            state.current_node = {
+                "node_id": node_id,
+                "next_nodes": next_nodes,
+                "started_at": datetime.utcnow().isoformat(),
+            }
+            state.next_nodes = list(next_nodes)
+
+    return _on_progress, _on_node_started
 
 
 def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
@@ -306,18 +323,22 @@ def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
             on_pending=lambda: _set_state_status(state, "pending_human"),
             on_resume=lambda: _set_state_status(state, "running"),
         )
+        _progress_cbs = _make_progress_callback(state)
         result: PipelineResult = pipeline.run_pipeline(
             project_id=project_id,
             topic=topic,
             human_callback=human_cb,
             resume=resume,
-            on_progress=_make_progress_callback(state),
+            on_progress=_progress_cbs[0],
+            on_node_started=_progress_cbs[1],
         )
         state.last_result = result
         state.status = result.status
         state.summary = result.summary
         state.recommendation = result.recommendation
         state.node_history = result.node_history or []
+        state.current_node = None
+        state.next_nodes = []
     except Exception as e:  # noqa: BLE001
         state.status = "failed"
         state.error = f"{type(e).__name__}: {e}"
@@ -338,18 +359,22 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
             on_pending=lambda: _set_state_status(state, "pending_human"),
             on_resume=lambda: _set_state_status(state, "running"),
         )
+        _progress_cbs = _make_progress_callback(state)
         result: PipelineResult = pipeline.run_discovery(
             project_id=project_id,
             topic=topic,
             human_callback=human_cb,
             resume=resume,
-            on_progress=_make_progress_callback(state),
+            on_progress=_progress_cbs[0],
+            on_node_started=_progress_cbs[1],
         )
         state.last_result = result
         state.status = result.status
         state.summary = result.summary
         state.recommendation = result.recommendation
         state.node_history = result.node_history or []
+        state.current_node = None
+        state.next_nodes = []
         # 从 node_history 提取 discovery 产出摘要
         state.discovery = _extract_discovery_summary(result.node_history)
     except Exception as e:  # noqa: BLE001
@@ -410,6 +435,7 @@ def _run_topic_discovery_thread(project_id: str, interest: str, resume: bool) ->
                     "interest": interest,
                 }
 
+        _progress_cbs = _make_progress_callback(state)
         result: PipelineResult = pipeline.run_topic_discovery(
             project_id=project_id,
             interest=interest,
@@ -417,13 +443,16 @@ def _run_topic_discovery_thread(project_id: str, interest: str, resume: bool) ->
             auto_research=False,
             resume=resume,
             on_recommendations=_publish_recommendations,
-            on_progress=_make_progress_callback(state),
+            on_progress=_progress_cbs[0],
+            on_node_started=_progress_cbs[1],
         )
         state.last_result = result
         state.status = result.status
         state.summary = result.summary
         state.recommendation = result.recommendation
         state.node_history = result.node_history or []
+        state.current_node = None
+        state.next_nodes = []
         # 存储方向推荐完整数据（推荐列表 + 选择结果）
         state.topic_discovery = result.extra or {}
     except Exception as e:  # noqa: BLE001
@@ -560,6 +589,8 @@ def get_status(project_id: str) -> dict:
         "current_stage": current_stage,
         "stage_statuses": stage_statuses,
         "node_history": state.node_history,
+        "current_node": state.current_node,
+        "next_nodes": state.next_nodes,
         "counts": counts,
         "pending_human": pending,
         "topic_discovery": state.topic_discovery,
@@ -736,7 +767,18 @@ def list_materials(project_id: str) -> dict:
 
     返回按材料聚合的知识：每种材料含其性能指标与合成方法，
     均带来源论文与证据片段（可溯源）。满足赛题「知识抽取结构化」要求。
+
+    数据标准化（core/knowledge/normalize.py）：
+    - 性能指标统一映射（ZT/zT/figure_of_merit → 热电优值，带标准符号/单位/类别）
+    - 合成方法归类（固相法/熔融法/烧结法/计算模拟…）
+    - 材料体系分类（Bi₂Te₃ 基 / PbTe 基 / 钙钛矿 / 方钴矿…）
     """
+    from core.knowledge.normalize import (
+        categorize_material,
+        classify_method,
+        normalize_property,
+    )
+
     _require_project(project_id)
     try:
         store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
@@ -747,12 +789,18 @@ def list_materials(project_id: str) -> dict:
         synthesis = store.list_material_synthesis()
         props_by_mat: dict[str, list[dict]] = {}
         for p in properties:
+            norm = normalize_property(p.property_name, p.property_name_cn)
             props_by_mat.setdefault(p.material_id, []).append({
                 "property_name": p.property_name,
                 "property_name_cn": p.property_name_cn,
+                # 标准化字段
+                "norm_key": norm["key"],
+                "norm_cn": norm["cn"],
+                "symbol": norm["symbol"],
+                "unit": norm["unit"],
+                "category": norm["category"],
                 "value": p.value,
                 "value_num": p.value_num,
-                "unit": p.unit,
                 "condition": p.condition,
                 "paper_title": p.paper_title,
                 "confidence": p.confidence,
@@ -760,8 +808,12 @@ def list_materials(project_id: str) -> dict:
             })
         syn_by_mat: dict[str, list[dict]] = {}
         for s in synthesis:
+            mth = classify_method(s.method)
             syn_by_mat.setdefault(s.material_id, []).append({
                 "method": s.method,
+                # 标准化字段
+                "method_category": mth["category"],
+                "method_label": mth["label"],
                 "precursors": s.precursors,
                 "temperature": s.temperature,
                 "pressure": s.pressure,
@@ -772,11 +824,24 @@ def list_materials(project_id: str) -> dict:
                 "confidence": s.confidence,
                 "source_snippet": s.source_snippet,
             })
-        items = [
-            {
+        items = []
+        prop_cat_counter: dict[str, int] = {}
+        method_cat_counter: dict[str, int] = {}
+        material_cat_counter: dict[str, int] = {}
+        for m in materials:
+            mat_cat = categorize_material(m.name, m.formula)
+            material_cat_counter[mat_cat] = material_cat_counter.get(mat_cat, 0) + 1
+            props = props_by_mat.get(m.material_id, [])
+            syns = syn_by_mat.get(m.material_id, [])
+            for pr in props:
+                prop_cat_counter[pr["category"]] = prop_cat_counter.get(pr["category"], 0) + 1
+            for sy in syns:
+                method_cat_counter[sy["method_category"]] = method_cat_counter.get(sy["method_category"], 0) + 1
+            items.append({
                 "material_id": m.material_id,
                 "name": m.name,
                 "formula": m.formula,
+                "category": mat_cat,
                 "crystal_structure": m.crystal_structure,
                 "space_group": m.space_group,
                 "lattice_parameters": m.lattice_parameters,
@@ -787,14 +852,20 @@ def list_materials(project_id: str) -> dict:
                 "source_paper_ids": m.metadata.get("source_paper_ids", []),
                 "confidence": m.confidence,
                 "source_snippet": m.source_snippet,
-                "properties": props_by_mat.get(m.material_id, []),
-                "synthesis": syn_by_mat.get(m.material_id, []),
-            }
-            for m in materials
-        ]
+                "properties": props,
+                "synthesis": syns,
+            })
     except Exception as e:  # noqa: BLE001
         return {"materials": [], "stats": {}, "error": f"读取失败: {e}"}
-    return {"materials": items, "stats": stats}
+    return {
+        "materials": items,
+        "stats": stats,
+        "aggregation": {
+            "property_categories": prop_cat_counter,
+            "method_categories": method_cat_counter,
+            "material_categories": material_cat_counter,
+        },
+    }
 
 
 @app.get("/api/projects/{project_id}/evidence")

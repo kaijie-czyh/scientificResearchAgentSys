@@ -559,3 +559,46 @@ config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
 ### 已知事项
 - MiniMax M3 结构化输出偶发非合法 JSON（属性名无引号、直接写分析文本）→ 该篇材料为空，不阻塞流程；后续可加 JSON 修复（如属性名补引号）提升召回
 - verify_material_extract.py 为验证脚本（未纳入 git 或待归档）
+
+
+---
+
+## 2026-08-06 第八轮：进度页实时预告 + 材料知识整理美化 + 搜索跳转（需求 1-3）
+
+### 目标
+1. 需求 1：长任务运行时告知用户「当前在做什么 + 下一步做什么」，避免干等
+2. 需求 2：材料知识页太乱 → 依据材料科学标准整理数据、美化展示（性能/合成方法统一）
+3. 需求 3：材料知识页加搜索框，用户搜相关词语可实时过滤并直接跳转定位
+
+### 改动清单
+
+#### 1. 进度页「正在执行 / 下一步预告」（core/orchestration/graph.py + runtime/pipeline.py + web/api.py + app.js）
+- GraphRunner 新增构造参数 on_node_started（每节点执行前回调，携带该节点 ID + graph.successors 下一步候选列表）；_step() 中 _notify_node_started
+- run_pipeline / run_discovery / run_topic_discovery → run_stage 全链路传播 on_node_started
+- ProjectState 新增 current_node（node_id + next_nodes + started_at）与 next_nodes；get_status 返回
+- 前端新增 NODE_LABELS（约 35 节点 → 中文描述）+ nodeLabel()；renderCurrentNode(data) 渲染「正在执行：XXX」卡片 + 下一跳 chips（pending_human 显示「等待人工确认」）；时间线节点改用中文名
+- 验证：verify_node_started.py dry_run 全 28 节点触发 started 事件且每事件带 next 候选
+
+#### 2. 材料数据标准化（新建 core/knowledge/normalize.py + web/api.py /materials 改造）
+- 性能指标归一化：PROPERTY_CANON 精确映射（约 31 个标准性能：ZT/功率因子/热导率/Seebeck/载流子/带隙/有效质量/态密度/晶格常数/格林艾森参数…）+ 中文名映射（property_name 与 property_name_cn 任一命中）+ 正则子串兜底 → 标准 key/cn/symbol/unit/category（电输运/热输运/热电优值/载流子/能带结构/稳定性/器件性能）
+- 合成方法分类：10 类工艺正则（计算模拟/熔融法/固相法/球磨法/烧结法/电化学法/溶液法/薄膜法/纳米合成/未指定）
+- 材料体系分类：19 类体系正则（顺序敏感；Half-Heusler 必须在方钴矿前，TiCoSb 含 CoSb 子串）；补 PbS/PbSe/Sb2Te3/化学式 (Se|S|Te)\d → 硫族化物，Fe2O4/SOFC → 氧化物，batter → 电池材料（兼容 batteries 复数）
+- /materials 接口：每性能带 norm_key/norm_cn/symbol/unit/category，每合成带 method_category/method_label，每材料带 category；新增 aggregation（三类别计数）
+- 修复 Half-Heusler 误判：正则顺序调整 + 补 ZrNiSn/HfNiSn 公式
+
+#### 3. 材料知识页美化 + 搜索（web/static/app.js + style.css）
+- 页面结构：搜索条 → 统计卡片（材料/性能/合成/三元组）→ 知识结构总览（材料体系 chips 可点击筛选，性能/工艺分布统计）→ 材料卡片列表
+- 材料卡片：头部编号 + 名称 + 化学式徽章 + 体系彩色徽章（哈希 8 色）+ 置信度 + 跨文献徽章 + 性能/合成计数；结构/组成一行；性能按类别分组（标准符号 + 标准中文名 + 原文 + 值/单位/条件 + 来源论文）；合成按工艺类别分组（工艺 chip + 原文 + 温度/压力/气氛/时长/前驱体）
+- 搜索框：实时过滤（匹配材料名/化学式/体系/性能/合成方法/条件）；回车或「定位」按钮滚动到首个命中卡片并高亮闪烁（mat-flash）；「重置」清空；聚合 chips 点击按体系筛选
+
+### 验证结果
+- _verify_normalize2.py：54 项全部通过（性能归一化含中文名 6 项、方法分类 17 项、材料分类含 Half-Heusler 修复 20+ 项）
+- 服务重启后 /materials 复查（141 材料 / 324 性能 / 103 合成 / 71 三元组）：
+  - 材料体系未识别 60 → 35（硫族化物 13→33，氧化物 6→10；Half-Heusler 正确识别 2 种，方钴矿 1 种）
+  - 未归一化性能 59 → 40（有效质量/态密度/晶格常数/格林艾森参数等已并入标准集，其余为 AUC 等真特殊指标）
+  - 聚合统计：性能类别 8 类、合成工艺 11 类、材料体系 20 类
+- 前端静态资源已确认加载新代码（app.js/style.css 均含搜索与分组类）
+
+### 已知事项
+- 材料体系仍有 35 种归「其他」（Thermoelectric nanocomposite / MXene / Spiro-OMeTAD 等通用或器件名，正则无法可靠归类）；性能「其他」40 种多为 ML 指标/描述性指标
+- 临时验证脚本（_verify_normalize2.py 等）因系统删除钩子路径解析 bug 无法删除，保持不纳入 git
