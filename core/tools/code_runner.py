@@ -112,3 +112,106 @@ def check_syntax(code: str) -> tuple[bool, str]:
         return True, ""
     except SyntaxError as e:
         return False, f"语法错误 (L{e.lineno}): {e.msg}"
+
+
+# ===== 远程 SSH 执行（预留架构，本地测试时不用）=====
+
+def get_execution_mode() -> str:
+    """获取实验执行模式：local（默认）或 remote。"""
+    import os
+    return os.environ.get("SRA_EXECUTION_MODE", "local").lower()
+
+
+def is_remote_mode() -> bool:
+    """是否启用远程 SSH 执行。"""
+    return get_execution_mode() == "remote" and bool(_get_remote_host())
+
+
+def _get_remote_host() -> str:
+    import os
+    return os.environ.get("SRA_REMOTE_SSH_HOST", "")
+
+
+def run_python_code_remote(
+    code: str,
+    project_dir: Path,
+    code_path: str = "experiments/run_exp.py",
+    timeout: int = 600,
+    extra_args: Optional[list[str]] = None,
+) -> RunResult:
+    """通过 SSH 在远程机器上运行 Python 代码。
+
+    需配置环境变量：
+        SRA_EXECUTION_MODE=remote
+        SRA_REMOTE_SSH_HOST=user@host
+        SRA_REMOTE_SSH_KEY=~/.ssh/id_rsa（可选）
+        SRA_REMOTE_SSH_PORT=22（可选）
+
+    本地测试时不用此功能。启用前需确保：
+    1. 本地能 SSH 免密登录远程机器
+    2. 远程机器已装 Python + 依赖
+    3. 远程有可写的工作目录
+    """
+    import os
+    import shlex
+    host = _get_remote_host()
+    ssh_key = os.environ.get("SRA_REMOTE_SSH_KEY", "")
+    ssh_port = os.environ.get("SRA_REMOTE_SSH_PORT", "22")
+    remote_dir = os.environ.get("SRA_REMOTE_WORKDIR", "/tmp/sra_experiments")
+
+    if not host:
+        return RunResult(
+            success=False, returncode=-3, stdout="", stderr="未配置 SRA_REMOTE_SSH_HOST",
+            runtime_seconds=0, code_path="",
+        )
+
+    # 代码写入本地临时文件，通过 SSH 传输到远程执行
+    project_dir = Path(project_dir).resolve()
+    full_path = project_dir / code_path
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.write_text(code, encoding="utf-8")
+
+    ssh_opts = ["-o", "StrictHostKeyChecking=no", "-p", str(ssh_port)]
+    if ssh_key:
+        ssh_opts.extend(["-i", ssh_key])
+
+    remote_path = f"{remote_dir}/{Path(code_path).name}"
+    remote_cmd = f"mkdir -p {remote_dir} && python3 {remote_path}"
+
+    import time
+    start = time.time()
+    try:
+        # SCP 上传代码
+        scp_cmd = ["scp"] + ssh_opts + [str(full_path), f"{host}:{remote_path}"]
+        proc_scp = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=30)
+        if proc_scp.returncode != 0:
+            return RunResult(
+                success=False, returncode=proc_scp.returncode,
+                stdout="", stderr=f"SCP 上传失败: {proc_scp.stderr}",
+                runtime_seconds=time.time() - start, code_path=str(full_path),
+            )
+
+        # SSH 执行
+        ssh_cmd = ["ssh"] + ssh_opts + [host, remote_cmd]
+        proc = subprocess.run(
+            ssh_cmd, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+        runtime = time.time() - start
+        return RunResult(
+            success=(proc.returncode == 0), returncode=proc.returncode,
+            stdout=proc.stdout or "", stderr=proc.stderr or "",
+            runtime_seconds=runtime, code_path=str(full_path),
+        )
+    except subprocess.TimeoutExpired as e:
+        return RunResult(
+            success=False, returncode=-1, stdout="",
+            stderr=f"远程执行超时（{timeout}秒）",
+            runtime_seconds=time.time() - start, code_path=str(full_path),
+        )
+    except Exception as e:
+        return RunResult(
+            success=False, returncode=-2, stdout="",
+            stderr=f"远程执行异常: {type(e).__name__}: {e}",
+            runtime_seconds=time.time() - start, code_path=str(full_path),
+        )

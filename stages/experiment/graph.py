@@ -12,6 +12,7 @@ from stages.experiment.agents import (
     CodeReviewAgent,
     ExperimentConfigAgent,
     ExperimentOutcomeAssessAgent,
+    ExperimentReviewHuman,
     ExperimentRunTool,
 )
 
@@ -21,9 +22,10 @@ def build_experiment_graph() -> Graph:
 
     拓扑（借鉴 AI-Researcher 的「导师-学生迭代」核心方法）：
         ExperimentConfigAgent（生成实验配置：数据集/baseline/超参）
-        → CodeGenerateAgent（AI-Researcher Code Agent：DeepSeek 生成实验代码）
+        → CodeGenerateAgent（AI-Researcher Code Agent：生成实验代码）
         → CodeReviewAgent（AI-Researcher Advisor Agent：审查代码，多轮迭代）
         → StageCheckpoint
+        → ExperimentReviewHuman（人工审核：实验配置+代码预览+语法检查，用户决定是否运行）
         → ExperimentRunTool（执行实验，ToolNode）
         → AnomalyCheckAgent（检测异常：loss spike/NaN/不收敛）
         → ClaimVerifyAgent（用实验结果验证 Claim）
@@ -34,6 +36,9 @@ def build_experiment_graph() -> Graph:
     CodeGenerateAgent 重新生成；由于 graph 是 DAG 不支持环，实际多轮迭代由
     GraphRunner 外部循环驱动（重跑 CodeGenerate→CodeReview 子链），或在
     CodeReviewAgent 内部循环 MAX_REVIEW_ROUNDS 次。
+
+    ExperimentReviewHuman 是实验运行前的人工门控：实验可能对硬件/数据集/环境
+    有特殊要求，不盲目运行。用户确认后才进入 ExperimentRunTool。
 
     末尾的 ExperimentOutcomeAssessAgent 是 experiment → writing 阶段切换的决策
     口：实验失败是科研常态，success=False 时不进入 writing，由 recommendation
@@ -46,6 +51,7 @@ def build_experiment_graph() -> Graph:
     graph.add_node(CodeGenerateAgent("code_generate"))
     graph.add_node(CodeReviewAgent("code_review"))
     graph.add_node(StageCheckpoint("cp_before_run"))
+    graph.add_node(ExperimentReviewHuman("experiment_review"))
     graph.add_node(ExperimentRunTool("experiment_run"))
     graph.add_node(AnomalyCheckAgent("anomaly_check"))
     graph.add_node(ClaimVerifyAgent("claim_verify"))
@@ -55,7 +61,8 @@ def build_experiment_graph() -> Graph:
     graph.add_edge("experiment_config", "code_generate")
     graph.add_edge("code_generate", "code_review")
     graph.add_edge("code_review", "cp_before_run")
-    graph.add_edge("cp_before_run", "experiment_run")
+    graph.add_edge("cp_before_run", "experiment_review")
+    graph.add_edge("experiment_review", "experiment_run")
     graph.add_edge("experiment_run", "anomaly_check")
     graph.add_edge("anomaly_check", "claim_verify")
     graph.add_edge("claim_verify", "experiment_outcome_assess")

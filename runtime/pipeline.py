@@ -29,6 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+import logging
+
 from core.artifacts import ArtifactContentStore, ArtifactManager, ProvenanceValidator
 from core.config import GlobalConfig, get_config
 from core.knowledge import KnowledgeStore
@@ -53,6 +55,10 @@ from stages.common import (
     PROJECT_DIR,
     PROJECT_ROOT,
     PROVENANCE_VALIDATOR,
+    RESEARCH_CROSS_VALIDATION_REPORT,
+    RESEARCH_FILTERED_PAPER_METAS,
+    RESEARCH_PAPER_IDS,
+    RESEARCH_PAPER_METAS,
     RESEARCH_TOPIC,
     TOPIC_DISCOVERY_INTEREST,
     TOPIC_DISCOVERY_RECOMMENDATIONS,
@@ -62,6 +68,8 @@ from stages.common import (
 
 # 人工回调类型：(HumanRequest) -> HumanResponse
 HumanCallback = Callable[[HumanRequest], HumanResponse]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -171,6 +179,64 @@ class Pipeline:
         ctx.set(RESEARCH_TOPIC, topic)
         return session, ctx
 
+    def _restore_research_outputs(
+        self, ctx: ExecutionContext, project_id: str, topic: str
+    ) -> None:
+        """resume 模式下从 KnowledgeStore 恢复 research 阶段产出。
+
+        session 只持久化 stage_states，不持久化 ctx 域数据（paper_ids、
+        cross_validation_report 等）。discovery 子图依赖这些产出，需手动恢复。
+        """
+        store: KnowledgeStore = ctx.get(KNOWLEDGE_STORE)  # type: ignore[assignment]
+        if store is None:
+            return
+        try:
+            papers = store.list_papers()
+            paper_ids = [p.paper_id for p in papers]
+            paper_metas = [
+                {
+                    "title": p.title,
+                    "authors": p.authors,
+                    "year": p.year,
+                    "abstract": p.abstract or "",
+                    "arxiv_id": p.arxiv_id,
+                    "doi": p.doi,
+                    "venue": p.venue,
+                    "source_subquery": (p.metadata or {}).get("source_subquery", ""),
+                    "relevance_score": (p.metadata or {}).get("relevance_score", 0.7),
+                }
+                for p in papers
+            ]
+            ctx.set(RESEARCH_TOPIC, topic)
+            ctx.set(RESEARCH_PAPER_IDS, paper_ids)
+            ctx.set(RESEARCH_PAPER_METAS, paper_metas)
+            ctx.set(RESEARCH_FILTERED_PAPER_METAS, paper_metas)
+            # 优先从 KV 表恢复完整 cross_validation_report（含 Research Gaps）
+            cv_report = store.get_kv("cross_validation_report")
+            if cv_report and (cv_report.get("gaps") or cv_report.get("consensus")):
+                ctx.set(RESEARCH_CROSS_VALIDATION_REPORT, cv_report)
+                logger.info(
+                    "resume 模式：从 KV 恢复完整 cross_validation_report（gaps=%d, consensus=%d）",
+                    len(cv_report.get("gaps", [])),
+                    len(cv_report.get("consensus", [])),
+                )
+            else:
+                # KV 无记录时设为简化版（兼容旧项目）
+                ctx.set(
+                    RESEARCH_CROSS_VALIDATION_REPORT,
+                    {
+                        "gaps": [],
+                        "conflicts": [],
+                        "consensus": ["(resume 模式，跳过交叉验证)"],
+                        "overall_confidence": 0.5,
+                    },
+                )
+            logger.info(
+                "resume 模式：从 KnowledgeStore 恢复 %d 篇论文产出", len(paper_ids)
+            )
+        except Exception as e:
+            logger.warning("resume 模式恢复 research 产出失败: %s", e)
+
     # ===== 阶段图构建 =====
 
     def _build_stage_graph(self, stage: LifecycleStage) -> Graph:
@@ -228,8 +294,15 @@ class Pipeline:
         )
 
         # 启动阶段（状态机流转）
-        if session.status_of(stage) == StageStatus.NOT_STARTED:
+        current_status = session.status_of(stage)
+        if current_status == StageStatus.NOT_STARTED:
             session.start_stage(stage, triggered_by="pipeline")
+        elif current_status == StageStatus.BLOCKED:
+            # 之前运行中节点失败导致 blocked，重新运行前先解除阻塞
+            session.unblock(
+                reason=f"重新运行阶段 {stage.value}（从 blocked 恢复）",
+                triggered_by="pipeline",
+            )
 
         ctx.current_stage = stage.value
         runner.start()
@@ -325,6 +398,13 @@ class Pipeline:
         # 初始化或恢复
         if resume:
             session, ctx = self.resume_project(project_id, topic)
+            session, ctx = self.resume_project(project_id)
+            # resume 模式下 ctx 是全新的，需恢复 topic 与 research 阶段产出，
+            # 否则下游阶段（ideation/design/...）读不到 paper_ids / cross_validation_report，
+            # 导致 brainstorm 拿到空输入、生成与主题无关的占位思路（串主题根因）
+            ctx.set(RESEARCH_TOPIC, topic)
+            if session.is_stage_done(LifecycleStage.RESEARCH):
+                self._restore_research_outputs(ctx, project_id, topic)
         else:
             session, ctx = self.start_project(project_id, topic)
 
@@ -444,6 +524,7 @@ class Pipeline:
         """
         if resume:
             session, ctx = self.resume_project(project_id, topic)
+            session, ctx = self.resume_project(project_id)
         else:
             session, ctx = self.start_project(project_id, topic)
 
@@ -455,6 +536,7 @@ class Pipeline:
                 session, ctx, LifecycleStage.RESEARCH, human_callback,
                 on_progress=on_progress,
                 on_node_started=on_node_started,
+                session, ctx, LifecycleStage.RESEARCH, human_callback
             )
             result.node_history = research_result.node_history
             if research_result.status == "pending_human":
@@ -468,6 +550,9 @@ class Pipeline:
             result.completed_stages.append(LifecycleStage.RESEARCH)
         else:
             result.completed_stages.append(LifecycleStage.RESEARCH)
+            # resume 模式：research 已完成但 ctx 是全新的，需从 KnowledgeStore 恢复 research 产出
+            # （session 只持久化 stage_states，不持久化 ctx 域数据）
+            self._restore_research_outputs(ctx, project_id, topic)
 
         # 2. 运行 discovery 子图
         from stages.discovery.graph import build_discovery_graph
@@ -478,6 +563,7 @@ class Pipeline:
             on_node_recorded=on_progress,
             on_node_started=on_node_started,
         )
+        runner = GraphRunner(graph, ctx)
         ctx.current_stage = "discovery"
 
         if session.status_of(LifecycleStage.RESEARCH) == StageStatus.NOT_STARTED:

@@ -189,6 +189,8 @@ class Experiment(BaseModel):
     status: ExperimentStatus = ExperimentStatus.PLANNED
     # 结果摘要（详细数据走 Artifact）
     result_summary: Optional[str] = None
+    # 结构化指标（accuracy/loss 等，由 experiments/results.json 解析得到）
+    metrics: Optional[dict[str, Any]] = None
     # 异常记录（若 status=ANOMALY_DETECTED/FAILED）
     anomaly_notes: Optional[str] = None
     started_at: Optional[datetime] = None

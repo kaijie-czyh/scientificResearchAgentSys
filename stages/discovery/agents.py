@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -47,6 +48,8 @@ from core.tools import (
     build_search_variables,
     perturb_config,
 )
+from core.tools.sciverse_search import agentic_search as sciverse_agentic_search
+from core.tools.sciverse_search import is_available as sciverse_is_available
 
 from stages.common import (
     ARTIFACT_MANAGER,
@@ -211,6 +214,9 @@ class HypothesisSeedAgent(AgentNode):
         return HypothesisSeedInput(
             topic=ctx.get(RESEARCH_TOPIC, ""),
             gaps=gaps,
+        return HypothesisSeedInput(
+            topic=ctx.get(RESEARCH_TOPIC, ""),
+            gaps=report.get("gaps", []) or [],
             conflicts=report.get("conflicts", []) or [],
             consensus=report.get("consensus", []) or [],
             paper_ids=ctx.get(RESEARCH_PAPER_IDS, []) or [],
@@ -238,6 +244,7 @@ class HypothesisSeedAgent(AgentNode):
                         "   - feasibility_score 可行性：变量可量化、可搜索验证、物理合法的程度\n"
                         "   - gap_relevance_score 缺口关联度：与所关联 Research Gap 的匹配程度\n"
                         "   评分须与 rationale/文本内容一致，不要全部给高分。"
+                        "4. rationale 说明假设依据（关联哪个 Gap/冲突/共识）"
                     ),
                     prompt=(
                         f"研究主题：{input_obj.topic}\n\n"
@@ -315,6 +322,9 @@ class SearchSpaceAgent(AgentNode):
 
         # 收集论文 chunk 文本作为数据点抽取素材
         chunk_texts = self._collect_chunks(store, input_obj.paper_ids)
+        # 直接从 Sciverse 获取含数值的证据片段（赛题推荐数据源，天然含 ZT/温度等数值）
+        sciverse_evidences = self._collect_sciverse_evidence(input_obj.topic)
+        all_evidence_texts = chunk_texts + sciverse_evidences
 
         if not dry_run and registry is not None and input_obj.hypotheses:
             try:
@@ -328,6 +338,12 @@ class SearchSpaceAgent(AgentNode):
                         "3. constraints：物理约束（如掺杂浓度上限、电荷中性）\n"
                         "4. literature_points：从给定文献片段抽取 (结构, 性能) 数据点，"
                         "每点关联 paper_id 确保证据可追溯；无法抽取时返回空列表\n"
+                        "4. literature_points：**必须**从给定文献片段抽取所有可量化的 (结构, 性能) 数据点，"
+                        "每点关联 paper_id（若片段含 [paper=xxx] 标记则用该 id，否则用 'sciverse'）。\n"
+                        "   - 识别形如 'ZT=1.2 at 800K'、'Seebeck=200 μV/K'、'κ=1.5 W/mK' 的数值陈述\n"
+                        "   - config 字段填能从文本确定的变量值（如 {temperature: 800, doping_concentration: 0.05}）\n"
+                        "   - target 字段填目标性能数值（如 1.2）\n"
+                        "   - 至少抽取 5 个数据点；若文本含明确数值则必须抽取，不可返回空列表\n"
                         "变量定义域必须物理合法，类别变量用 categories 列举。"
                     ),
                     prompt=(
@@ -335,6 +351,12 @@ class SearchSpaceAgent(AgentNode):
                         f"候选假设：\n" + json.dumps(input_obj.hypotheses, ensure_ascii=False, indent=2) + "\n\n"
                         f"可用 paper_ids: {input_obj.paper_ids}\n\n"
                         f"文献片段（用于抽取数据点）：\n" + "\n---\n".join(chunk_texts[:8])
+                        f"可用 paper_ids: {input_obj.paper_ids[:10]}\n\n"
+                        f"文献证据片段（含数值，用于抽取数据点）：\n"
+                        + "\n---\n".join(all_evidence_texts[:15])
+                        + "\n\n=== 数据点抽取示例 ===\n"
+                        "片段: 'Bi2Te3 掺杂 5% Se 时 ZT=1.2 at 400K'\n"
+                        '输出: {"config": {"material": "Bi2Te3", "doping_concentration": 0.05, "temperature": 400}, "target": 1.2, "paper_id": "sciverse", "note": "Bi2Te3:Se 5%"}'
                     ),
                 )
                 search_space = {
@@ -347,6 +369,24 @@ class SearchSpaceAgent(AgentNode):
             except Exception as e:
                 logger.warning("SearchSpace 真实调用失败，回退占位: %s", e)
                 search_space = self._placeholder(input_obj)
+                # 正则兜底：LLM 抽取空时从证据文本启发式抽取数值数据点
+                if not search_space["literature_points"]:
+                    logger.warning(
+                        "SearchSpace LLM 返回空 literature_points，启用正则兜底抽取"
+                    )
+                    fallback = self._regex_extract_points(
+                        all_evidence_texts, search_space.get("target_property", "ZT")
+                    )
+                    search_space["literature_points"] = fallback
+            except Exception as e:
+                logger.warning("SearchSpace 真实调用失败，回退占位: %s", e)
+                search_space = self._placeholder(input_obj)
+                # 失败时也尝试正则兜底
+                fallback = self._regex_extract_points(
+                    all_evidence_texts, search_space.get("target_property", "ZT")
+                )
+                if fallback:
+                    search_space["literature_points"] = fallback
         else:
             search_space = self._placeholder(input_obj)
 
@@ -373,9 +413,145 @@ class SearchSpaceAgent(AgentNode):
                 chunks = store.get_paper_chunks(pid)
                 for c in chunks[:3]:
                     texts.append(f"[paper={pid}] {c.text[:400]}")
+        # 扩大扫描范围：前 12 篇 × 前 4 chunk × 600 字符
+        for pid in paper_ids[:12]:
+            try:
+                chunks = store.get_paper_chunks(pid)
+                for c in chunks[:4]:
+                    texts.append(f"[paper={pid}] {c.text[:600]}")
             except Exception:
                 pass
         return texts
+
+    @staticmethod
+    def _collect_sciverse_evidence(topic: str) -> list[str]:
+        """直接从 Sciverse 获取含数值的证据片段（赛题推荐数据源）。
+
+        Sciverse agentic_search 返回片段级证据，天然含 ZT/温度/Seebeck 等数值，
+        比 chunk 摘要更适合数据点抽取。查询专门针对含数值的实验结果。
+        """
+        if not sciverse_is_available():
+            return []
+        # 构造针对数值证据的查询（专门搜含 ZT 数值的实验结果）
+        queries = [
+            "thermoelectric ZT=1.2 Bi2Te3 experimental value",
+            "thermoelectric figure of merit ZT achieved 1.3 measurement",
+            "SnSe ZT 2.6 high temperature experimental",
+            "thermoelectric ZT value 1.0 1.5 doping temperature",
+        ]
+        texts: list[str] = []
+        for q in queries[:3]:  # 控制 API 调用数
+            try:
+                evidences = sciverse_agentic_search(query=q, max_results=5)
+                for ev in evidences:
+                    if ev.snippet:
+                        texts.append(f"[paper=sciverse:{ev.doc_id[:12]}] {ev.snippet[:600]}")
+            except Exception as e:
+                logger.warning("Sciverse 证据获取失败（q=%r）: %s", q[:40], e)
+        return texts
+
+    @staticmethod
+    def _regex_extract_points(evidence_texts: list[str], target_prop: str) -> list[dict]:
+        """正则兜底：从证据文本启发式抽取数值数据点。
+
+        识别形如 'ZT=1.2'、'ZT value of 1.2'、'peak ZT of ~1.14'、
+        'ZT ~ 2.6'、'at 800 K'、'T = 800K' 的数值陈述。
+        当 LLM 抽取失败时启用，确保代理模型有数据可用。
+        """
+        points: list[dict] = []
+        # ZT 数值模式（覆盖多种表达形式）
+        zt_patterns = [
+            re.compile(r"ZT\s*[=≈]\s*\\?\$?([0-9]+\.?[0-9]*)", re.IGNORECASE),
+            re.compile(r"ZT\s+value\s+(?:of|could\s+reach|reached|to)\s*~?\s*\\?\$?([0-9]+\.?[0-9]*)", re.IGNORECASE),
+            re.compile(r"ZT\s+of\s*~?\s*\\?\$?([0-9]+\.?[0-9]*)", re.IGNORECASE),
+            re.compile(r"peak\s+ZT\s+of\s*~?\s*\\?\$?([0-9]+\.?[0-9]*)", re.IGNORECASE),
+            re.compile(r"ZT\s*~\s*\\?\$?([0-9]+\.?[0-9]*)", re.IGNORECASE),
+            re.compile(r"figure\s+of\s+merit\s*[=≈]?\s*~?\s*\\?\$?([0-9]+\.?[0-9]*)", re.IGNORECASE),
+            re.compile(r"ZT\s+values?\s+to\s*([0-9]+\.?[0-9]*)", re.IGNORECASE),
+            re.compile(r"ZT\s+was\s+(?:obtained|achieved|reported)\s*(?:for|at|of)?\s*~?\s*\\?\$?([0-9]+\.?[0-9]*)", re.IGNORECASE),
+        ]
+        # 温度模式：at 800 K / T=800K / at 723K / at T = 923 K / at T ~ 920 K
+        temp_patterns = [
+            re.compile(r"at\s+T\s*[=~]?\s*([0-9]{3,4})\s*\\?\$?\\?mathrm\{?K\}?", re.IGNORECASE),
+            re.compile(r"at\s+([0-9]{3,4})\s*\\?\$?\\?mathrm\{?K\}?", re.IGNORECASE),
+            re.compile(r"at\s+([0-9]{3,4})\s*K\b", re.IGNORECASE),
+            re.compile(r"T\s*=\s*([0-9]{3,4})\s*K?\b", re.IGNORECASE),
+            re.compile(r"T\s*~\s*([0-9]{3,4})\s*K?\b", re.IGNORECASE),
+            re.compile(r"([0-9]{3,4})\s*\\?\$?\\?mathrm\{?K\}", re.IGNORECASE),
+        ]
+        # 材料体系
+        material_patterns = [
+            re.compile(r"(Bi2Te3|Bi_2Te_3|Bi\$_2\$Te\$_3\$|Sb2Te3|PbTe|SnSe|Skutterudite|half-Heusler|Cu2Se|Mg3Sb2|SiGe|GeTe|AgSbTe2|BiSbTe3|Bi0\.\d+Sb\d\.\d+Te3)", re.IGNORECASE),
+        ]
+
+        for text in evidence_texts:
+            # 提取 paper_id（若有）
+            pid_match = re.search(r"\[paper=([^\]]+)\]", text)
+            paper_id = pid_match.group(1) if pid_match else "sciverse"
+
+            zt_val = None
+            for pat in zt_patterns:
+                m = pat.search(text)
+                if m:
+                    try:
+                        zt_val = float(m.group(1))
+                        if 0.01 <= zt_val <= 5.0:  # ZT 合理范围
+                            break
+                    except (ValueError, IndexError):
+                        continue
+            if zt_val is None:
+                continue
+
+            temp_val = None
+            for pat in temp_patterns:
+                m = pat.search(text)
+                if m:
+                    try:
+                        temp_val = float(m.group(1))
+                        if 200 <= temp_val <= 1500:  # 温度合理范围
+                            break
+                    except (ValueError, IndexError):
+                        continue
+
+            config = {}
+            if temp_val is not None:
+                config["temperature"] = temp_val
+            # 尝试提取材料体系
+            for pat in material_patterns:
+                m = pat.search(text)
+                if m:
+                    raw_mat = m.group(1)
+                    # 归一化 LaTeX 形式
+                    if "Bi" in raw_mat and "Te" in raw_mat:
+                        config["material"] = "Bi2Te3"
+                    elif "Sb" in raw_mat and "Te" in raw_mat:
+                        config["material"] = "Sb2Te3"
+                    elif "Sn" in raw_mat and "Se" in raw_mat:
+                        config["material"] = "SnSe"
+                    elif "Ge" in raw_mat and "Te" in raw_mat:
+                        config["material"] = "GeTe"
+                    elif "Pb" in raw_mat and "Te" in raw_mat:
+                        config["material"] = "PbTe"
+                    else:
+                        config["material"] = raw_mat
+                    break
+
+            if not config:
+                continue
+
+            points.append({
+                "config": config,
+                "target": zt_val,
+                "paper_id": paper_id,
+                "chunk_id": "",
+                "note": f"正则兜底抽取：ZT={zt_val}" + (f", T={temp_val}K" if temp_val else ""),
+            })
+            if len(points) >= 10:
+                break
+
+        if points:
+            logger.info("正则兜底抽取到 %d 个文献数据点", len(points))
+        return points
 
     @staticmethod
     def _placeholder(input_obj: SearchSpaceInput) -> dict:
@@ -467,6 +643,8 @@ class LLMGuidedSearchAgent(AgentNode):
 
         # MCTS 搜索循环
         n_evaluated = 0
+        n_pruned = 0
+        search_trace: list[dict] = []  # 每轮迭代轨迹（前端 MCTS 可视化）
         for it in range(self.MAX_ITERATIONS):
             # 1. 选择父配置
             parent = searcher.select_parent()
@@ -502,6 +680,15 @@ class LLMGuidedSearchAgent(AgentNode):
                 )
                 # 5. 剪枝：物理不合理的候选不入池
                 if eval_result.pruned:
+                    n_pruned += 1
+                    search_trace.append({
+                        "iter": it + 1,
+                        "config": new_config,
+                        "predicted_target": pred_target,
+                        "plausibility": eval_result.plausibility,
+                        "pruned": True,
+                        "mechanism": eval_result.mechanism[:200] if eval_result.mechanism else "",
+                    })
                     logger.debug("MCTS 迭代 %d：候选被 LLM 剪枝", it)
                     continue
                 candidate = SearchCandidate(
@@ -514,6 +701,15 @@ class LLMGuidedSearchAgent(AgentNode):
                 )
                 searcher.add_candidate(candidate)
                 n_evaluated += 1
+                search_trace.append({
+                    "iter": it + 1,
+                    "config": new_config,
+                    "predicted_target": pred_target,
+                    "plausibility": eval_result.plausibility,
+                    "pruned": False,
+                    "mechanism": eval_result.mechanism[:200] if eval_result.mechanism else "",
+                    "surrogate_confidence": conf,
+                })
             except Exception as e:
                 logger.warning("MCTS 迭代 %d LLM 评估失败，宽松加入候选: %s", it, e)
                 # 评估失败时宽松加入（不阻塞搜索）
@@ -526,6 +722,15 @@ class LLMGuidedSearchAgent(AgentNode):
                     surrogate_confidence=conf,
                 ))
                 n_evaluated += 1
+                search_trace.append({
+                    "iter": it + 1,
+                    "config": new_config,
+                    "predicted_target": pred_target,
+                    "plausibility": 0.5,
+                    "pruned": False,
+                    "mechanism": f"评估失败，宽松保留：{str(e)[:100]}",
+                    "surrogate_confidence": conf,
+                })
 
         # 取 top-N 候选
         top = searcher.best_candidates(top_n=5)
@@ -541,6 +746,30 @@ class LLMGuidedSearchAgent(AgentNode):
             for c in top
         ]
 
+        # 持久化 MCTS 搜索轨迹与文献数据点到 KV（前端可视化）
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        if store is not None:
+            try:
+                store.save_kv("discovery_search_trace", {
+                    "iterations": self.MAX_ITERATIONS,
+                    "evaluated": n_evaluated,
+                    "pruned": n_pruned,
+                    "trace": search_trace,
+                })
+                # 持久化文献数据点（前端散点图可视化）
+                store.save_kv("discovery_literature_points", [
+                    {
+                        "config": lp.config,
+                        "target": lp.target,
+                        "paper_id": lp.paper_id,
+                        "chunk_id": lp.chunk_id,
+                        "note": lp.note,
+                    }
+                    for lp in lit_points
+                ])
+            except Exception as e:
+                logger.warning("持久化 discovery_search_trace 到 KV 失败: %s", e)
+
         output = LLMGuidedSearchOutput(candidates=candidates)
         return NodeResult(
             status=NodeStatus.SUCCESS,
@@ -548,6 +777,7 @@ class LLMGuidedSearchAgent(AgentNode):
             summary=(
                 f"LLM 引导搜索完成：{self.MAX_ITERATIONS} 轮迭代，"
                 f"{n_evaluated} 个候选通过评估，返回 top-{len(candidates)}"
+                f"{n_evaluated} 个候选通过评估，{n_pruned} 个被剪枝，返回 top-{len(candidates)}"
             ),
         )
 
@@ -654,6 +884,28 @@ class DiscoveryValidateAgent(AgentNode):
                         f"可用 paper_ids: {input_obj.paper_ids}\n\n"
                         f"候选构效关系（含代理预测与机制）：\n"
                         + json.dumps(input_obj.candidates, ensure_ascii=False, indent=2)
+                        "1. relationship：用一句话陈述构效关系（含具体变量组合与预测性能）\n"
+                        "2. evidence_paper_ids：从给定 paper_ids 中选取支持该发现的论文\n"
+                        "3. novelty：novel / partially_known / known\n"
+                        "   - **novel**：该**具体变量组合**（如特定掺杂浓度+温度+材料体系）文献未明确报告，\n"
+                        "     即使底层机理已知，新的具体配置组合仍算 novel\n"
+                        "   - **partially_known**：类似组合有报告，但本配置的关键参数不同\n"
+                        "   - **known**：完全相同的配置已被文献报告\n"
+                        "4. novelty_reason：新颖性判断依据（说明与文献的具体差异）\n"
+                        "5. mechanism：物理机制解释（来自搜索阶段，可补充）\n"
+                        "6. confidence：综合置信度 0~1（证据强度 + 代理置信度 + 合理性）\n"
+                        "**重要**：代理模型预测的具体配置组合通常是文献数据点的插值/外推，\n"
+                        "这些具体组合在文献中往往未被直接报告，应评估为 novel 或 partially_known。\n"
+                        "只有当文献明确报告了相同材料+相同掺杂浓度+相同温度的相同性能值时才标 known。"
+                    ),
+                    prompt=(
+                        f"目标性能：{target_prop}\n"
+                        f"可用 paper_ids: {input_obj.paper_ids[:15]}\n\n"
+                        f"候选构效关系（含代理预测与机制）：\n"
+                        + json.dumps(input_obj.candidates, ensure_ascii=False, indent=2)
+                        + "\n\n=== 评估要点 ===\n"
+                        "对每个候选，判断其具体变量组合（材料+掺杂+温度等）是否在文献中被直接报告。\n"
+                        "若组合是代理模型预测的新配置（非文献数据点原样复制），倾向 novel/partially_known。"
                     ),
                 )
                 relationships = []
@@ -692,6 +944,49 @@ class DiscoveryValidateAgent(AgentNode):
 
         output = DiscoveryValidateOutput(relationships=relationships)
         n_novel = sum(1 for r in relationships if r.get("novelty") == "novel")
+
+        # 赛题路线 A 硬要求：与公开数据库（Materials Project）交叉验证
+        # 无 API key 时降级为规则交叉验证（基于已知热电材料体系物理范围）
+        if store is not None and relationships:
+            try:
+                from core.tools import (
+                    mp_cross_validate_discovery,
+                    mp_report_to_dict,
+                )
+                # 从 KV 读取文献数据点（LLMGuidedSearchAgent 持久化的）
+                lit_points = store.get_kv("discovery_literature_points", []) or []
+                cv_report = mp_cross_validate_discovery(relationships, lit_points)
+                cv_report_dict = mp_report_to_dict(cv_report)
+
+                # 将交叉验证结果回填到每条 relationship（前端展示）
+                cv_map = {r.claim_id: r for r in cv_report.results}
+                for rel in relationships:
+                    cid = rel.get("claim_id", "")
+                    cv_r = cv_map.get(cid)
+                    if cv_r:
+                        rel["cross_validation"] = {
+                            "mp_match": cv_r.mp_match,
+                            "mp_band_gap": cv_r.mp_band_gap,
+                            "rule_check_passed": cv_r.rule_check_passed,
+                            "rule_check_notes": cv_r.rule_check_notes,
+                            "literature_consistent": cv_r.literature_consistent,
+                            "cross_validation_source": cv_r.cross_validation_source,
+                        }
+                        # 用交叉验证后调整的置信度覆盖原 confidence
+                        rel["confidence"] = cv_r.confidence
+
+                # 持久化交叉验证报告到 KV（前端展示）
+                store.save_kv("materials_cross_validation_report", cv_report_dict)
+                logger.info(
+                    "Materials Project 交叉验证完成：%d 条发现，mp_validated=%d，rule_validated=%d，overall_confidence=%.2f",
+                    cv_report.total_discoveries,
+                    cv_report.mp_validated,
+                    cv_report.rule_validated,
+                    cv_report.overall_confidence,
+                )
+            except Exception as e:
+                logger.warning("Materials Project 交叉验证失败: %s", e)
+
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
@@ -806,6 +1101,36 @@ class DiscoveryReportAgent(AgentNode):
             report_content=report_content,
             report_artifact_id=report_artifact_id,
         )
+
+        # 持久化完整 discovery_summary 到 KV 表（前端展示与 resume 恢复）
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        if store is not None:
+            try:
+                # 持久化发现报告内容（前端「调研报告」+「发现」页可读）
+                store.save_kv("discovery_report_content", report_content)
+                store.save_kv("discovery_report_artifact_id", report_artifact_id)
+                # 持久化结构化产出（前端可视化与 resume 恢复）
+                store.save_kv("discovery_hypotheses", input_obj.hypotheses or [])
+                store.save_kv("discovery_search_space", input_obj.search_space or {})
+                store.save_kv("discovery_relationships", input_obj.relationships or [])
+                # 汇总计数（前端 dashboard 直接读）
+                rels = input_obj.relationships or []
+                novel_count = sum(
+                    1 for r in rels if r.get("novelty") == "novel"
+                )
+                store.save_kv(
+                    "discovery_summary",
+                    {
+                        "hypotheses": len(input_obj.hypotheses or []),
+                        "candidates": len(ctx.get(DISCOVERY_CANDIDATES, []) or []),
+                        "relationships": len(rels),
+                        "novel": novel_count,
+                        "report_artifact_id": report_artifact_id,
+                    },
+                )
+            except Exception as e:
+                logger.warning("持久化 discovery_summary 到 KV 失败: %s", e)
+
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,

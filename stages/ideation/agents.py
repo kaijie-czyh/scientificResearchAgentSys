@@ -42,6 +42,7 @@ from stages.common import (
     RESEARCH_CROSS_VALIDATION_REPORT,
     RESEARCH_GAP_REPORT,
     RESEARCH_PAPER_IDS,
+    RESEARCH_TOPIC,
 )
 from stages.ideation.io_schema import (
     BrainstormInput,
@@ -134,6 +135,7 @@ class BrainstormAgent(AgentNode):
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         dry_run: bool = ctx.get(DRY_RUN, True)
 
+        topic = ctx.get(RESEARCH_TOPIC, "") or ""
         report = input_obj.cross_validation_report or {}
         conflicts = report.get("conflicts", []) or []
         consensus = report.get("consensus", []) or []
@@ -169,6 +171,20 @@ class BrainstormAgent(AgentNode):
 
         idea_drafts: list[tuple[str, list[str], list[str], float, float, float]] = []
 
+        # 加载 paper 摘要作为 prompt 素材
+        paper_summaries: list[str] = []
+        if store is not None:
+            for pid in paper_ids[:5]:  # 限制 token 量
+                try:
+                    p = store.get_paper(pid)
+                    paper_summaries.append(
+                        f"- {p.title} ({p.year}): {(p.abstract or '')[:200]}"
+                    )
+                except Exception:
+                    pass
+
+        idea_drafts: list[tuple[str, list[str], list[str]]] = []
+
         if not dry_run and registry is not None:
             try:
                 result = registry.structured_output(
@@ -186,6 +202,11 @@ class BrainstormAgent(AgentNode):
                         "评分须与思路内容一致，不要全部给高分。"
                     ),
                     prompt=(
+                        "思路应当：可落地、相对已有工作有差异、有潜在学术贡献。"
+                        "所有思路必须紧扣给定的研究主题，不得偏离。"
+                    ),
+                    prompt=(
+                        f"研究主题：{topic}\n\n"
                         f"文献证据：\n" + "\n".join(paper_summaries) + "\n\n"
                         f"gaps: {gaps}\n"
                         f"conflicts: {conflicts}\n"
@@ -203,11 +224,18 @@ class BrainstormAgent(AgentNode):
                 idea_drafts = self._placeholder_drafts(gaps, conflicts, consensus, paper_ids)
         else:
             idea_drafts = self._placeholder_drafts(gaps, conflicts, consensus, paper_ids)
+                    idea_drafts.append((d.text, d.constraints, d.source_paper_ids))
+            except Exception as e:
+                logger.warning("Brainstorm 真实调用失败，回退占位: %s", e)
+                idea_drafts = self._placeholder_drafts(topic, gaps, conflicts, consensus, paper_ids)
+        else:
+            idea_drafts = self._placeholder_drafts(topic, gaps, conflicts, consensus, paper_ids)
 
         # 兜底：至少 1 个思路
         if not idea_drafts:
             idea_drafts.append((
                 f"基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
+                f"针对主题「{topic[:60]}」基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
                 ["需进一步文献确认新颖性"],
                 paper_ids[:2],
                 0.5, 0.5, 0.5,
@@ -279,6 +307,17 @@ class BrainstormAgent(AgentNode):
                 ["需在现有公开数据集上可复现", "方法改动应可消融分析"],
                 paper_ids[:2],
                 0.7, 0.6, 0.9,
+        topic: str, gaps: list, conflicts: list, consensus: list, paper_ids: list
+    ) -> list[tuple[str, list[str], list[str]]]:
+        drafts: list[tuple[str, list[str], list[str]]] = []
+        topic_label = f"（主题：{topic[:50]}）" if topic else ""
+        if gaps:
+            gap0 = gaps[0] if isinstance(gaps[0], str) else str(gaps[0])
+            drafts.append((
+                f"针对主题「{topic[:50]}」的证据缺口「{gap0}」提出假设："
+                f"设计新方法填补该缺口{topic_label}，并设计对照实验验证其有效性。",
+                ["需在现有公开数据集上可复现", "方法改动应可消融分析"],
+                paper_ids[:2],
             ))
         if conflicts:
             c0 = conflicts[0]
@@ -289,6 +328,10 @@ class BrainstormAgent(AgentNode):
                 ["需严格控制变量", "评测协议须公开可复现"],
                 paper_ids[:2],
                 0.6, 0.5, 0.8,
+                f"针对主题「{topic[:50]}」的未解决冲突「{cclaim}」提出调和假设："
+                "设计统一实验框架，在相同评测协议下重新检验冲突双方的结论。",
+                ["需严格控制变量", "评测协议须公开可复现"],
+                paper_ids[:2],
             ))
         if consensus:
             cons0 = consensus[0] if isinstance(consensus[0], str) else str(consensus[0])
@@ -298,6 +341,10 @@ class BrainstormAgent(AgentNode):
                 ["新模块须有理论依据", "不得破坏原共识成立条件"],
                 paper_ids[:3],
                 0.5, 0.7, 0.6,
+                f"针对主题「{topic[:50]}」基于共识「{cons0}」的扩展假设："
+                "在已有共识基础上引入新模块，验证是否能进一步提升性能。",
+                ["新模块须有理论依据", "不得破坏原共识成立条件"],
+                paper_ids[:3],
             ))
         while len(drafts) < 3:
             idx = len(drafts)
@@ -306,6 +353,10 @@ class BrainstormAgent(AgentNode):
                 ["需进一步文献确认新颖性"],
                 paper_ids[:2],
                 round(0.4 + 0.1 * idx, 2), 0.5, 0.5,
+                f"针对主题「{topic[:50]}」的候选思路 {idx + 1}："
+                f"基于 {len(paper_ids)} 篇调研论文的扩展研究方向。",
+                ["需进一步文献确认新颖性"],
+                paper_ids[:2],
             ))
         return drafts
 
@@ -348,6 +399,7 @@ class IdeaDiscussHuman(HumanNode):
         return ideas
 
     def _render_prompt(self, ctx: ExecutionContext) -> str:
+        topic = ctx.get(RESEARCH_TOPIC, "") or ""
         idea_ids = ctx.get(IDEATION_IDEA_IDS, [])
         ideas = self._fetch_ideas(ctx)
         idea_map = {idea.idea_id: idea for idea in ideas}
@@ -361,8 +413,9 @@ class IdeaDiscussHuman(HumanNode):
             else:
                 lines.append(f"  {i + 1}. [idea_id={iid}]（正文读取失败）")
         ideas_block = "\n".join(lines) if lines else "  （无候选思路）"
+        topic_line = f"研究主题：{topic}\n" if topic else ""
         return (
-            f"已生成 {len(idea_ids)} 个候选思路：\n{ideas_block}\n\n"
+            f"{topic_line}已生成 {len(idea_ids)} 个候选思路：\n{ideas_block}\n\n"
             "请与系统交互式探讨（可多行输入）：\n"
             "  - 输入 'ok' 确认全部思路\n"
             "  - 输入 'reject: <序号>' 否决某个思路（如 'reject: 2'）\n"
@@ -478,6 +531,7 @@ class IdeaValidateAgent(AgentNode):
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         dry_run: bool = ctx.get(DRY_RUN, True)
+        topic = ctx.get(RESEARCH_TOPIC, "") or ""
 
         validation_reports: list[dict] = []
         validated_idea_ids: list[str] = []
@@ -506,6 +560,10 @@ class IdeaValidateAgent(AgentNode):
                             "新颖性看相对已有工作的差异度；贡献度看潜在学术/工程价值。"
                         ),
                         prompt=(
+                            "评估须紧扣研究主题。"
+                        ),
+                        prompt=(
+                            f"研究主题：{topic}\n"
                             f"思路：{idea_text}\n"
                             f"约束：{idea_constraints}\n"
                             f"讨论笔记：{input_obj.discussion_notes}"
@@ -597,6 +655,7 @@ class ClaimDraftAgent(AgentNode):
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         dry_run: bool = ctx.get(DRY_RUN, True)
+        topic = ctx.get(RESEARCH_TOPIC, "") or ""
 
         draft_claim_ids: list[str] = []
         claims_meta: list[dict] = []
@@ -625,6 +684,10 @@ class ClaimDraftAgent(AgentNode):
                             "Claim 应当具体、可量化、可证伪。"
                         ),
                         prompt=(
+                            "Claim 应当具体、可量化、可证伪，且紧扣研究主题。"
+                        ),
+                        prompt=(
+                            f"研究主题：{topic}\n"
                             f"思路：{idea_text}\n"
                             f"约束：{idea_constraints}"
                         ),
@@ -634,6 +697,7 @@ class ClaimDraftAgent(AgentNode):
                     logger.warning("ClaimDraft 真实调用失败（idea_id=%r）: %s", idea_id, e)
                     claim_statements = [
                         f"基于「{idea_text[:40]}」的可验证论断："
+                        f"针对主题「{topic[:40]}」，基于「{idea_text[:40]}」的可验证论断："
                         "所提方法在标准评测协议下优于现有 baseline。"
                     ]
             else:
@@ -641,6 +705,7 @@ class ClaimDraftAgent(AgentNode):
                 claim_count = 2 if i == 0 else 1
                 claim_statements = [
                     f"基于「{idea_text[:40]}」的可验证论断 {j + 1}："
+                    f"针对主题「{topic[:40]}」，基于「{idea_text[:40]}」的可验证论断 {j + 1}："
                     "所提方法在标准评测协议下优于现有 baseline。"
                     for j in range(claim_count)
                 ]

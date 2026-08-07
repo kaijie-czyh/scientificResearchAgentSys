@@ -7,11 +7,27 @@
 - sciverse_search: Sciverse 科学智能数据库（赛题推荐，证据片段级检索）
 - code_runner: 沙盒代码运行（experiment 阶段执行 LLM 生成的代码）
 - materials_search: 构效关系搜索（路线 A：MCTS + 文献代理模型 + LLM 融合）
+- materials_project: Materials Project API 交叉验证（赛题路线 A 公开数据库交叉验证要求）
 """
 from __future__ import annotations
 
 from core.tools.arxiv_search import ArxivPaper, search_arxiv
-from core.tools.code_runner import RunResult, check_syntax, run_python_code
+from core.tools.code_runner import (
+    RunResult,
+    check_syntax,
+    get_execution_mode,
+    is_remote_mode,
+    run_python_code,
+    run_python_code_remote,
+)
+from core.tools.materials_project import (
+    CrossValidationReport,
+    CrossValidationResult,
+    cross_validate_discovery as mp_cross_validate_discovery,
+    is_available as mp_is_available,
+    query_material_by_formula as mp_query_material,
+    report_to_dict as mp_report_to_dict,
+)
 from core.tools.materials_search import (
     LiteraturePoint,
     MCTSSearcher,
@@ -47,7 +63,10 @@ __all__ = [
     "split_into_chunks",
     "RunResult",
     "run_python_code",
+    "run_python_code_remote",
     "check_syntax",
+    "get_execution_mode",
+    "is_remote_mode",
     "LiteraturePoint",
     "MCTSSearcher",
     "SearchCandidate",
@@ -56,5 +75,11 @@ __all__ = [
     "build_literature_points",
     "build_search_variables",
     "perturb_config",
+    "CrossValidationReport",
+    "CrossValidationResult",
+    "mp_cross_validate_discovery",
+    "mp_is_available",
+    "mp_query_material",
+    "mp_report_to_dict",
 ]
 

@@ -33,6 +33,7 @@ from core.knowledge import (
     ResearchGap,
     ResearchConflict,
 )
+from core.knowledge import KnowledgeStore, Paper, PaperChunk
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -125,6 +126,7 @@ class PaperMetaSchema(BaseModel):
 
 class RelevanceScoreSchema(BaseModel):
     """相关性打分 schema（PaperQA filter，单篇）。"""
+    """相关性打分 schema（PaperQA filter）。"""
 
     score: float = Field(description="相关性分数 0~1")
     reason: str = Field(description="打分理由")
@@ -296,6 +298,14 @@ class SubqueryDecomposeAgent(AgentNode):
             summary=f"子问题分解完成，生成 {len(subqueries)} 个子问题",
         )
 
+
+        output = SubqueryDecomposeOutput(subqueries=subqueries, intents=intents)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=f"子问题分解完成，生成 {len(subqueries)} 个子问题",
+        )
+
     @staticmethod
     def _placeholder(input_obj: SubqueryDecomposeInput) -> tuple[list[str], list[str]]:
         subqueries = [
@@ -383,6 +393,8 @@ class PaperFetchAgent(AgentNode):
     - arxiv / Semantic Scholar 为补充（最新预印本、引用图谱与影响力）
     每个子问题独立检索，结果带 source_subquery 标记；每次命中同时写入
     evidence_chain（审计轨迹），由 PaperIngestAgent 落库并关联 paper_id。
+    根据子问题并行检索 arxiv/S2。
+    借鉴 GPT-Researcher：每个子问题独立检索，结果带 source_subquery 标记。
     """
 
     node_type = "research_paper_fetch"
@@ -397,6 +409,7 @@ class PaperFetchAgent(AgentNode):
     DEFAULT_PER_SUBQUERY = 3  # arxiv 每子问题抓取数（主源 Sciverse 后的补充）
     SCIVERSE_PER_SUBQUERY = 5  # Sciverse 每子问题证据数（主源，赛题推荐）
     S2_PER_SUBQUERY = 2  # S2 每子问题抓取数（限流严重，仅补充引用图谱）
+    DEFAULT_PER_SUBQUERY = 5  # 每子问题抓取数
 
     def _build_input(self, ctx: ExecutionContext) -> PaperFetchInput:
         return PaperFetchInput(
@@ -413,6 +426,8 @@ class PaperFetchAgent(AgentNode):
             evidence_chain: list[dict] = []
         else:
             paper_metas, evidence_chain = self._real_fetch(input_obj)
+        else:
+            paper_metas = self._real_fetch(input_obj)
 
         # 去重（按 arxiv_id 优先，其次 title）
         paper_metas = self._dedup(paper_metas)
@@ -484,6 +499,22 @@ class PaperFetchAgent(AgentNode):
                     logger.warning("Sciverse 检索失败（sq=%r）: %s", sq, e)
 
             # ===== 2. arxiv 补充（最新预印本，含 abstract 全文）=====
+        output = PaperFetchOutput(paper_metas=paper_metas)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=f"抓取 {len(paper_metas)} 篇候选论文元数据（来自 {len(input_obj.subqueries or ['placeholder'])} 个子问题）",
+        )
+
+    def _real_fetch(self, input_obj: PaperFetchInput) -> list[dict]:
+        """真实并行检索 arxiv + S2。"""
+        subqueries = input_obj.subqueries or input_obj.keywords or []
+        if not subqueries:
+            return []
+
+        def fetch_one(sq: str) -> list[dict]:
+            metas: list[dict] = []
+            # arxiv 检索（核心，含 abstract 全文）
             try:
                 arxiv_papers = search_arxiv(
                     query=sq,
@@ -533,6 +564,35 @@ class PaperFetchAgent(AgentNode):
             except Exception as e:
                 logger.warning("S2 检索失败（sq=%r）: %s", sq, e)
 
+                    metas.append(p.to_meta_dict())
+            except Exception as e:
+                logger.warning("arxiv 检索失败（sq=%r）: %s", sq, e)
+
+            # S2 检索（补充引用图谱/venue，限 2 篇，避免重复）
+            try:
+                s2_papers = search_semantic_scholar(
+                    query=sq,
+                    max_results=2,
+                    source_subquery=sq,
+                )
+                for p in s2_papers:
+                    metas.append(p.to_meta_dict())
+            except Exception as e:
+                logger.warning("S2 检索失败（sq=%r）: %s", sq, e)
+
+            # Sciverse 检索（赛题推荐，证据片段级，无 token 时优雅跳过）
+            if sciverse_is_available():
+                try:
+                    evidences = sciverse_agentic_search(
+                        query=sq,
+                        max_results=5,
+                        source_subquery=sq,
+                    )
+                    for ev in evidences:
+                        metas.append(ev.to_meta_dict())
+                except Exception as e:
+                    logger.warning("Sciverse 检索失败（sq=%r）: %s", sq, e)
+
             return metas
 
         # 并行检索（每子问题一个 worker，最多 4 并发）
@@ -543,6 +603,7 @@ class PaperFetchAgent(AgentNode):
             paper_metas.extend(sub)
 
         return paper_metas, evidence_chain
+        return paper_metas
 
     @staticmethod
     def _placeholder(input_obj: PaperFetchInput) -> list[dict]:
@@ -652,6 +713,40 @@ class PaperRelevanceFilterAgent(AgentNode):
             )
             filtered.extend(batch_filtered)
             rejected.extend(batch_rejected)
+            for meta in input_obj.paper_metas:
+                try:
+                    resp = registry.structured_output(
+                        task_type=self.task_type,
+                        output_schema=RelevanceScoreSchema,
+                        system=(
+                            "你是文献筛选助手。对候选论文按主题相关性与子问题覆盖度打分（0~1）。"
+                            "考虑：摘要与主题的语义相关度、是否覆盖关键子问题、发表年份新近度、"
+                            "引用数（若有）。给出具体打分理由。"
+                        ),
+                        prompt=(
+                            f"主题：{input_obj.topic}\n"
+                            f"子问题：{input_obj.subqueries}\n"
+                            f"候选论文：标题={meta.get('title')}\n"
+                            f"摘要={(meta.get('abstract') or '')[:500]}\n"
+                            f"年份={meta.get('year')}\n"
+                            f"引用数={meta.get('citation_count', 'N/A')}"
+                        ),
+                    )
+                    meta = dict(meta)
+                    meta["relevance_score"] = float(resp.score)
+                    meta["relevance_reason"] = resp.reason
+                    meta["covered_subqueries"] = resp.covered_subqueries
+                    if resp.score >= self.DEFAULT_THRESHOLD:
+                        filtered.append(meta)
+                    else:
+                        rejected.append(meta)
+                except Exception as e:
+                    logger.warning("RelevanceFilter 打分失败（title=%r），保留候选: %s",
+                                   meta.get("title"), e)
+                    meta = dict(meta)
+                    meta["relevance_score"] = 0.5
+                    meta["relevance_reason"] = f"打分失败，默认保留: {e}"
+                    filtered.append(meta)
         else:
             # 占位：保留全部候选，分数 0.7
             for meta in input_obj.paper_metas:
@@ -854,6 +949,8 @@ class PaperIngestAgent(AgentNode):
         # 真实入库
         paper_ids: list[str] = []
         linked_count = 0
+        # 真实入库
+        paper_ids: list[str] = []
         for meta in input_obj.paper_metas:
             try:
                 paper_id = KnowledgeStore.new_id()
@@ -877,6 +974,9 @@ class PaperIngestAgent(AgentNode):
                         "doc_id": meta.get("doc_id", ""),
                         "offset": meta.get("offset", 0),
                         "evidence_score": meta.get("evidence_score", 0.0),
+                        "relevance_score": meta.get("relevance_score", 0.0),
+                        "relevance_reason": meta.get("relevance_reason", ""),
+                        "citation_count": meta.get("citation_count", 0),
                     },
                 )
                 store.save_paper(paper)
@@ -939,6 +1039,9 @@ class PaperIngestAgent(AgentNode):
                 unmatched += 1
             except Exception as err:
                 logger.warning("证据链落库失败: %s", err)
+            except Exception as e:
+                logger.warning("论文入库失败（title=%r）: %s", meta.get("title"), e)
+                continue
 
         output = PaperIngestOutput(paper_ids=paper_ids)
         return NodeResult(
@@ -949,6 +1052,7 @@ class PaperIngestAgent(AgentNode):
                 f"证据链 {len(evidence_chain) + linked_count} 条全部落库"
                 f"（关联 {linked_count} 条，未入库 {unmatched} 条）"
             ),
+            summary=f"入库 {len(paper_ids)} 篇论文（含 chunk）",
         )
 
     @staticmethod
@@ -1019,6 +1123,12 @@ class CrossValidateAgent(AgentNode):
 
         # 冲突落库（重跑幂等：先清空再写入），供 Claim 冲突可视化 / 论文溯源
         self._persist_conflicts(store, report.get("conflicts", []))
+        # 持久化到 KV 表，便于 resume 模式恢复与前端展示
+        if store is not None:
+            try:
+                store.save_kv("cross_validation_report", report)
+            except Exception as e:
+                logger.warning("持久化 cross_validation_report 到 KV 失败: %s", e)
 
         output = CrossValidateOutput(report=report)
         summary = (

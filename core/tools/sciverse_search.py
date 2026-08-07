@@ -64,6 +64,11 @@ class SciverseEvidence:
     title: str = ""
     snippet: str = ""  # 证据文本片段（chunk）
     abstract: str = ""  # 论文摘要（与证据片段分离，入库时用摘要）
+    """Sciverse 证据片段（agentic-search 返回的粒度）。"""
+
+    doc_id: str = ""
+    title: str = ""
+    snippet: str = ""  # 证据文本片段
     score: float = 0.0  # 相关性分数
     offset: int = 0  # 原文偏移（用于 content 回读）
     source: str = "sciverse"
@@ -87,6 +92,10 @@ class SciverseEvidence:
             "doi": self.doi,
             "venue": self.venue,
             "citation_count": self.citation_count,
+            "abstract": self.snippet,  # 证据片段作为摘要
+            "doi": self.doi,
+            "venue": self.venue,
+            "citation_count": 0,
             "url": self.url,
             "arxiv_id": None,
             "source_subquery": "",
@@ -183,6 +192,18 @@ def _parse_agentic_response(
         data.get("hits", [])
         or data.get("results", [])
         or data.get("data", [])
+    """解析 agentic-search / meta-search 返回。
+
+    Sciverse 实际响应结构：
+        {"biz_code":0, "code":"SUCCESS", "hits":[{abstract, author, chunk,
+         chunk_id, doc_id, citation_count, title, year, venue, doi, url, ...}]}
+    兼容 results / data 等备选字段名。
+    """
+    evidences: list[SciverseEvidence] = []
+    items = (
+        data.get("hits")
+        or data.get("results")
+        or data.get("data")
         or []
     )
     for item in items:
@@ -219,6 +240,20 @@ def _parse_agentic_response(
                 citation_count=int(item.get("citation_count", 0) or 0),
                 page_no=item.get("page_no"),
                 primary_topic=item.get("primary_topic", "") or "",
+            # 证据片段优先用 chunk（片段级证据），回退 abstract
+            snippet = item.get("chunk") or item.get("snippet") or ""
+            abstract = item.get("abstract") or ""
+            ev = SciverseEvidence(
+                doc_id=item.get("doc_id", "") or item.get("id", ""),
+                title=(item.get("title") or "").strip(),
+                snippet=snippet or abstract,
+                score=float(item.get("score", 0.0) or 0.0),
+                offset=int(item.get("offset", 0) or 0),
+                authors=item.get("author", []) or item.get("authors", []) or [],
+                year=item.get("year"),
+                venue=item.get("venue", "") or item.get("publication_venue_name", "") or "",
+                doi=item.get("doi"),
+                url=item.get("url", ""),
             )
             if source_subquery:
                 ev.source = f"sciverse:{source_subquery}"
