@@ -1035,13 +1035,35 @@ def list_unlinked_papers(project_id: str) -> dict:
     检索阶段每条子问题按固定配额抓取（Sciverse 10 + arXiv 3 + S2 2），
     其中被相关性筛选或去重剔除的候选保留在证据链（paper_id 为空）。
     前端可展示为「未入库论文」，支持用户手动补录入库。
+
+    每篇候选附带未入库原因（reason）：
+    - score_rejected: 相关性打分 < 0.5 被 filter 剔除（Sciverse 用语义检索分，
+      arXiv/S2 用 LLM 评估分）
+    - dedup_merged:   与已入库论文重复（同 external_id / 同 title），去重时合并
     """
     _require_project(project_id)
     try:
         store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
         entries = store.list_unlinked_evidence(limit=500)
+        papers_all = store.list_papers()
     except Exception as e:  # noqa: BLE001
         return {"papers": [], "error": f"读取失败: {e}"}
+
+    # 已入库论文的 arxiv_id / title 集合（用于判定去重合并）
+    paper_ax: set[str] = set()
+    paper_titles: set[str] = set()
+    paper_id_by_ax: dict[str, str] = {}
+    paper_id_by_title: dict[str, str] = {}
+    for p in papers_all:
+        ax = (p.arxiv_id or "").strip()
+        tl = (p.title or "").strip().lower()
+        if ax:
+            paper_ax.add(ax)
+            paper_id_by_ax.setdefault(ax, p.paper_id)
+        if tl:
+            paper_titles.add(tl)
+            paper_id_by_title.setdefault(tl, p.paper_id)
+
     # 按 external_id（或 title）去重聚合：同一候选可能被多个子问题命中
     seen: dict[str, dict] = {}
     for e in entries:
@@ -1059,6 +1081,8 @@ def list_unlinked_papers(project_id: str) -> dict:
                 "evidence_score": e.get("evidence_score", 0.0),
                 "hit_count": 1,
                 "log_ids": [e.get("log_id", "")],
+                "reason": "",
+                "reason_detail": "",
             }
         else:
             seen[key]["hit_count"] += 1
@@ -1066,12 +1090,44 @@ def list_unlinked_papers(project_id: str) -> dict:
                 seen[key]["log_ids"].append(e.get("log_id", ""))
             if not seen[key]["snippet"]:
                 seen[key]["snippet"] = e.get("snippet", "")
+
+    # 判定每篇候选的未入库原因
+    for p in seen.values():
+        ax = (p["external_id"] or "").strip()
+        tl = (p["title"] or "").strip().lower()
+        if (ax and ax in paper_ax) or (tl and tl in paper_titles):
+            dup_pid = paper_id_by_ax.get(ax) or paper_id_by_title.get(tl, "")
+            dup_title = next(
+                (pp.title for pp in papers_all if pp.paper_id == dup_pid),
+                "",
+            )
+            p["reason"] = "dedup_merged"
+            p["reason_detail"] = (
+                f"与已入库论文《{dup_title[:60]}》重复，去重时合并"
+            )
+        else:
+            src = p["source"]
+            scorer = "Sciverse 语义检索分" if src == "sciverse" else "LLM 相关性评估分"
+            p["reason"] = "score_rejected"
+            p["reason_detail"] = (
+                f"相关性打分 < 0.5（{scorer}），被 filter 阶段剔除"
+            )
+
     papers = sorted(
         seen.values(),
         key=lambda p: (p["evidence_score"] or 0.0),
         reverse=True,
     )
-    return {"papers": papers, "total": len(papers)}
+    return {
+        "papers": papers,
+        "total": len(papers),
+        "filter_threshold": 0.5,
+        "filter_note": (
+            "入库量化标准：filter 阶段相关性打分 ≥ 0.5 才入库。"
+            "Sciverse 候选复用语义检索证据分；arXiv/S2 候选由 LLM 按主题相关性评估。"
+            "低于 0.5 的候选保留在未入库列表，可人工复核后手动补录。"
+        ),
+    }
 
 
 @app.post("/api/projects/{project_id}/papers/import")

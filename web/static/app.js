@@ -946,7 +946,7 @@
 
             // ===== 未入库候选视图 =====
             if (state.papersView === "unlinked") {
-                renderUnlinkedPapers(content, unlinked);
+                renderUnlinkedPapers(content, unlinked, (unlinkedData && unlinkedData.filter_note) || "");
                 return;
             }
 
@@ -1010,7 +1010,7 @@
 
     // ===== 未入库论文候选视图 =====
 
-    async function renderUnlinkedPapers(content, unlinked) {
+    async function renderUnlinkedPapers(content, unlinked, filterNote) {
         content.appendChild(el("div", { class: "page-header" }, [
             el("h2", { class: "page-title" }, "未入库论文"),
             el("p", { class: "page-desc" },
@@ -1023,6 +1023,15 @@
                 onclick: () => { state.papersView = "all"; renderPage(); },
             }, "← 返回论文浏览"),
         ]));
+        // 量化标准说明卡片（为什么这些命中没入库）
+        if (filterNote) {
+            content.appendChild(el("div", { class: "card filter-note-card" }, [
+                el("div", { class: "filter-note-title" }, "为什么命中子问题却没入库？"),
+                el("div", { class: "filter-note-body", text: filterNote }),
+                el("div", { class: "filter-note-body" },
+                    "下方每篇候选标注了具体原因：相关度不足（被打分剔除）或与已入库论文重复（去重合并）。"),
+            ]));
+        }
         if (!unlinked.length) {
             content.appendChild(el("div", { class: "list-empty" },
                 "暂无未入库候选：当前检索命中的证据均已关联入库或被去重剔除"));
@@ -1041,6 +1050,14 @@
             el("span", { class: "badge badge-info",
                 text: `命中 ${p.hit_count} 个子问题` }),
         ];
+        // 未入库原因徽章
+        if (p.reason === "dedup_merged") {
+            headChildren.push(el("span", { class: "badge reason-badge reason-dedup",
+                title: p.reason_detail || "", text: "未入库 · 与已入库重复" }));
+        } else {
+            headChildren.push(el("span", { class: "badge reason-badge reason-score",
+                title: p.reason_detail || "", text: "未入库 · 相关度 < 0.5" }));
+        }
         if (Number(p.evidence_score || 0) > 0) {
             headChildren.push(el("span", {
                 class: "badge ev-src-badge ev-src-sciverse",
@@ -1075,6 +1092,7 @@
                     <dl>
                         <dt>来源</dt><dd>${escapeHtml(p.source || "—")}</dd>
                         <dt>外部 ID</dt><dd class="mono">${escapeHtml(p.external_id || "—")}</dd>
+                        <dt>未入库原因</dt><dd>${escapeHtml(p.reason_detail || p.reason || "—")}</dd>
                         <dt>证据片段</dt><dd>${escapeHtml(p.snippet || "（无片段）")}</dd>
                         <dt>命中子问题</dt><dd>${escapeHtml(p.subquery || "—")}</dd>
                     </dl>
@@ -1097,9 +1115,10 @@
             const fresh = await api("GET", `/api/projects/${state.currentProjectId}/unlinked-papers`)
                 .catch(() => null);
             const unlinked = (fresh && fresh.papers) || [];
+            const note = (fresh && fresh.filter_note) || "";
             const content = document.getElementById("content");
             clear(content);
-            await renderUnlinkedPapers(content, unlinked);
+            await renderUnlinkedPapers(content, unlinked, note);
             // 顶部提示
             const banner = el("div", { class: "status-banner success" },
                 `${res.message || "入库成功"}（已返回未入库列表）`);

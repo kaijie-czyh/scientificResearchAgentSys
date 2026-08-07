@@ -818,6 +818,37 @@ body {
     line-height: 1.6;
 }
 
+/* ===== 未入库论文：量化标准说明卡片 + 原因徽章 ===== */
+.filter-note-card {
+    border-left: 3px solid var(--color-warning, #f5a623);
+    margin-bottom: 12px;
+}
+.filter-note-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text);
+    margin-bottom: 6px;
+}
+.filter-note-body {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    line-height: 1.7;
+    margin-top: 4px;
+}
+.reason-badge {
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+.reason-score {
+    color: var(--color-warning, #f5a623);
+    border: 1px solid var(--color-warning, #f5a623);
+}
+.reason-dedup {
+    color: var(--color-info, #4a9eff);
+    border: 1px solid var(--color-info, #4a9eff);
+}
+
 /* ===== 假设可验证性评分卡片 ===== */
 .card-desc {
     font-size: 12px;
