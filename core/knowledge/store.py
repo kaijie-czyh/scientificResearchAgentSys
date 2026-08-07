@@ -239,6 +239,22 @@ class KnowledgeStore:
             ).fetchall()
             return [Paper.model_validate_json(r["content"]) for r in rows]
 
+    def find_paper_by_external_id(self, external_id: str) -> Optional[Paper]:
+        """按外部 ID（doc_id / arxiv_id / s2 paperId）查找已入库论文，无则返回 None。"""
+        key = (external_id or "").strip()
+        if not key:
+            return None
+        with self._connect() as conn:
+            rows = conn.execute("SELECT content FROM papers").fetchall()
+            for r in rows:
+                p = Paper.model_validate_json(r["content"])
+                md = p.metadata or {}
+                doc = (md.get("doc_id") or "").strip()
+                ax = (p.arxiv_id or "").strip()
+                if doc == key or ax == key:
+                    return p
+        return None
+
     def save_paper_chunks(self, chunks: list[PaperChunk]) -> None:
         if not chunks:
             return
@@ -854,6 +870,31 @@ class KnowledgeStore:
             "by_source": by_source,
             "linked": linked,
         }
+
+    def list_unlinked_evidence(self, limit: int = 200) -> list[dict]:
+        """列出未关联论文的证据链条目（检索命中但被筛选/去重剔除的候选）。
+
+        这些条目保留完整检索元数据（title/external_id/snippet/subquery/score），
+        前端可展示为「未入库论文」候选，支持用户手动补录入库。
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM evidence_log WHERE paper_id IS NULL "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def link_evidence_to_paper(
+        self, log_id: str, paper_id: str, match_type: str = "manual import"
+    ) -> None:
+        """将某条未关联证据回填关联到指定论文（手动补录入库时调用）。"""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE evidence_log SET paper_id = ?, match_type = ? "
+                "WHERE log_id = ?",
+                (paper_id, match_type, log_id),
+            )
 
     # ===== 工具 =====
 

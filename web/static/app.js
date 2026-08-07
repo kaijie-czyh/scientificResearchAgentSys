@@ -15,6 +15,7 @@
         humanDraft: "",         // 人工输入草稿（轮询重建时恢复）
         pendingPaperId: null,   // 待定位论文（证据溯源跳转：gaps/claims → papers 定位高亮）
         pendingExperimentId: null, // 待定位实验（Claim 证据 → experiments 定位高亮）
+        papersView: "all",      // 论文浏览页视图：all / unlinked（未入库候选）
     };
 
     const STAGES = ["research", "ideation", "design", "experiment", "writing"];
@@ -933,18 +934,43 @@
     async function renderPapers(content) {
         content.appendChild(el("div", { class: "loading" }, "加载中…"));
         try {
-            // 并行拉取论文列表 + 检索证据链（审计轨迹）
+            // 并行拉取论文列表 + 检索证据链（审计轨迹）+ 未入库候选
             const evData = await api("GET", `/api/projects/${state.currentProjectId}/evidence`)
                 .catch(() => null);
             const paperData = await api("GET", `/api/projects/${state.currentProjectId}/papers`);
+            const unlinkedData = await api("GET", `/api/projects/${state.currentProjectId}/unlinked-papers`)
+                .catch(() => null);
             const papers = paperData.papers || [];
+            const unlinked = (unlinkedData && unlinkedData.papers) || [];
             clear(content);
+
+            // ===== 未入库候选视图 =====
+            if (state.papersView === "unlinked") {
+                renderUnlinkedPapers(content, unlinked);
+                return;
+            }
+
             content.appendChild(el("div", { class: "page-header" }, [
                 el("h2", { class: "page-title" }, "论文浏览"),
                 el("p", { class: "page-desc" }, `共 ${papers.length} 篇入库论文，点击条目展开详情。`),
             ]));
             // 检索证据链卡片（真实模式下由 Sciverse/arXiv/S2 检索命中记录生成）
             content.appendChild(renderEvidenceCard(evData));
+            // 未入库论文入口卡片
+            if (unlinked.length) {
+                content.appendChild(el("div", {
+                    class: "card unlinked-entry",
+                    id: "unlinked-entry",
+                    onclick: () => { state.papersView = "unlinked"; renderPage(); },
+                }, [
+                    el("div", { class: "unlinked-entry-main" }, [
+                        el("span", { class: "unlinked-entry-title" }, "未入库论文"),
+                        el("span", { class: "unlinked-entry-desc",
+                            text: `${unlinked.length} 篇检索命中但未入库的候选（被相关性筛选/去重剔除），可手动补录入库` }),
+                    ]),
+                    el("span", { class: "unlinked-entry-arrow" }, "查看 →"),
+                ]));
+            }
             if (!papers.length) {
                 content.appendChild(el("div", { class: "list-empty" }, "暂无论文，请先启动 research 阶段"));
                 return;
@@ -982,7 +1008,106 @@
         }
     }
 
-    // ===== 检索证据链卡片（审计轨迹：query → source → 命中 → paper）=====
+    // ===== 未入库论文候选视图 =====
+
+    async function renderUnlinkedPapers(content, unlinked) {
+        content.appendChild(el("div", { class: "page-header" }, [
+            el("h2", { class: "page-title" }, "未入库论文"),
+            el("p", { class: "page-desc" },
+                `共 ${unlinked.length} 篇检索命中但未入库的候选论文，可手动补录入库。`),
+        ]));
+        // 返回按钮
+        content.appendChild(el("div", { class: "btn-row mt-0 mb-12" }, [
+            el("button", {
+                class: "btn btn-secondary btn-sm",
+                onclick: () => { state.papersView = "all"; renderPage(); },
+            }, "← 返回论文浏览"),
+        ]));
+        if (!unlinked.length) {
+            content.appendChild(el("div", { class: "list-empty" },
+                "暂无未入库候选：当前检索命中的证据均已关联入库或被去重剔除"));
+            return;
+        }
+        const list = el("div", { class: "list" });
+        unlinked.forEach(p => list.appendChild(renderUnlinkedItem(p)));
+        content.appendChild(list);
+    }
+
+    function renderUnlinkedItem(p) {
+        const item = el("div", { class: "list-item unlinked-item" });
+        const headChildren = [
+            el("span", { class: "list-item-title", text: p.title || "(无标题)" }),
+            el("span", { class: "badge badge-neutral", text: p.source || "?" }),
+            el("span", { class: "badge badge-info",
+                text: `命中 ${p.hit_count} 个子问题` }),
+        ];
+        if (Number(p.evidence_score || 0) > 0) {
+            headChildren.push(el("span", {
+                class: "badge ev-src-badge ev-src-sciverse",
+                text: `证据分 ${Number(p.evidence_score).toFixed(2)}`,
+            }));
+        }
+        const head = el("div", { class: "list-item-head" }, headChildren);
+        item.appendChild(head);
+        if (p.snippet) {
+            item.appendChild(el("div", { class: "unlinked-snippet" },
+                (p.snippet || "").slice(0, 220)));
+        }
+        // 操作：查看证据片段详情（折叠展开）+ 入库按钮
+        const actions = el("div", { class: "unlinked-actions" }, [
+            el("span", { class: "unlinked-subq",
+                text: `命中子问题：${p.subquery || "—"}` }),
+            el("button", {
+                class: "btn btn-primary btn-sm",
+                onclick: (ev) => {
+                    ev.stopPropagation();
+                    importUnlinkedPaper(p);
+                },
+            }, "入库"),
+        ]);
+        item.appendChild(actions);
+        // 点击展开详情
+        item.addEventListener("click", () => {
+            const expanded = item.classList.toggle("expanded");
+            if (expanded && !item.querySelector(".unlinked-body")) {
+                const body = el("div", { class: "unlinked-body" });
+                body.innerHTML = `
+                    <dl>
+                        <dt>来源</dt><dd>${escapeHtml(p.source || "—")}</dd>
+                        <dt>外部 ID</dt><dd class="mono">${escapeHtml(p.external_id || "—")}</dd>
+                        <dt>证据片段</dt><dd>${escapeHtml(p.snippet || "（无片段）")}</dd>
+                        <dt>命中子问题</dt><dd>${escapeHtml(p.subquery || "—")}</dd>
+                    </dl>
+                `;
+                item.appendChild(body);
+            }
+        });
+        return item;
+    }
+
+    async function importUnlinkedPaper(p) {
+        try {
+            const res = await api("POST", `/api/projects/${state.currentProjectId}/papers/import`, {
+                external_id: p.external_id,
+                title: p.title,
+                snippet: p.snippet,
+            });
+            // 入库成功后重新拉取未入库列表刷新
+            state.papersView = "unlinked";
+            const fresh = await api("GET", `/api/projects/${state.currentProjectId}/unlinked-papers`)
+                .catch(() => null);
+            const unlinked = (fresh && fresh.papers) || [];
+            const content = document.getElementById("content");
+            clear(content);
+            await renderUnlinkedPapers(content, unlinked);
+            // 顶部提示
+            const banner = el("div", { class: "status-banner success" },
+                `${res.message || "入库成功"}（已返回未入库列表）`);
+            content.insertBefore(banner, content.firstChild);
+        } catch (e) {
+            alert(`入库失败：${e.message || e}`);
+        }
+    }
 
     function renderEvidenceCard(evData) {
         const stats = (evData && evData.stats) || { total: 0, by_source: {}, linked: 0 };

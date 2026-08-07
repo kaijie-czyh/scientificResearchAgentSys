@@ -1028,6 +1028,170 @@ def list_evidence(project_id: str) -> dict:
     return {"entries": entries, "stats": stats}
 
 
+@app.get("/api/projects/{project_id}/unlinked-papers")
+def list_unlinked_papers(project_id: str) -> dict:
+    """列出未入库论文候选（检索命中但未关联入库的证据，按 external_id/title 去重）。
+
+    检索阶段每条子问题按固定配额抓取（Sciverse 10 + arXiv 3 + S2 2），
+    其中被相关性筛选或去重剔除的候选保留在证据链（paper_id 为空）。
+    前端可展示为「未入库论文」，支持用户手动补录入库。
+    """
+    _require_project(project_id)
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        entries = store.list_unlinked_evidence(limit=500)
+    except Exception as e:  # noqa: BLE001
+        return {"papers": [], "error": f"读取失败: {e}"}
+    # 按 external_id（或 title）去重聚合：同一候选可能被多个子问题命中
+    seen: dict[str, dict] = {}
+    for e in entries:
+        key = (e.get("external_id") or "").strip() or \
+            (e.get("title") or "").strip().lower()
+        if not key:
+            continue
+        if key not in seen:
+            seen[key] = {
+                "external_id": e.get("external_id", ""),
+                "title": e.get("title", ""),
+                "source": e.get("source", ""),
+                "snippet": e.get("snippet", ""),
+                "subquery": e.get("subquery", ""),
+                "evidence_score": e.get("evidence_score", 0.0),
+                "hit_count": 1,
+                "log_ids": [e.get("log_id", "")],
+            }
+        else:
+            seen[key]["hit_count"] += 1
+            if e.get("log_id"):
+                seen[key]["log_ids"].append(e.get("log_id", ""))
+            if not seen[key]["snippet"]:
+                seen[key]["snippet"] = e.get("snippet", "")
+    papers = sorted(
+        seen.values(),
+        key=lambda p: (p["evidence_score"] or 0.0),
+        reverse=True,
+    )
+    return {"papers": papers, "total": len(papers)}
+
+
+@app.post("/api/projects/{project_id}/papers/import")
+def import_unlinked_paper(project_id: str, body: dict) -> dict:
+    """手动补录入库：将一条未关联证据候选正式入库为论文，并回填证据链关联。
+
+    body:
+      - external_id: 候选的外部 ID（sciverse doc_id / arxiv_id / s2 paperId）
+      - title: 候选标题（external_id 缺失时的兜底定位）
+      - snippet: 可选覆盖片段（否则用证据链中的 snippet 作为摘要）
+    """
+    _require_project(project_id)
+    external_id = (body.get("external_id") or "").strip()
+    title = (body.get("title") or "").strip()
+    if not external_id and not title:
+        raise HTTPException(status_code=400, detail="external_id 或 title 至少提供一个")
+
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        entries = store.list_unlinked_evidence(limit=500)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取证据链失败: {e}")
+
+    # 定位候选：优先 external_id 精确匹配，其次 title 完全一致
+    cand = None
+    for e in entries:
+        eid = (e.get("external_id") or "").strip()
+        etitle = (e.get("title") or "").strip().lower()
+        if external_id and eid and eid == external_id:
+            cand = e
+            break
+        if not external_id and title and etitle == title.lower():
+            cand = e
+            break
+    if cand is None:
+        # 候选不在未关联列表：可能已入库 → 返回已存在的论文信息
+        if external_id:
+            existing = store.find_paper_by_external_id(external_id)
+            if existing is not None:
+                return {
+                    "paper_id": existing.paper_id,
+                    "created": False,
+                    "message": f"该候选已入库：{existing.title}",
+                }
+        raise HTTPException(
+            status_code=404,
+            detail="未找到该未入库候选（可能已被入库或已不在证据链中）",
+        )
+
+    # 重复入库检查：external_id 已存在则直接关联，不新建论文
+    existing = None
+    if (cand.get("external_id") or "").strip():
+        existing = store.find_paper_by_external_id(cand["external_id"].strip())
+    if existing is not None:
+        linked_count = 0
+        for e in entries:
+            eid = (e.get("external_id") or "").strip()
+            if external_id and eid and eid == external_id and e.get("log_id"):
+                store.link_evidence_to_paper(e["log_id"], existing.paper_id)
+                linked_count += 1
+        return {
+            "paper_id": existing.paper_id,
+            "created": False,
+            "message": f"该候选已存在同名论文，证据链已关联 {linked_count} 条到现有论文",
+        }
+
+    # 新建论文（用证据链中的元数据）
+    paper_id = KnowledgeStore.new_id()
+    snippet = body.get("snippet") or (cand.get("snippet") or "")
+    from core.knowledge.schema import Paper
+    paper = Paper(
+        paper_id=paper_id,
+        title=cand.get("title") or title or "Untitled",
+        abstract=snippet or None,
+        metadata={
+            "source": cand.get("source", ""),
+            "source_subquery": cand.get("subquery", ""),
+            "doc_id": cand.get("external_id", ""),
+            "evidence_score": cand.get("evidence_score", 0.0),
+            "relevance_score": 0.0,
+            "relevance_reason": "手动补录入库",
+            "manually_imported": True,
+        },
+        source_stage="research",
+    )
+    # 入库论文 + 切分 chunk
+    from core.tools.text_split import split_into_chunks
+    store.save_paper(paper)
+    abstract = snippet or ""
+    chunks = split_into_chunks(abstract, max_tokens=500, overlap_tokens=50)
+    from core.knowledge.schema import PaperChunk
+    chunk_objs = [
+        PaperChunk(
+            chunk_id=KnowledgeStore.new_id(),
+            paper_id=paper_id,
+            chunk_index=i,
+            text=c.text,
+        )
+        for i, c in enumerate(chunks)
+    ]
+    store.save_paper_chunks(chunk_objs)
+
+    # 回填证据链关联：该候选可能被多个子问题命中，全部关联
+    linked_count = 0
+    for e in entries:
+        eid = (e.get("external_id") or "").strip()
+        etitle = (e.get("title") or "").strip().lower()
+        match = bool(external_id and eid and eid == external_id) or \
+            bool(not external_id and title and etitle == title.lower())
+        if match and e.get("log_id"):
+            store.link_evidence_to_paper(e["log_id"], paper_id)
+            linked_count += 1
+
+    return {
+        "paper_id": paper_id,
+        "created": True,
+        "message": f"论文已入库：{paper.title}（关联 {linked_count} 条证据）",
+    }
+
+
 @app.get("/api/projects/{project_id}/claims")
 def list_claims(project_id: str, status: Optional[str] = None) -> dict:
     _require_project(project_id)
