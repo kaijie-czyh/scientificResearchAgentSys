@@ -999,7 +999,10 @@
                 ...srcBadges,
             ]),
             el("div", { class: "ev-desc" },
-                "每次检索命中的完整记录：子问题 → 数据源 → 证据 → 是否入库。Sciverse 证据含 doc_id/offset，可回读原文核验。"),
+                "审计轨迹：子问题 → 数据源 → 证据 → 是否入库。每条子问题按固定配额抓取" +
+                "（Sciverse 10 + arXiv 3 + S2 2），因此各子问题条数相近；" +
+                "「关联入库」数才是该子问题真正采纳的论文数。Sciverse 证据含 doc_id/offset，" +
+                "可回读原文核验；关联依据见各条目的 match_type。"),
         ]);
 
         if (!entries.length) {
@@ -1017,10 +1020,20 @@
         const body = el("div", { class: "ev-groups" });
         Object.keys(groups).forEach(sq => {
             const items = groups[sq];
+            // 配额构成：同一子问题按数据源统计（Sciverse N + arXiv N），
+            // 说明「命中条数」来自每条子问题的固定抓取配额，而非相关性筛剩下的数量。
+            const bySrc = {};
+            items.forEach(e => { bySrc[e.source] = (bySrc[e.source] || 0) + 1; });
+            const srcParts = Object.keys(bySrc).map(s =>
+                `${s === "sciverse" ? "Sciverse" : s} ${bySrc[s]}`);
+            const linkedInSq = items.filter(e => e.paper_id).length;
             const group = el("div", { class: "ev-group" }, [
                 el("div", { class: "ev-group-head" }, [
                     el("span", { class: "ev-group-q", text: sq }),
-                    el("span", { class: "ev-group-count", text: `${items.length} 条命中` }),
+                    el("span", { class: "ev-group-count", text:
+                        `抓取 ${items.length} 条（${srcParts.join(" + ")}）` }),
+                    el("span", { class: "ev-group-linked", text:
+                        `关联入库 ${linkedInSq} 条` }),
                 ]),
             ]);
             const listEl = el("div", { class: "ev-group-body" });
@@ -1051,10 +1064,20 @@
             const eid = e.external_id || "";
             if (eid) row.appendChild(el("span", { class: "mono ev-entry-id", text: eid }));
         }
-        row.appendChild(el("span", {
-            class: e.paper_id ? "ev-entry-linked" : "ev-entry-unlinked",
-            text: e.paper_id ? "✓ 已入库" : "未入库",
-        }));
+        // 关联依据（量化可审计）：match_type 说明为何关联该论文；
+        // paper_id 为空 → 检索命中但未关联（被 filter 相关性筛选/去重剔除）。
+        if (e.paper_id) {
+            const reason = e.match_type || "证据来源关联";
+            row.appendChild(el("span", { class: "ev-entry-linked",
+                text: `已入库 · ${reason}` }));
+            if (Number(e.paper_relevance || 0) > 0) {
+                row.appendChild(el("span", { class: "ev-entry-rel",
+                    text: `相关度 ${Number(e.paper_relevance).toFixed(2)}` }));
+            }
+        } else {
+            row.appendChild(el("span", { class: "ev-entry-unlinked",
+                text: "未入库 · 被筛选/去重剔除" }));
+        }
         return row;
     }
 
@@ -1076,6 +1099,16 @@
             headChildren.push(el("span", {
                 class: `badge ev-src-badge ev-src-${p.source}`,
                 text: p.source,
+            }));
+        }
+        // 主题相关度徽章（filter 阶段量化打分 0~1，可点击展开查看依据）
+        if (Number(p.relevance_score || 0) > 0) {
+            const rs = Number(p.relevance_score);
+            const cls = rs >= 0.7 ? "ev-entry-rel" : (rs >= 0.5 ? "ev-entry-rel-mid" : "ev-entry-rel-low");
+            headChildren.push(el("span", {
+                class: `badge ${cls}`,
+                title: p.relevance_reason || "",
+                text: `相关度 ${rs.toFixed(2)}`,
             }));
         }
         headChildren.push(el("span", { class: "list-item-meta", text:

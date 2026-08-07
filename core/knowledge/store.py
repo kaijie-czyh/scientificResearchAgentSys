@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS evidence_log (
     offset INTEGER DEFAULT 0,
     evidence_score REAL DEFAULT 0.0,
     snippet TEXT,
+    match_type TEXT DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_evlog_paper ON evidence_log(paper_id);
@@ -190,6 +191,15 @@ class KnowledgeStore:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA_SQL)
+            # 轻量迁移：旧库 evidence_log 无 match_type 列时补列（不丢数据）
+            cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(evidence_log)").fetchall()
+            }
+            if "match_type" not in cols:
+                conn.execute(
+                    "ALTER TABLE evidence_log ADD COLUMN match_type TEXT DEFAULT ''"
+                )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -777,6 +787,7 @@ class KnowledgeStore:
         - offset: Sciverse 原文偏移（证据回读定位）
         - evidence_score: Sciverse 证据相关性分数
         - snippet: 证据片段/摘要（截断）
+        - match_type: 关联论文的量化依据（doc_id 精确 / arxiv_id 精确 / title 一致 / 空=未关联）
         - created_at: 可选，默认当前 UTC 时间
         """
         log_id = entry.get("log_id") or self.new_id()
@@ -786,8 +797,8 @@ class KnowledgeStore:
             conn.execute(
                 "INSERT OR REPLACE INTO evidence_log "
                 "(log_id, subquery, source, paper_id, title, external_id, offset, "
-                " evidence_score, snippet, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " evidence_score, snippet, match_type, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     log_id,
                     entry.get("subquery", ""),
@@ -798,6 +809,7 @@ class KnowledgeStore:
                     int(entry.get("offset", 0) or 0),
                     float(entry.get("evidence_score", 0.0) or 0.0),
                     snippet,
+                    entry.get("match_type", ""),
                     created_at,
                 ),
             )

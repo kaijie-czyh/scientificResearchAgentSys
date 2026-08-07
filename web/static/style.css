@@ -1343,6 +1343,12 @@ pre.code-block {
     color: var(--color-text-muted);
     flex-shrink: 0;
 }
+.ev-group-linked {
+    font-size: 11px;
+    color: var(--color-success);
+    flex-shrink: 0;
+    margin-left: 10px;
+}
 .ev-group-body {
     display: flex;
     flex-direction: column;
@@ -1391,6 +1397,21 @@ pre.code-block {
 }
 .ev-entry-unlinked {
     color: var(--color-text-muted);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.ev-entry-rel {
+    color: var(--color-info);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.ev-entry-rel-mid {
+    color: var(--color-warning, #f5a623);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.ev-entry-rel-low {
+    color: var(--color-danger, #e8643a);
     font-size: 11px;
     flex-shrink: 0;
 }

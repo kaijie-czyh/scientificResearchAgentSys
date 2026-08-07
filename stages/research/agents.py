@@ -898,7 +898,11 @@ class PaperIngestAgent(AgentNode):
 
                 paper_ids.append(paper_id)
 
-                # 关联证据链：命中该论文的链条目标记 paper_id 并落库
+                # 关联证据链：命中该论文的链条目标记 paper_id 并落库。
+                # 关联依据为量化可审计的硬匹配：
+                #   1) external_id 精确匹配（sciverse doc_id / arxiv_id / s2 paperId）
+                #   2) external_id 缺失时按 title 完全一致（小写归一）匹配
+                # 匹配方式写入 match_type，前端证据卡片可直接展示「为何关联/未关联」。
                 external_id = (meta.get("doc_id") or "").strip() or \
                     (meta.get("arxiv_id") or "").strip()
                 title_key = (meta.get("title") or "").strip().lower()
@@ -907,11 +911,16 @@ class PaperIngestAgent(AgentNode):
                     eid = (e.get("external_id") or "").strip()
                     etitle = (e.get("title") or "").strip().lower()
                     if external_id and eid and eid == external_id:
+                        e["match_type"] = "external_id 精确匹配"
                         matched.append(e)
                     elif not external_id and etitle and etitle == title_key:
+                        e["match_type"] = "title 完全一致"
                         matched.append(e)
                 for e in matched:
                     e["paper_id"] = paper_id
+                    # 透传该论文的最终相关性分（filter 阶段），前端可对照量化依据
+                    e["paper_relevance"] = meta.get("relevance_score", 0.0)
+                    e["paper_relevance_reason"] = meta.get("relevance_reason", "")
                     store.log_evidence(e)
                     evidence_chain.remove(e)
                     linked_count += 1
@@ -920,10 +929,12 @@ class PaperIngestAgent(AgentNode):
                 continue
 
         # 未关联到入库论文的链条目（检索命中但被筛选/去重剔除）也落库，
-        # 保留完整审计轨迹：每个子问题调用了哪些源、命中了哪些证据、最终是否入库
+        # 保留完整审计轨迹：每个子问题调用了哪些源、命中了哪些证据、最终是否入库。
+        # match_type 留空 + paper_id 为空 = 检索命中但未关联（被 filter/去重剔除）。
         unmatched = 0
         for e in evidence_chain:
             try:
+                e.setdefault("match_type", "")
                 store.log_evidence(e)
                 unmatched += 1
             except Exception as err:
