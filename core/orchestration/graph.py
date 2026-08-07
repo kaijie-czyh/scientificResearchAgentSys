@@ -12,7 +12,7 @@ GraphRunner: 执行引擎，拓扑序执行，处理人工节点阻塞与失败�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -152,12 +152,31 @@ class GraphRunner:
         result = runner.final_result()
     """
 
-    def __init__(self, graph: Graph, ctx: ExecutionContext):
+    def __init__(
+        self,
+        graph: Graph,
+        ctx: ExecutionContext,
+        on_node_recorded: Optional[Callable[[list[dict]], None]] = None,
+        on_node_started: Optional[Callable[[str, list[str]], None]] = None,
+    ):
+        """初始化执行引擎。
+
+        Args:
+            graph: 要执行的 DAG 图
+            ctx: 执行上下文
+            on_node_recorded: 每个节点完成后触发的回调，参数为当前
+                节点历史快照（ctx.history()）。用于 UI 实时进度同步。
+            on_node_started: 每个节点开始执行前触发的回调，参数为
+                (当前节点 ID, 下一步候选节点 ID 列表)。用于 UI 展示
+                「正在执行什么 / 下一步做什么」，避免长任务时用户干等。
+        """
         graph.validate()
         self._graph = graph
         self._ctx = ctx
         self._state = GraphRunnerState()
         self._last_result: Optional[NodeResult] = None
+        self._on_node_recorded = on_node_recorded
+        self._on_node_started = on_node_started
 
     # ===== 执行控制 =====
 
@@ -239,6 +258,9 @@ class GraphRunner:
             node_id = self._state.current_node_id
             node = self._graph.nodes[node_id]
             self._ctx.current_node_id = node_id
+
+            # 节点开始前回调：告知 UI「正在执行 + 下一步」（长任务不干等）
+            self._notify_node_started(node_id)
 
             # 记录检查点
             from core.orchestration.node import CheckpointNode
@@ -333,3 +355,19 @@ class GraphRunner:
             status=result.status.value,
             summary=result.summary,
         )
+        # 实时进度回调（UI 层借此同步节点历史，避免阶段结束才一次性可见）
+        if self._on_node_recorded is not None:
+            try:
+                self._on_node_recorded(list(self._ctx.history()))
+            except Exception:  # noqa: BLE001 回调异常不应阻断执行
+                pass
+
+    def _notify_node_started(self, node_id: str) -> None:
+        """节点开始前通知 UI：当前节点 + 下一步候选节点。"""
+        if self._on_node_started is None:
+            return
+        try:
+            next_nodes = self._graph.successors(node_id)
+            self._on_node_started(node_id, next_nodes)
+        except Exception:  # noqa: BLE001 回调异常不应阻断执行
+            pass

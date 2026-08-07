@@ -51,6 +51,19 @@ def is_available() -> bool:
 
 @dataclass
 class SciverseEvidence:
+    """Sciverse 证据（agentic-search 返回的粒度）。
+
+    真实 API 响应结构（2026-08 实测）：
+    - 顶层键为 ``hits``（非 results/data），每个 hit 含：
+      abstract（论文摘要）/ chunk（证据片段）/ doc_id / offset / score /
+      author（list[str]，每元素为 ``|`` 分隔的作者串）/ citation_count /
+      publication_published_year / publication_venue_name_unified 等。
+    """
+
+    doc_id: str = ""
+    title: str = ""
+    snippet: str = ""  # 证据文本片段（chunk）
+    abstract: str = ""  # 论文摘要（与证据片段分离，入库时用摘要）
     """Sciverse 证据片段（agentic-search 返回的粒度）。"""
 
     doc_id: str = ""
@@ -65,6 +78,9 @@ class SciverseEvidence:
     venue: str = ""
     doi: Optional[str] = None
     url: str = ""
+    citation_count: int = 0
+    page_no: Optional[int] = None
+    primary_topic: str = ""
 
     def to_meta_dict(self) -> dict:
         """转为通用 paper meta dict（兼容 PaperFetchAgent）。"""
@@ -72,6 +88,10 @@ class SciverseEvidence:
             "title": self.title.strip(),
             "authors": list(self.authors),
             "year": self.year,
+            "abstract": self.abstract or self.snippet,  # 摘要优先，无则用证据片段
+            "doi": self.doi,
+            "venue": self.venue,
+            "citation_count": self.citation_count,
             "abstract": self.snippet,  # 证据片段作为摘要
             "doi": self.doi,
             "venue": self.venue,
@@ -162,6 +182,16 @@ def agentic_search(
 def _parse_agentic_response(
     data: dict, source_subquery: str = ""
 ) -> list[SciverseEvidence]:
+    """解析 agentic-search 返回。
+
+    真实 API 响应：顶层 ``hits`` 列表；每个 hit 的 author 为
+    list[str]，每元素是 ``|`` 分隔的作者串（如 ["xin, deyu|tie, shujie"]）。
+    """
+    evidences: list[SciverseEvidence] = []
+    items = (
+        data.get("hits", [])
+        or data.get("results", [])
+        or data.get("data", [])
     """解析 agentic-search / meta-search 返回。
 
     Sciverse 实际响应结构：
@@ -178,6 +208,38 @@ def _parse_agentic_response(
     )
     for item in items:
         try:
+            # 作者解析：["a|b|c"] → ["a", "b", "c"]
+            authors_raw = item.get("author", []) or []
+            authors: list[str] = []
+            for a in authors_raw:
+                authors.extend(
+                    x.strip() for x in str(a).split("|") if x.strip()
+                )
+
+            ev = SciverseEvidence(
+                doc_id=item.get("doc_id", "") or item.get("id", ""),
+                title=(item.get("title") or "").strip(),
+                snippet=(
+                    item.get("chunk")
+                    or item.get("snippet")
+                    or item.get("content")
+                    or item.get("text", "")
+                ),
+                abstract=item.get("abstract") or "",
+                score=float(item.get("score", 0.0) or 0.0),
+                offset=int(item.get("offset", 0) or 0),
+                authors=authors,
+                year=item.get("publication_published_year") or item.get("year"),
+                venue=(
+                    item.get("publication_venue_name_unified")
+                    or item.get("venue", "")
+                    or ""
+                ),
+                doi=item.get("doi"),
+                url=item.get("url", ""),
+                citation_count=int(item.get("citation_count", 0) or 0),
+                page_no=item.get("page_no"),
+                primary_topic=item.get("primary_topic", "") or "",
             # 证据片段优先用 chunk（片段级证据），回退 abstract
             snippet = item.get("chunk") or item.get("snippet") or ""
             abstract = item.get("abstract") or ""

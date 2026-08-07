@@ -69,12 +69,26 @@ tasks:
     temperature: 0.2
     description: "对论文 chunk 生成摘要用于检索增强"
 
+  # 材料知识抽取（赛题核心）：从论文抽取 材料-性能-合成 三元组
+  material_knowledge_extract:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.0
+    description: "从论文全文抽取材料知识三元组（材料成分/晶体结构/性能指标/合成条件/模拟方法），结构化入库"
+
   # 交叉验证：借鉴 GPT-Researcher，多源信息冲突时做交叉验证
   research_cross_validate:
     provider: minimax
     model: MiniMax-M3
     temperature: 0.1
     description: "借鉴 GPT-Researcher，对多源信息冲突做交叉验证，给出可信度评分"
+
+  # 研究缺口识别（Task 3）：双通道（LLM 语义 + 数据驱动断链检测）输出结构化 Gap 清单
+  research_gap_identify:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.2
+    description: "识别研究缺口：矛盾结论/未被探索方向/缺失知识连接，输出带证据链的结构化 Gap 清单"
 
   # ===== 思路探讨阶段 =====
   ideation_brainstorm:
@@ -220,6 +234,22 @@ tasks:
     model: MiniMax-M3
     temperature: 0.3
     description: "生成构效关系发现报告，含物理机制解释与证据链"
+
+# ===== 方向推荐阶段（topic_discovery：研究趋势发现与主题推荐）=====
+# 趋势分析（纯统计计算，不调用 LLM，但 task_type 声明用于路由兼容）
+  topic_trend_analysis:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.2
+    description: "关键词趋势分析（增长率计算 + 新兴/稳定/饱和方向分类）"
+
+  # LLM 生成推荐研究主题：解读趋势数据 + 推荐材料体系 + 评估创新性
+  topic_recommend:
+    provider: minimax
+    model: MiniMax-M3
+    temperature: 0.5
+    description: "根据领域趋势分析结果，LLM 生成 3-5 个推荐研究主题（含创新切入点与材料体系推荐）"
+
 
 # 嵌入模型（独立配置，所有向量检索共用）
 # 注意：MiniMax 暂不提供嵌入 API。

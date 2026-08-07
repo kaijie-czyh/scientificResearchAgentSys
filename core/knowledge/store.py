@@ -16,10 +16,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -32,15 +34,23 @@ from core.knowledge.schema import (
     EntityType,
     Experiment,
     Idea,
+    Material,
+    MaterialProperty,
+    MaterialSynthesis,
     Paper,
     PaperChunk,
     Relation,
     RelationType,
+    ResearchGap,
+    ResearchConflict,
 )
 
 
 class StoreError(Exception):
     """知识库存储错误。"""
+
+
+logger = logging.getLogger(__name__)
 
 
 _SCHEMA_SQL = """
@@ -108,6 +118,64 @@ CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_id);
 CREATE INDEX IF NOT EXISTS idx_rel_target ON relations(target_id);
 CREATE INDEX IF NOT EXISTS idx_rel_type ON relations(relation_type);
 
+CREATE TABLE IF NOT EXISTS evidence_log (
+    log_id TEXT PRIMARY KEY,
+    subquery TEXT NOT NULL,
+    source TEXT NOT NULL,
+    paper_id TEXT,
+    title TEXT NOT NULL,
+    external_id TEXT,
+    offset INTEGER DEFAULT 0,
+    evidence_score REAL DEFAULT 0.0,
+    snippet TEXT,
+    match_type TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evlog_paper ON evidence_log(paper_id);
+CREATE INDEX IF NOT EXISTS idx_evlog_source ON evidence_log(source);
+
+-- Task 2：材料知识抽取（材料-性能-合成三元组）
+-- 实体以 JSON 存 content，便于 Pydantic schema 演化（与 papers 等一致）
+CREATE TABLE IF NOT EXISTS materials (
+    material_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_materials_created ON materials(created_at);
+
+CREATE TABLE IF NOT EXISTS material_properties (
+    property_id TEXT PRIMARY KEY,
+    material_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_matprop_material ON material_properties(material_id);
+
+CREATE TABLE IF NOT EXISTS material_synthesis (
+    synthesis_id TEXT PRIMARY KEY,
+    material_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_matsyn_material ON material_synthesis(material_id);
+
+-- Task 3：研究缺口（Research Gap）识别结果
+-- 结构化 Gap 清单（类型/证据链/可操作性/优先级），供 ideation/discovery/报告消费
+CREATE TABLE IF NOT EXISTS research_gaps (
+    gap_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gaps_created ON research_gaps(created_at);
+
+-- 文献冲突（交叉验证产出落库）
+-- 冲突陈述 + 立场证据（support/refute）+ 处置建议，供 Claim 冲突可视化
+CREATE TABLE IF NOT EXISTS research_conflicts (
+    conflict_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conflicts_created ON research_conflicts(created_at);
 -- 通用 KV 表：项目级报告/元数据持久化（cross_validation_report、discovery_summary 等）
 CREATE TABLE IF NOT EXISTS kv_store (
     key TEXT PRIMARY KEY,
@@ -129,6 +197,15 @@ class KnowledgeStore:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA_SQL)
+            # 轻量迁移：旧库 evidence_log 无 match_type 列时补列（不丢数据）
+            cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(evidence_log)").fetchall()
+            }
+            if "match_type" not in cols:
+                conn.execute(
+                    "ALTER TABLE evidence_log ADD COLUMN match_type TEXT DEFAULT ''"
+                )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -167,6 +244,22 @@ class KnowledgeStore:
                 "SELECT content FROM papers ORDER BY created_at"
             ).fetchall()
             return [Paper.model_validate_json(r["content"]) for r in rows]
+
+    def find_paper_by_external_id(self, external_id: str) -> Optional[Paper]:
+        """按外部 ID（doc_id / arxiv_id / s2 paperId）查找已入库论文，无则返回 None。"""
+        key = (external_id or "").strip()
+        if not key:
+            return None
+        with self._connect() as conn:
+            rows = conn.execute("SELECT content FROM papers").fetchall()
+            for r in rows:
+                p = Paper.model_validate_json(r["content"])
+                md = p.metadata or {}
+                doc = (md.get("doc_id") or "").strip()
+                ax = (p.arxiv_id or "").strip()
+                if doc == key or ax == key:
+                    return p
+        return None
 
     def save_paper_chunks(self, chunks: list[PaperChunk]) -> None:
         if not chunks:
@@ -405,7 +498,7 @@ class KnowledgeStore:
                     source_type=EntityType(r["source_type"]),
                     target_id=r["target_id"],
                     target_type=EntityType(r["target_type"]),
-                    created_at=__import__("datetime").datetime.fromisoformat(r["created_at"]),
+                    created_at=datetime.fromisoformat(r["created_at"]),
                     metadata=json.loads(r["metadata"]) if r["metadata"] else {},
                 )
                 for r in rows

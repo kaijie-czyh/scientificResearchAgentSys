@@ -45,6 +45,7 @@ from core.orchestration.node import (
     NodeStatus,
     ToolNode,
 )
+from core.tools import check_syntax, run_python_code
 from core.tools import check_syntax, is_remote_mode, run_python_code, run_python_code_remote
 
 from stages.common import (
@@ -228,6 +229,14 @@ class ExperimentConfigAgent(AgentNode):
             summary=f"生成 {len(configs)} 组实验配置",
         )
 
+
+        output = ExperimentConfigOutput(configs=configs)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=f"生成 {len(configs)} 组实验配置",
+        )
+
     @staticmethod
     def _placeholder(input_obj: ExperimentConfigInput) -> list[dict]:
         return [
@@ -273,6 +282,72 @@ class CodeGenerateAgent(AgentNode):
     def _execute(self, input_obj: CodeGenerateInput, ctx: ExecutionContext) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         dry_run: bool = ctx.get(DRY_RUN, True)
+
+        if not dry_run and registry is not None:
+            try:
+                # 构造 prompt：实验配置 + 公式↔代码映射
+                formula_blocks = "\n".join(
+                    f"- 概念: {m.get('concept')}\n"
+                    f"  公式: {m.get('formula_latex')}\n"
+                    f"  代码骨架: {m.get('code_stub')}\n"
+                    f"  状态: {m.get('status')}"
+                    for m in input_obj.formula_code_map
+                ) or "(无公式↔代码映射)"
+                config_blocks = "\n".join(
+                    f"- {c.get('name')}: dataset={c.get('dataset')}, "
+                    f"baseline={c.get('baseline')}, hyperparams={c.get('hyperparams')}, "
+                    f"verifies={c.get('verifies_claim_ids')}"
+                    for c in input_obj.configs
+                ) or "(无实验配置)"
+
+                # 代码生成用 complete 而非 structured_output：
+                # MiniMax M3 在代码生成场景倾向返回纯代码/markdown 代码块，
+                # 强制 json_object 反而触发 JSON 解析失败。complete + 代码块提取更稳。
+                resp = registry.complete(
+                    task_type=self.task_type,
+                    system=(
+                        "你是实验代码工程师。根据实验配置与公式↔代码映射，"
+                        "生成完整可运行的实验代码。每个公式必须落地为对应代码片段，"
+                        "不得遗漏或简化。代码须包含：数据加载、模型定义、训练循环、"
+                        "评估指标输出。代码末尾打印 JSON 格式结果（含 metrics 字段），"
+                        "便于下游解析。代码必须自包含、可独立运行（不依赖外部数据集时用合成数据）。"
+                        "\n\n输出格式：仅返回一个 ```python ... ``` 代码块，不要任何额外说明。"
+                    ),
+                    prompt=(
+                        f"实验配置：\n{config_blocks}\n\n"
+                        f"公式↔代码映射：\n{formula_blocks}\n\n"
+                        "请生成完整可运行的 Python 实验代码，用 ```python 代码块包裹。"
+                    ),
+                )
+                content = self._extract_code_block(resp.text)
+                if not content:
+                    # 兜底：若 LLM 未用代码块包裹，直接把全文当代码
+                    content = resp.text
+                code = {
+                    "path": "experiments/run_exp.py",
+                    "content": content,
+                    "language": "python",
+                }
+                # 语法检查
+                ok, err = check_syntax(code["content"])
+                if not ok:
+                    logger.warning("生成的代码语法错误，将交给 CodeReview 修正: %s", err)
+            except Exception as e:
+                logger.warning("CodeGenerate 真实调用失败，回退占位: %s", e)
+                code = self._placeholder(input_obj)
+        else:
+            code = self._placeholder(input_obj)
+
+        output = CodeGenerateOutput(code=code)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=(
+                f"生成实验代码：{code['path']}（{code['language']}），"
+                f"{len(code['content'])} 字符"
+            ),
+        )
+
 
         if not dry_run and registry is not None:
             try:
@@ -349,6 +424,9 @@ class CodeGenerateAgent(AgentNode):
         """从 LLM 返回中提取 Python 代码。
 
         处理：
+        1. ```python ... ``` 代码块
+        2. ``` ... ``` 代码块
+        3. 无代码块包裹的纯代码（兜底返回原文）
         1. ```python ... ``` 代码块（可在文本任意位置）
         2. ``` ... ``` 代码块
         3. 无代码块包裹的纯代码（兜底：尝试跳过明显的非代码行）
@@ -356,6 +434,17 @@ class CodeGenerateAgent(AgentNode):
         if not text:
             return ""
         stripped = text.strip()
+        # ```python ... ``` 或 ``` ... ```
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            if len(lines) >= 2:
+                # 跳过首行（```python 或 ```）
+                body = lines[1:]
+                # 去尾行 ```（若存在）
+                if body and body[-1].strip().startswith("```"):
+                    body = body[:-1]
+                return "\n".join(body)
+        return ""
 
         # 优先用正则搜索 ```python ... ``` 或 ``` ... ``` 代码块（可在任意位置）
         import re
@@ -425,6 +514,8 @@ class CodeGenerateAgent(AgentNode):
             "if __name__ == '__main__':",
             "    cfg = {'lr': 1e-3, 'epochs': 10}",
             "    result = train(cfg)",
+            "    import json",
+            "    print(json.dumps(result))",
             "    import json, os",
             f"    results = {results_literal}",
             "    os.makedirs('experiments', exist_ok=True)",
@@ -528,6 +619,16 @@ class CodeReviewAgent(AgentNode):
                     f"上一轮 issue：{prev_issues}"
                 ),
             )
+            review_notes.append({
+                "round": len(review_notes) + 1,
+                "passed": result.passed,
+                "issues": [i.model_dump() for i in result.issues],
+                "summary": result.summary,
+            })
+        except Exception as e:
+            logger.warning("CodeReview 真实调用失败，宽松通过: %s", e)
+            review_notes.append({
+                "round": len(review_notes) + 1,
             review_notes.append({
                 "round": len(review_notes) + 1,
                 "passed": result.passed,
@@ -697,6 +798,19 @@ class ExperimentRunTool(ToolNode):
                 summary="实验运行失败：代码为空",
             )
 
+
+        # 真实运行
+        code = input_obj.code or {}
+        code_content = code.get("content", "")
+        code_path = code.get("path", "experiments/run_exp.py")
+
+        if not code_content:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error="实验代码为空",
+                summary="实验运行失败：代码为空",
+            )
+
         # 语法检查门控：不运行有语法错误的代码
         ok, err = check_syntax(code_content)
         if not ok:
@@ -746,6 +860,12 @@ class ExperimentRunTool(ToolNode):
 
             # 标记 RUNNING
             exp.status = ExperimentStatus.RUNNING
+            exp.started_at = datetime.utcnow()
+            store.save_experiment(exp)
+
+            # 真实运行代码
+            try:
+                run_result = run_python_code(
             exp.started_at = datetime.now()
             store.save_experiment(exp)
 
@@ -778,6 +898,7 @@ class ExperimentRunTool(ToolNode):
                 exp.anomaly_notes = f"运行异常: {type(e).__name__}: {e}"
                 exp.result_summary = f"运行异常: {e}"
 
+            exp.completed_at = datetime.utcnow()
             # 收集结构化结果：优先读取 experiments/results.json，兜底解析 stdout 末行 JSON
             result_metrics: dict = {}
             results_file = run_dir / "experiments" / "results.json"
@@ -985,6 +1106,7 @@ class ClaimVerifyAgent(AgentNode):
                     if exp_id not in existing_exp_ids:
                         claim.evidence_refs.append({"type": "experiment", "id": exp_id})
                     claim.status = ClaimStatus.VERIFIED
+                    claim.verified_at = datetime.utcnow()
                     claim.verified_at = datetime.now()
                     store.save_claim(claim)
                 except Exception as e:
@@ -1088,6 +1210,9 @@ class ExperimentOutcomeAssessAgent(AgentNode):
 
         # 收集实验素材
         exp_summaries: list[dict] = []
+        for exp_id in input_obj.experiment_ids:
+            try:
+                exp = store.get_experiment(exp_id)
         exp_result_lines: list[str] = []
         for exp_id in input_obj.experiment_ids:
             try:
@@ -1103,6 +1228,11 @@ class ExperimentOutcomeAssessAgent(AgentNode):
                     "name": exp.name,
                     "status": exp.status.value,
                     "verifies_claim_ids": exp.verifies_claim_ids,
+                    "result_summary": (exp.result_summary or "")[:500],
+                    "anomaly_notes": exp.anomaly_notes,
+                })
+            except Exception:
+                pass
                     "metrics": exp_metrics,
                     "result_summary": (exp.result_summary or "")[:500],
                     "anomaly_notes": exp.anomaly_notes,
@@ -1182,6 +1312,10 @@ class ExperimentOutcomeAssessAgent(AgentNode):
         #             system=(
         #                 "你是科研评估助手。根据实验结果判断每个 Claim 是被验证、反驳还是无法定论。"
         #                 "实验失败是科研常态，不应强行进入写作阶段。"
+        #             ),
+        #             prompt=(
+        #                 f"待验证 Claim: {claim_statuses}\n"
+        #                 f"实验结果: {exp_summaries}\n"
         #                 "请结合 metrics 量化数据与 Claim 语义判断验证结论。"
         #             ),
         #             prompt=(

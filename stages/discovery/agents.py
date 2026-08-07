@@ -62,6 +62,7 @@ from stages.common import (
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
     RESEARCH_CROSS_VALIDATION_REPORT,
+    RESEARCH_GAP_REPORT,
     RESEARCH_PAPER_IDS,
     RESEARCH_TOPIC,
 )
@@ -91,6 +92,15 @@ class HypothesisItem(BaseModel):
     target_property: str = Field(description="目标性能名（如 ZT）")
     rationale: str = Field(description="假设依据（关联 Gap/冲突/共识）")
     gap_ref: str = Field(default="", description="关联的 Research Gap")
+    novelty_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="新颖性评分 0~1（与已有文献/共识的差异程度）"
+    )
+    feasibility_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="可行性评分 0~1（变量可量化/可搜索验证/物理合法程度）"
+    )
+    gap_relevance_score: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="缺口关联度评分 0~1（与 Research Gap 的匹配程度）"
+    )
 
 
 class HypothesisBatchSchema(BaseModel):
@@ -189,6 +199,21 @@ class HypothesisSeedAgent(AgentNode):
 
     def _build_input(self, ctx: ExecutionContext) -> HypothesisSeedInput:
         report = ctx.get(RESEARCH_CROSS_VALIDATION_REPORT, {}) or {}
+        # 研究缺口（Task 3 结构化优先）：[{gap_id, statement, gap_type, priority, ...}]
+        gap_report = ctx.get(RESEARCH_GAP_REPORT, []) or []
+        if gap_report:
+            # 按优先级升序取前 8 条，statement 附 gap_id 便于下游强关联
+            sorted_gaps = sorted(gap_report, key=lambda g: g.get("priority", 5))
+            gaps = [
+                f"[{g.get('gap_id', '')}] {g.get('statement', '')}"
+                for g in sorted_gaps[:8]
+            ]
+        else:
+            # 回退：cross_validate 的字符串 gaps
+            gaps = report.get("gaps", []) or []
+        return HypothesisSeedInput(
+            topic=ctx.get(RESEARCH_TOPIC, ""),
+            gaps=gaps,
         return HypothesisSeedInput(
             topic=ctx.get(RESEARCH_TOPIC, ""),
             gaps=report.get("gaps", []) or [],
@@ -213,6 +238,12 @@ class HypothesisSeedAgent(AgentNode):
                         "1. 每个假设必须关联一个 Research Gap（gap_ref）\n"
                         "2. 假设涉及可量化的变量（variables）与明确的目标性能（target_property）\n"
                         "3. 假设是可被搜索验证的方向，不是结论\n"
+                        "4. rationale 说明假设依据（关联哪个 Gap/冲突/共识）\n"
+                        "5. 为每个假设输出三维可验证性评分（各 0~1，保留两位小数）：\n"
+                        "   - novelty_score 新颖性：与已有文献结论/共识的差异程度，越新越高\n"
+                        "   - feasibility_score 可行性：变量可量化、可搜索验证、物理合法的程度\n"
+                        "   - gap_relevance_score 缺口关联度：与所关联 Research Gap 的匹配程度\n"
+                        "   评分须与 rationale/文本内容一致，不要全部给高分。"
                         "4. rationale 说明假设依据（关联哪个 Gap/冲突/共识）"
                     ),
                     prompt=(
@@ -247,6 +278,9 @@ class HypothesisSeedAgent(AgentNode):
                 "target_property": "ZT",
                 "rationale": f"关联 Research Gap：{g[:60]}",
                 "gap_ref": g,
+                "novelty_score": round(0.4 + 0.1 * i, 2),
+                "feasibility_score": round(0.6 - 0.05 * i, 2),
+                "gap_relevance_score": 0.8,
             }
             for i, g in enumerate(gaps[:3])
         ]
@@ -302,6 +336,8 @@ class SearchSpaceAgent(AgentNode):
                         "1. variables：2-5 个可量化的材料变量（组分/结构参数），含定义域与单位\n"
                         "2. target_property：目标性能名与单位（如 ZT、power factor）\n"
                         "3. constraints：物理约束（如掺杂浓度上限、电荷中性）\n"
+                        "4. literature_points：从给定文献片段抽取 (结构, 性能) 数据点，"
+                        "每点关联 paper_id 确保证据可追溯；无法抽取时返回空列表\n"
                         "4. literature_points：**必须**从给定文献片段抽取所有可量化的 (结构, 性能) 数据点，"
                         "每点关联 paper_id（若片段含 [paper=xxx] 标记则用该 id，否则用 'sciverse'）。\n"
                         "   - 识别形如 'ZT=1.2 at 800K'、'Seebeck=200 μV/K'、'κ=1.5 W/mK' 的数值陈述\n"
@@ -313,6 +349,8 @@ class SearchSpaceAgent(AgentNode):
                     prompt=(
                         f"研究主题：{input_obj.topic}\n\n"
                         f"候选假设：\n" + json.dumps(input_obj.hypotheses, ensure_ascii=False, indent=2) + "\n\n"
+                        f"可用 paper_ids: {input_obj.paper_ids}\n\n"
+                        f"文献片段（用于抽取数据点）：\n" + "\n---\n".join(chunk_texts[:8])
                         f"可用 paper_ids: {input_obj.paper_ids[:10]}\n\n"
                         f"文献证据片段（含数值，用于抽取数据点）：\n"
                         + "\n---\n".join(all_evidence_texts[:15])
@@ -328,6 +366,9 @@ class SearchSpaceAgent(AgentNode):
                     "constraints": result.constraints,
                     "literature_points": [p.model_dump() for p in result.literature_points],
                 }
+            except Exception as e:
+                logger.warning("SearchSpace 真实调用失败，回退占位: %s", e)
+                search_space = self._placeholder(input_obj)
                 # 正则兜底：LLM 抽取空时从证据文本启发式抽取数值数据点
                 if not search_space["literature_points"]:
                     logger.warning(
@@ -367,6 +408,11 @@ class SearchSpaceAgent(AgentNode):
         if store is None or not paper_ids:
             return []
         texts: list[str] = []
+        for pid in paper_ids[:6]:
+            try:
+                chunks = store.get_paper_chunks(pid)
+                for c in chunks[:3]:
+                    texts.append(f"[paper={pid}] {c.text[:400]}")
         # 扩大扫描范围：前 12 篇 × 前 4 chunk × 600 字符
         for pid in paper_ids[:12]:
             try:
@@ -730,6 +776,7 @@ class LLMGuidedSearchAgent(AgentNode):
             output=output,
             summary=(
                 f"LLM 引导搜索完成：{self.MAX_ITERATIONS} 轮迭代，"
+                f"{n_evaluated} 个候选通过评估，返回 top-{len(candidates)}"
                 f"{n_evaluated} 个候选通过评估，{n_pruned} 个被剪枝，返回 top-{len(candidates)}"
             ),
         )
@@ -824,6 +871,19 @@ class DiscoveryValidateAgent(AgentNode):
                     output_schema=RelationshipBatchSchema,
                     system=(
                         "你是材料科学发现验证助手。对候选构效关系做文献交叉验证与新颖性评估：\n"
+                        "1. relationship：用一句话陈述构效关系\n"
+                        "2. evidence_paper_ids：从给定 paper_ids 中选取支持该发现的论文\n"
+                        "3. novelty：novel（文献未明确报告）/ partially_known / known\n"
+                        "4. novelty_reason：新颖性判断依据\n"
+                        "5. mechanism：物理机制解释（来自搜索阶段，可补充）\n"
+                        "6. confidence：综合置信度 0~1（证据强度 + 代理置信度 + 合理性）\n"
+                        "known 的发现置信度应较低；novel 的发现需文献间接支撑。"
+                    ),
+                    prompt=(
+                        f"目标性能：{target_prop}\n"
+                        f"可用 paper_ids: {input_obj.paper_ids}\n\n"
+                        f"候选构效关系（含代理预测与机制）：\n"
+                        + json.dumps(input_obj.candidates, ensure_ascii=False, indent=2)
                         "1. relationship：用一句话陈述构效关系（含具体变量组合与预测性能）\n"
                         "2. evidence_paper_ids：从给定 paper_ids 中选取支持该发现的论文\n"
                         "3. novelty：novel / partially_known / known\n"

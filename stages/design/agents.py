@@ -168,6 +168,8 @@ class AtomDecomposeAgent(AgentNode):
                         "把方法拆为 3-6 个最小可独立验证的原子概念，每个概念必须同时给出"
                         "数学公式（LaTeX）与代码实现骨架（Python stub），并标注概念间依赖。"
                         "确保公式与代码一一对应（status=mapped），避免「论文写一套、代码做一套」。"
+                    ),
+                    prompt=(
                         "所有原子概念必须紧扣上述研究主题，不得偏离。"
                     ),
                     prompt=(
@@ -191,6 +193,9 @@ class AtomDecomposeAgent(AgentNode):
                     ]
             except Exception as e:
                 logger.warning("AtomDecompose 真实调用失败，回退占位: %s", e)
+                atom_concepts, formula_code_map = self._placeholder()
+        else:
+            atom_concepts, formula_code_map = self._placeholder()
                 atom_concepts, formula_code_map = self._placeholder(topic)
         else:
             atom_concepts, formula_code_map = self._placeholder(topic)
@@ -209,6 +214,7 @@ class AtomDecomposeAgent(AgentNode):
         )
 
     @staticmethod
+    def _placeholder() -> tuple[list[dict], list[dict]]:
     def _placeholder(topic: str = "") -> tuple[list[dict], list[dict]]:
         topic_label = topic.strip() or "(未指定研究主题)"
         atom_concepts = [
@@ -307,6 +313,15 @@ class MethodFormalizeAgent(AgentNode):
                 resp = registry.complete(
                     task_type=self.task_type,
                     system=(
+                        "你是科研方法形式化助手。基于已分解的原子概念与公式↔代码映射，"
+                        "整合为完整的方法文档（含数学公式与算法伪代码），"
+                        "结构：动机 → 核心概念定义 → 算法伪代码 → 复杂度分析。"
+                        "保持公式与代码的对应关系，输出 Markdown 格式。"
+                    ),
+                    prompt=(
+                        f"原始 idea：{idea_text}\n\n"
+                        f"原子概念：\n{input_obj.atom_concepts}\n\n"
+                        f"公式↔代码映射：\n{input_obj.formula_code_map}"
                         f"研究主题：{topic}\n"
                         "你是科研方法形式化助手。基于已分解的原子概念与公式↔代码映射，"
                         "整合为完整的方法文档（Markdown 格式），必须严格包含以下 5 个章节：\n"
@@ -337,6 +352,38 @@ class MethodFormalizeAgent(AgentNode):
                 method_content = resp.text
             except Exception as e:
                 logger.warning("MethodFormalize 真实调用失败，回退占位: %s", e)
+                method_content = self._placeholder(input_obj)
+        else:
+            method_content = self._placeholder(input_obj)
+
+        output = MethodFormalizeOutput(method_content=method_content)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary="方法形式化完成（基于原子概念整合）",
+        )
+
+    @staticmethod
+    def _placeholder(input_obj: MethodFormalizeInput) -> str:
+        concept_lines = "\n".join(
+            f"- **{c.get('concept_name', '?')}**: {c.get('description', '')} "
+            f"$${c.get('formula_latex', '')}$$"
+            for c in input_obj.atom_concepts
+        ) or "(无原子概念)"
+        return (
+            "## 方法\n\n"
+            "### 动机\n基于 validated idea 形式化方法。\n\n"
+            "### 核心概念\n"
+            f"{concept_lines}\n\n"
+            "### 算法伪代码\n```\n"
+            "for batch in dataloader:\n"
+            "    x = embedding_layer(batch.tokens)\n"
+            "    alpha = softmax(Q @ K.T / sqrt(d_k))\n"
+            "    c = alpha @ V\n"
+            "    output = output_layer(c)\n"
+            "```\n"
+        )
+
                 method_content = self._placeholder(input_obj, topic)
         else:
             method_content = self._placeholder(input_obj, topic)
