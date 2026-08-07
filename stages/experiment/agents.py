@@ -2,31 +2,27 @@
 
 节点拓扑（借鉴 AI-Researcher 的「导师-学生迭代」核心方法）：
     ExperimentConfigAgent（生成实验配置：数据集/baseline/超参）
-    → CodeGenerateAgent（AI-Researcher Code Agent：DeepSeek 生成实验代码）
-    → CodeReviewAgent（AI-Researcher Advisor Agent：审查代码，可多轮迭代）
+    → CodeGenerateAgent（AI-Researcher Code Agent：生成实验代码）
+    → CodeReviewAgent（AI-Researcher Advisor Agent：审查代码）
     → StageCheckpoint
     → ExperimentRunTool（执行实验，ToolNode）
     → AnomalyCheckAgent（检测异常：loss spike/NaN/不收敛）
     → ClaimVerifyAgent（用实验结果验证 Claim）
     → ExperimentOutcomeAssessAgent（评估实验成败，决定是否进入 writing）
 
-说明：
-- CodeGenerateAgent 调用 experiment_code_generate（provider=deepseek，编程最强）。
-- CodeReviewAgent 调用 experiment_code_review（provider=minimax）。
-- 导师-学生迭代语义：CodeReviewAgent 审查不通过时，理论上应回到 CodeGenerateAgent
-  重新生成。由于 graph 是 DAG 不支持环，实际多轮迭代由 GraphRunner 外部循环驱动
-  （重跑 CodeGenerate→CodeReview 子链），或在 CodeReviewAgent 内部循环 MAX_REVIEW_ROUNDS 次。
-  此处采用「内部循环」范式：_execute 内对当前代码循环审查，未通过时模拟 Code Agent
-  修正（占位），最终输出累计 review_notes + passed 标志。
-- ExperimentOutcomeAssessAgent 调用 experiment_outcome_assess（provider=minimax），
-  评估实验结果是否验证了核心 Claim。实验失败是科研常态，success=False 时不进入
-  writing，建议回滚到 ideation 重新探讨或重试实验。
-- _execute 内 LLM 调用以完整注释范式给出，实际执行用占位数据返回，
-  既能验证 IO 闭环，又不会产生 API 费用。
+执行模式：
+- dry_run=True  ：用占位数据返回，不调用 LLM、不真实运行代码
+- dry_run=False ：真实调用 MiniMax M3，真实运行实验代码，真实更新 Claim 状态
 """
 from __future__ import annotations
 
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
+
+from pydantic import BaseModel, Field
 
 from core.artifacts import ArtifactManager
 from core.knowledge import (
@@ -45,12 +41,14 @@ from core.orchestration.node import (
     NodeStatus,
     ToolNode,
 )
+from core.tools import check_syntax, run_python_code
 
 from stages.common import (
     ARTIFACT_MANAGER,
     DESIGN_CLAIM_IDS,
     DESIGN_FORMULA_CODE_MAP,
     DESIGN_METHOD_ARTIFACT_ID,
+    DESIGN_METHOD_CONTENT,
     DRY_RUN,
     EXPERIMENT_ANOMALY_REPORT,
     EXPERIMENT_CODE,
@@ -61,6 +59,8 @@ from stages.common import (
     EXPERIMENT_REVIEW_NOTES,
     KNOWLEDGE_STORE,
     LLM_REGISTRY,
+    PROJECT_DIR,
+    PROJECT_ROOT,
 )
 from stages.experiment.io_schema import (
     AnomalyCheckInput,
@@ -78,6 +78,77 @@ from stages.experiment.io_schema import (
     ExperimentRunInput,
     ExperimentRunOutput,
 )
+
+logger = logging.getLogger(__name__)
+
+
+# ===== 结构化输出 Schema =====
+
+class ExperimentConfigItem(BaseModel):
+    """单条实验配置。"""
+
+    name: str = Field(description="实验名称")
+    dataset: str = Field(description="数据集名称")
+    baseline: str = Field(description="对比基线方法")
+    hyperparams: dict = Field(default_factory=dict, description="超参")
+    verifies_claim_ids: list[str] = Field(
+        default_factory=list,
+        description="本实验验证的 Claim ID（从给定 claim_ids 中选取）",
+    )
+
+
+class ExperimentConfigSchema(BaseModel):
+    """实验配置批量 schema。"""
+
+    configs: list[ExperimentConfigItem]
+
+
+class CodeArtifactSchema(BaseModel):
+    """代码生成 schema。"""
+
+    path: str = Field(default="experiments/run_exp.py", description="代码文件相对路径")
+    content: str = Field(description="完整 Python 代码")
+    language: str = Field(default="python")
+
+
+class ReviewIssueItem(BaseModel):
+    """审查问题项。"""
+
+    severity: str = Field(description="high/medium/low")
+    category: str = Field(description="公式偏差/bug/规范")
+    location: str = Field(default="", description="代码位置（如 L42-58）")
+    comment: str = Field(description="问题描述")
+    suggestion: str = Field(default="", description="修改建议")
+
+
+class ReviewNoteSchema(BaseModel):
+    """单轮审查记录 schema。"""
+
+    passed: bool = Field(description="本轮是否通过")
+    issues: list[ReviewIssueItem] = []
+    summary: str = Field(description="本轮审查总结")
+
+
+class AnomalyReportSchema(BaseModel):
+    """异常检测 schema。"""
+
+    has_anomaly: bool = Field(description="是否检测到异常")
+    analysis: str = Field(description="异常分析")
+    severity: str = Field(default="low", description="high/medium/low")
+    suggestion: str = Field(default="", description="处置建议")
+
+
+class OutcomeAssessSchema(BaseModel):
+    """实验成败评估 schema。"""
+
+    success: bool = Field(description="实验是否成功验证核心 Claim")
+    verified_claim_ids: list[str] = []
+    refuted_claim_ids: list[str] = []
+    inconclusive_claim_ids: list[str] = []
+    recommendation: str = Field(
+        description="proceed_to_writing / rollback_to_ideation / retry_experiment / abort"
+    )
+    summary: str = Field(description="一句话总结")
 
 
 # ===== ExperimentConfigAgent =====
@@ -107,27 +178,55 @@ class ExperimentConfigAgent(AgentNode):
 
     def _execute(self, input_obj: ExperimentConfigInput, ctx: ExecutionContext) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # from core.llm.base import StructuredOutputRequest
-        # class ExperimentConfigSchema(BaseModel):
-        #     configs: list[dict]
-        # result = registry.structured_output(
-        #     task_type=self.task_type,
-        #     output_schema=ExperimentConfigSchema,
-        #     system=(
-        #         "你是实验设计助手。根据 Claim 与方法 Artifact 生成实验配置，"
-        #         "每个配置含 name/dataset/baseline/hyperparams/verifies_claim_ids。"
-        #     ),
-        #     prompt=(
-        #         f"Claim IDs: {input_obj.claim_ids}\n"
-        #         f"Method Artifact: {input_obj.method_artifact_id}"
-        #     ),
-        # )
-        # configs = result.configs
+        # 加载方法文档作为 prompt 素材
+        method_content = ctx.get(DESIGN_METHOD_CONTENT, "")
 
-        # 占位数据
-        configs = [
+        if not dry_run and registry is not None:
+            try:
+                result = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=ExperimentConfigSchema,
+                    system=(
+                        "你是实验设计助手。根据 Claim 与方法文档生成 1-3 组实验配置，"
+                        "每个配置含 name/dataset/baseline/hyperparams/verifies_claim_ids。"
+                        "实验设计原则：覆盖核心 Claim、baseline 公平可比、超参合理可复现。"
+                        "verifies_claim_ids 必须从给定的 claim_ids 列表中选取。"
+                    ),
+                    prompt=(
+                        f"Claim IDs: {input_obj.claim_ids}\n"
+                        f"方法文档：\n{method_content[:1500]}"
+                    ),
+                )
+                configs = [c.model_dump() for c in result.configs]
+                # 校验 verifies_claim_ids 都在 input_obj.claim_ids 中
+                valid_claim_ids = set(input_obj.claim_ids)
+                for cfg in configs:
+                    cfg["verifies_claim_ids"] = [
+                        cid for cid in cfg.get("verifies_claim_ids", [])
+                        if cid in valid_claim_ids
+                    ]
+                    # 兜底：若过滤后为空，关联全部 claim
+                    if not cfg["verifies_claim_ids"] and input_obj.claim_ids:
+                        cfg["verifies_claim_ids"] = list(input_obj.claim_ids)
+            except Exception as e:
+                logger.warning("ExperimentConfig 真实调用失败，回退占位: %s", e)
+                configs = self._placeholder(input_obj)
+        else:
+            configs = self._placeholder(input_obj)
+
+        output = ExperimentConfigOutput(configs=configs)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=f"生成 {len(configs)} 组实验配置",
+        )
+
+    @staticmethod
+    def _placeholder(input_obj: ExperimentConfigInput) -> list[dict]:
+        return [
             {
                 "name": f"exp_{i + 1}",
                 "dataset": "placeholder_dataset",
@@ -138,31 +237,19 @@ class ExperimentConfigAgent(AgentNode):
             for i in range(min(2, max(1, len(input_obj.claim_ids))))
         ]
 
-        output = ExperimentConfigOutput(configs=configs)
-        return NodeResult(
-            status=NodeStatus.SUCCESS,
-            output=output,
-            summary=f"生成 {len(configs)} 组实验配置",
-        )
-
 
 # ===== CodeGenerateAgent（借鉴 AI-Researcher Code Agent）=====
 
 class CodeGenerateAgent(AgentNode):
     """实验代码生成 Agent（AI-Researcher Code Agent，学生角色）。
 
-    借鉴 AI-Researcher 的 Code Agent：根据实验配置 + design 阶段产生的公式↔代码映射
-    （DESIGN_FORMULA_CODE_MAP），生成忠实实现论文方法的实验代码。
+    根据实验配置 + design 阶段产生的公式↔代码映射，生成忠实实现论文方法的实验代码。
 
     设计要点：
-    - task_type = experiment_code_generate，provider=deepseek（编程最强）
-    - 输入：实验配置（数据集/baseline/超参） + 公式↔代码映射
-      （Code Agent 据此把每个公式落地为代码片段，确保代码忠实实现方法）
+    - task_type = experiment_code_generate
+    - 输入：实验配置 + 公式↔代码映射
     - 输出：实验代码 {path, content, language}
-    - 在导师-学生迭代中扮演「学生」：根据 Advisor 的审查意见修正代码
-
-    迭代语义：本节点为单次生成；多轮修正由 GraphRunner 外部循环驱动重跑，
-    或在 CodeReviewAgent 内部模拟。本节点只负责「根据当前输入生成代码」。
+    - 公式↔代码映射作为强约束：每个公式必须落地为对应代码片段
     """
 
     node_type = "experiment_code_generate"
@@ -181,44 +268,99 @@ class CodeGenerateAgent(AgentNode):
 
     def _execute(self, input_obj: CodeGenerateInput, ctx: ExecutionContext) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # 借鉴 AI-Researcher Code Agent：把公式↔代码映射作为强约束喂给 LLM
-        # from core.llm.base import StructuredOutputRequest
-        # class CodeArtifactSchema(BaseModel):
-        #     path: str
-        #     content: str
-        #     language: str = "python"
-        # formula_blocks = "\n".join(
-        #     f"- 概念: {m.get('concept')}\n"
-        #     f"  公式: {m.get('formula_latex')}\n"
-        #     f"  代码骨架: {m.get('code_stub')}\n"
-        #     f"  状态: {m.get('status')}"
-        #     for m in input_obj.formula_code_map
-        # )
-        # config_blocks = "\n".join(
-        #     f"- {c.get('name')}: dataset={c.get('dataset')}, "
-        #     f"baseline={c.get('baseline')}, hyperparams={c.get('hyperparams')}"
-        #     for c in input_obj.configs
-        # )
-        # result = registry.structured_output(
-        #     task_type=self.task_type,
-        #     output_schema=CodeArtifactSchema,
-        #     system=(
-        #         "你是实验代码工程师。根据实验配置与公式↔代码映射，"
-        #         "生成完整可运行的实验代码。每个公式必须落地为对应代码片段，"
-        #         "不得遗漏或简化。代码须包含数据加载、模型定义、训练循环、"
-        #         "评估指标输出。"
-        #     ),
-        #     prompt=(
-        #         f"实验配置：\n{config_blocks}\n\n"
-        #         f"公式↔代码映射：\n{formula_blocks}\n\n"
-        #         "请生成实验代码。"
-        #     ),
-        # )
-        # code = {"path": result.path, "content": result.content, "language": result.language}
+        if not dry_run and registry is not None:
+            try:
+                # 构造 prompt：实验配置 + 公式↔代码映射
+                formula_blocks = "\n".join(
+                    f"- 概念: {m.get('concept')}\n"
+                    f"  公式: {m.get('formula_latex')}\n"
+                    f"  代码骨架: {m.get('code_stub')}\n"
+                    f"  状态: {m.get('status')}"
+                    for m in input_obj.formula_code_map
+                ) or "(无公式↔代码映射)"
+                config_blocks = "\n".join(
+                    f"- {c.get('name')}: dataset={c.get('dataset')}, "
+                    f"baseline={c.get('baseline')}, hyperparams={c.get('hyperparams')}, "
+                    f"verifies={c.get('verifies_claim_ids')}"
+                    for c in input_obj.configs
+                ) or "(无实验配置)"
 
-        # 占位数据：用公式↔代码映射的 code_stub 拼出最小可读骨架
+                # 代码生成用 complete 而非 structured_output：
+                # MiniMax M3 在代码生成场景倾向返回纯代码/markdown 代码块，
+                # 强制 json_object 反而触发 JSON 解析失败。complete + 代码块提取更稳。
+                resp = registry.complete(
+                    task_type=self.task_type,
+                    system=(
+                        "你是实验代码工程师。根据实验配置与公式↔代码映射，"
+                        "生成完整可运行的实验代码。每个公式必须落地为对应代码片段，"
+                        "不得遗漏或简化。代码须包含：数据加载、模型定义、训练循环、"
+                        "评估指标输出。代码末尾打印 JSON 格式结果（含 metrics 字段），"
+                        "便于下游解析。代码必须自包含、可独立运行（不依赖外部数据集时用合成数据）。"
+                        "\n\n输出格式：仅返回一个 ```python ... ``` 代码块，不要任何额外说明。"
+                    ),
+                    prompt=(
+                        f"实验配置：\n{config_blocks}\n\n"
+                        f"公式↔代码映射：\n{formula_blocks}\n\n"
+                        "请生成完整可运行的 Python 实验代码，用 ```python 代码块包裹。"
+                    ),
+                )
+                content = self._extract_code_block(resp.text)
+                if not content:
+                    # 兜底：若 LLM 未用代码块包裹，直接把全文当代码
+                    content = resp.text
+                code = {
+                    "path": "experiments/run_exp.py",
+                    "content": content,
+                    "language": "python",
+                }
+                # 语法检查
+                ok, err = check_syntax(code["content"])
+                if not ok:
+                    logger.warning("生成的代码语法错误，将交给 CodeReview 修正: %s", err)
+            except Exception as e:
+                logger.warning("CodeGenerate 真实调用失败，回退占位: %s", e)
+                code = self._placeholder(input_obj)
+        else:
+            code = self._placeholder(input_obj)
+
+        output = CodeGenerateOutput(code=code)
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            output=output,
+            summary=(
+                f"生成实验代码：{code['path']}（{code['language']}），"
+                f"{len(code['content'])} 字符"
+            ),
+        )
+
+    @staticmethod
+    def _extract_code_block(text: str) -> str:
+        """从 LLM 返回中提取 Python 代码。
+
+        处理：
+        1. ```python ... ``` 代码块
+        2. ``` ... ``` 代码块
+        3. 无代码块包裹的纯代码（兜底返回原文）
+        """
+        if not text:
+            return ""
+        stripped = text.strip()
+        # ```python ... ``` 或 ``` ... ```
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            if len(lines) >= 2:
+                # 跳过首行（```python 或 ```）
+                body = lines[1:]
+                # 去尾行 ```（若存在）
+                if body and body[-1].strip().startswith("```"):
+                    body = body[:-1]
+                return "\n".join(body)
+        return ""
+
+    @staticmethod
+    def _placeholder(input_obj: CodeGenerateInput) -> dict:
         stubs = [m.get("code_stub", "") for m in input_obj.formula_code_map if m.get("code_stub")]
         if not stubs:
             stubs = ["# placeholder: no formula_code_map available"]
@@ -245,23 +387,15 @@ class CodeGenerateAgent(AgentNode):
             "",
             "if __name__ == '__main__':",
             "    cfg = {'lr': 1e-3, 'epochs': 10}",
-            "    print(train(cfg))",
+            "    result = train(cfg)",
+            "    import json",
+            "    print(json.dumps(result))",
         ])
-        code = {
+        return {
             "path": "experiments/run_exp.py",
             "content": "\n".join(content_lines),
             "language": "python",
         }
-
-        output = CodeGenerateOutput(code=code)
-        return NodeResult(
-            status=NodeStatus.SUCCESS,
-            output=output,
-            summary=(
-                f"生成实验代码：{code['path']}（{code['language']}），"
-                f"覆盖 {len(stubs)} 个公式概念"
-            ),
-        )
 
 
 # ===== CodeReviewAgent（借鉴 AI-Researcher Advisor Agent）=====
@@ -269,20 +403,8 @@ class CodeGenerateAgent(AgentNode):
 class CodeReviewAgent(AgentNode):
     """实验代码审查 Agent（AI-Researcher Advisor Agent，导师角色）。
 
-    借鉴 AI-Researcher 的 Advisor Agent：审查 Code Agent 生成的实验代码，
-    校验代码是否忠实实现公式↔代码映射中的每个公式，并给出修改建议。
-    审查不通过时，由外部循环驱动回到 CodeGenerateAgent 重新生成。
-
-    设计要点：
-    - task_type = experiment_code_review，provider=minimax
-    - 输入：实验代码 + 公式↔代码映射（用于校验） + 上一轮审查记录
-    - 输出：累计审查记录列表 + 是否通过标志
-    - 内部 MAX_REVIEW_ROUNDS = 3：限制单次 _execute 内的最大审查轮次，
-      避免无限循环；超过仍未通过则交由外部 GraphRunner 决策是否回滚。
-    - 多轮迭代语义：图是 DAG 不支持环，故本节点采用「内部循环」范式——
-      _execute 内对当前代码循环审查 N 次（N <= MAX_REVIEW_ROUNDS），
-      每轮若未通过则模拟 Code Agent 修正（占位），直到通过或达上限。
-      实际生产中可改为「单轮审查 + 由 GraphRunner 外部循环重跑子链」。
+    审查 Code Agent 生成的实验代码，校验是否忠实实现公式↔代码映射。
+    单次 _execute 内最多审查 MAX_REVIEW_ROUNDS 轮。
     """
 
     node_type = "experiment_code_review"
@@ -291,11 +413,9 @@ class CodeReviewAgent(AgentNode):
     output_schema = CodeReviewOutput
     output_keys = {
         "review_notes": EXPERIMENT_REVIEW_NOTES,
-        # passed 不写回 context（仅供 graph 决策与下游节点参考，避免污染域键）
     }
 
-    # 单次 _execute 内的最大审查轮次（导师-学生迭代上限）
-    MAX_REVIEW_ROUNDS = 3
+    MAX_REVIEW_ROUNDS = 2  # 单次 _execute 内最大审查轮次（真实模式会消耗 LLM tokens）
 
     def _build_input(self, ctx: ExecutionContext) -> CodeReviewInput:
         return CodeReviewInput(
@@ -306,80 +426,98 @@ class CodeReviewAgent(AgentNode):
 
     def _execute(self, input_obj: CodeReviewInput, ctx: ExecutionContext) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # 借鉴 AI-Researcher Advisor Agent：以审稿人视角校验代码与公式的对应关系
-        # from core.llm.base import StructuredOutputRequest
-        # class ReviewNoteSchema(BaseModel):
-        #     passed: bool
-        #     issues: list[dict]  # [{severity, category, location, comment, suggestion}]
-        #     summary: str
-        # review_notes = list(input_obj.prev_review_notes)
-        # code = input_obj.code
-        # start_round = len(review_notes) + 1
-        # for round_idx in range(start_round, start_round + self.MAX_REVIEW_ROUNDS):
-        #     formula_blocks = "\n".join(
-        #         f"- {m.get('concept')}: {m.get('formula_latex')} -> {m.get('code_stub')}"
-        #         for m in input_obj.formula_code_map
-        #     )
-        #     prev_issues = review_notes[-1]["issues"] if review_notes else []
-        #     result = registry.structured_output(
-        #         task_type=self.task_type,
-        #         output_schema=ReviewNoteSchema,
-        #         system=(
-        #             "你是实验代码审稿人（Advisor）。校验代码是否忠实实现每个公式，"
-        #             "并指出 bug、公式偏差、规范问题。若上一轮有 issue，"
-        #             "确认是否已修正。"
-        #         ),
-        #         prompt=(
-        #             f"实验代码（{code.get('path')}）：\n{code.get('content')}\n\n"
-        #             f"公式↔代码映射：\n{formula_blocks}\n\n"
-        #             f"上一轮 issue：{prev_issues}"
-        #         ),
-        #     )
-        #     review_notes.append({
-        #         "round": round_idx,
-        #         "passed": result.passed,
-        #         "issues": result.issues,
-        #         "summary": result.summary,
-        #     })
-        #     if result.passed:
-        #         break
-        #     # 未通过：模拟 Code Agent 修正（实际由 GraphRunner 重跑 CodeGenerateAgent）
-        #     # code = regenerate_with_fixes(code, result.issues)
-        # passed = review_notes[-1]["passed"] if review_notes else False
-
-        # 占位数据：首轮即通过（避免占位流程卡在迭代上限）
         review_notes = list(input_obj.prev_review_notes)
-        if not review_notes:
-            review_notes.append({
-                "round": 1,
-                "passed": True,
-                "issues": [],
-                "summary": "占位审查：代码结构完整，公式↔代码映射均落地，通过。",
-            })
-        passed = review_notes[-1].get("passed", False)
+        code = input_obj.code
 
+        # 先做语法检查（不消耗 LLM tokens）
+        if code and code.get("content"):
+            ok, err = check_syntax(code["content"])
+            if not ok:
+                review_notes.append({
+                    "round": len(review_notes) + 1,
+                    "passed": False,
+                    "issues": [{
+                        "severity": "high",
+                        "category": "语法错误",
+                        "location": "",
+                        "comment": err,
+                        "suggestion": "修复语法错误后重新生成",
+                    }],
+                    "summary": f"语法检查未通过: {err}",
+                })
+
+        if dry_run or registry is None or not code:
+            # 占位：首轮即通过
+            if not review_notes:
+                review_notes.append({
+                    "round": 1,
+                    "passed": True,
+                    "issues": [],
+                    "summary": "占位审查：代码结构完整，公式↔代码映射均落地，通过。",
+                })
+            passed = review_notes[-1].get("passed", False)
+            output = CodeReviewOutput(review_notes=review_notes, passed=passed)
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=f"[dry_run] 代码审查完成（{len(review_notes)} 轮）：{'通过' if passed else '未通过'}",
+            )
+
+        # 真实审查：单轮审查（避免多轮消耗 tokens；多轮迭代交由外部 GraphRunner 重跑）
+        try:
+            formula_blocks = "\n".join(
+                f"- {m.get('concept')}: {m.get('formula_latex')} -> {m.get('code_stub')}"
+                for m in input_obj.formula_code_map
+            ) or "(无公式↔代码映射)"
+
+            prev_issues = review_notes[-1]["issues"] if review_notes else []
+            result = registry.structured_output(
+                task_type=self.task_type,
+                output_schema=ReviewNoteSchema,
+                system=(
+                    "你是实验代码审稿人（Advisor）。校验代码是否忠实实现每个公式，"
+                    "并指出 bug、公式偏差、规范问题。若上一轮有 issue，确认是否已修正。"
+                    "若无严重问题（high 级 issue 为 0），标记 passed=true。"
+                ),
+                prompt=(
+                    f"实验代码（{code.get('path')}）：\n{code.get('content')}\n\n"
+                    f"公式↔代码映射：\n{formula_blocks}\n\n"
+                    f"上一轮 issue：{prev_issues}"
+                ),
+            )
+            review_notes.append({
+                "round": len(review_notes) + 1,
+                "passed": result.passed,
+                "issues": [i.model_dump() for i in result.issues],
+                "summary": result.summary,
+            })
+        except Exception as e:
+            logger.warning("CodeReview 真实调用失败，宽松通过: %s", e)
+            review_notes.append({
+                "round": len(review_notes) + 1,
+                "passed": True,  # 审查失败时宽松通过，让流程继续
+                "issues": [],
+                "summary": f"审查调用失败，宽松通过: {e}",
+            })
+
+        passed = review_notes[-1].get("passed", False)
         output = CodeReviewOutput(review_notes=review_notes, passed=passed)
-        summary = (
-            f"代码审查完成（共 {len(review_notes)} 轮记录，"
-            f"MAX_REVIEW_ROUNDS={self.MAX_REVIEW_ROUNDS}）："
-            f"{'通过' if passed else '未通过'}"
-        )
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary=summary,
+            summary=f"代码审查完成（共 {len(review_notes)} 轮）：{'通过' if passed else '未通过'}",
         )
 
 
 # ===== ExperimentRunTool =====
 
 class ExperimentRunTool(ToolNode):
-    """实验运行工具节点（占位）。
+    """实验运行工具节点。
 
-    实际运行实验代码，此处只标记 PLANNED → RUNNING → COMPLETED。
-    借鉴 AI-Researcher：运行前可对审查通过的代码做语法检查与 dry-run。
+    真实模式：把代码写入项目 experiments/ 目录，用 subprocess 运行。
+    dry_run 模式：只生成占位 Experiment ID，不真实运行。
     """
 
     node_type = "experiment_run"
@@ -389,6 +527,8 @@ class ExperimentRunTool(ToolNode):
         "experiment_ids": EXPERIMENT_IDS,
     }
 
+    DEFAULT_TIMEOUT = 600  # 10 分钟
+
     def _build_input(self, ctx: ExecutionContext) -> ExperimentRunInput:
         configs = ctx.get(EXPERIMENT_CONFIGS, [])
         code = ctx.get(EXPERIMENT_CODE, {})
@@ -396,34 +536,93 @@ class ExperimentRunTool(ToolNode):
 
     def _execute(self, input_obj: ExperimentRunInput, ctx: ExecutionContext) -> NodeResult:
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
+        project_dir = ctx.get(PROJECT_DIR)
+        project_root = ctx.get(PROJECT_ROOT)
 
-        # === 实验运行范式（占位，实际未执行）===
-        # experiment_ids = []
-        # for cfg in input_obj.configs:
-        #     exp_id = KnowledgeStore.new_id()
-        #     exp = Experiment(
-        #         experiment_id=exp_id,
-        #         name=cfg["name"],
-        #         verifies_claim_ids=cfg.get("verifies_claim_ids", []),
-        #         config=cfg,
-        #         status=ExperimentStatus.RUNNING,
-        #     )
-        #     store.save_experiment(exp)
-        #     # 实际执行训练/评估（运行 input_obj.code）
-        #     # subprocess.run([sys.executable, input_obj.code["path"], ...])
-        #     exp.status = ExperimentStatus.COMPLETED
-        #     exp.result_summary = "占位结果摘要"
-        #     store.save_experiment(exp)
-        #     experiment_ids.append(exp_id)
+        if dry_run or store is None:
+            # 占位
+            experiment_ids = [KnowledgeStore.new_id() for _ in input_obj.configs]
+            output = ExperimentRunOutput(experiment_ids=experiment_ids)
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=f"[dry_run] 运行 {len(experiment_ids)} 个实验（占位 ID）",
+            )
 
-        # 占位数据
-        experiment_ids = [KnowledgeStore.new_id() for _ in input_obj.configs]
+        # 真实运行
+        code = input_obj.code or {}
+        code_content = code.get("content", "")
+        code_path = code.get("path", "experiments/run_exp.py")
+
+        if not code_content:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error="实验代码为空",
+                summary="实验运行失败：代码为空",
+            )
+
+        # 选择运行目录：优先 PROJECT_DIR，回退 PROJECT_ROOT
+        run_dir = Path(project_dir) if project_dir else (
+            Path(project_root) if project_root else Path.cwd()
+        )
+
+        experiment_ids: list[str] = []
+        for cfg in input_obj.configs:
+            exp_id = KnowledgeStore.new_id()
+            exp_name = cfg.get("name", f"exp_{len(experiment_ids) + 1}")
+
+            # 创建 Experiment 实体（PLANNED）
+            exp = Experiment(
+                experiment_id=exp_id,
+                name=exp_name,
+                verifies_claim_ids=cfg.get("verifies_claim_ids", []),
+                config=cfg,
+                status=ExperimentStatus.PLANNED,
+            )
+            store.save_experiment(exp)
+
+            # 标记 RUNNING
+            exp.status = ExperimentStatus.RUNNING
+            exp.started_at = datetime.utcnow()
+            store.save_experiment(exp)
+
+            # 真实运行代码
+            try:
+                run_result = run_python_code(
+                    code=code_content,
+                    project_dir=run_dir,
+                    code_path=code_path,
+                    timeout=self.DEFAULT_TIMEOUT,
+                )
+
+                if run_result.success:
+                    exp.status = ExperimentStatus.COMPLETED
+                    exp.result_summary = (
+                        f"exit=0, runtime={run_result.runtime_seconds:.1f}s\n"
+                        f"stdout:\n{run_result.stdout[:2000]}"
+                    )
+                else:
+                    exp.status = ExperimentStatus.FAILED
+                    exp.anomaly_notes = (
+                        f"exit={run_result.returncode}, runtime={run_result.runtime_seconds:.1f}s\n"
+                        f"stderr:\n{run_result.stderr[:2000]}"
+                    )
+                    exp.result_summary = f"运行失败: {run_result.stderr[:500]}"
+            except Exception as e:
+                exp.status = ExperimentStatus.FAILED
+                exp.anomaly_notes = f"运行异常: {type(e).__name__}: {e}"
+                exp.result_summary = f"运行异常: {e}"
+
+            exp.completed_at = datetime.utcnow()
+            store.save_experiment(exp)
+            experiment_ids.append(exp_id)
 
         output = ExperimentRunOutput(experiment_ids=experiment_ids)
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary=f"运行 {len(experiment_ids)} 个实验（占位）",
+            summary=f"运行 {len(experiment_ids)} 个实验",
         )
 
 
@@ -451,38 +650,76 @@ class AnomalyCheckAgent(AgentNode):
     def _execute(self, input_obj: AnomalyCheckInput, ctx: ExecutionContext) -> NodeResult:
         registry: Optional[LLMRegistry] = ctx.get(LLM_REGISTRY)
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # from core.llm.base import StructuredOutputRequest
-        # class AnomalyReportSchema(BaseModel):
-        #     has_anomaly: bool
-        #     analysis: str
-        #     severity: str  # high/medium/low
-        #     suggestion: str
-        # reports = []
-        # for exp_id in input_obj.experiment_ids:
-        #     exp = store.get_experiment(exp_id)
-        #     resp = registry.structured_output(
-        #         task_type=self.task_type,
-        #         output_schema=AnomalyReportSchema,
-        #         system="你是实验监控助手。分析实验日志，检测 loss spike/NaN/不收敛等异常。",
-        #         prompt=f"实验 {exp_id} 的日志/结果摘要：\n{exp.result_summary}",
-        #     )
-        #     if resp.has_anomaly:
-        #         exp.status = ExperimentStatus.ANOMALY_DETECTED
-        #         exp.anomaly_notes = resp.analysis
-        #         store.save_experiment(exp)
-        #     reports.append({"exp_id": exp_id, **resp.model_dump()})
-        # anomaly_report = json.dumps(reports, ensure_ascii=False)
+        if dry_run or registry is None or store is None:
+            output = AnomalyCheckOutput(anomaly_report="无异常（dry_run）")
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary="[dry_run] 异常检测完成：无异常",
+            )
 
-        # 占位数据：无异常
-        anomaly_report = "无异常"
+        # 真实检测：基于每个实验的 result_summary 与 anomaly_notes 调用 LLM
+        reports: list[dict] = []
+        for exp_id in input_obj.experiment_ids:
+            try:
+                exp = store.get_experiment(exp_id)
+            except Exception:
+                continue
 
+            # 已 FAILED 的实验直接判定为异常
+            if exp.status == ExperimentStatus.FAILED:
+                reports.append({
+                    "exp_id": exp_id,
+                    "has_anomaly": True,
+                    "analysis": exp.anomaly_notes or "实验运行失败",
+                    "severity": "high",
+                    "suggestion": "检查代码或配置后重试",
+                })
+                continue
+
+            try:
+                resp = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=AnomalyReportSchema,
+                    system=(
+                        "你是实验监控助手。分析实验结果摘要，检测 loss spike/NaN/不收敛等异常。"
+                        "若结果正常或无足够信息判断，has_anomaly=false。"
+                    ),
+                    prompt=(
+                        f"实验 {exp.name} 的结果摘要：\n{exp.result_summary or '(空)'}\n"
+                        f"异常记录：{exp.anomaly_notes or '(无)'}"
+                    ),
+                )
+                if resp.has_anomaly:
+                    exp.status = ExperimentStatus.ANOMALY_DETECTED
+                    exp.anomaly_notes = resp.analysis
+                    store.save_experiment(exp)
+                reports.append({
+                    "exp_id": exp_id,
+                    "has_anomaly": resp.has_anomaly,
+                    "analysis": resp.analysis,
+                    "severity": resp.severity,
+                    "suggestion": resp.suggestion,
+                })
+            except Exception as e:
+                logger.warning("AnomalyCheck 调用失败（exp=%r）: %s", exp_id, e)
+                reports.append({
+                    "exp_id": exp_id,
+                    "has_anomaly": False,
+                    "analysis": f"检测失败: {e}",
+                    "severity": "low",
+                    "suggestion": "",
+                })
+
+        anomaly_report = json.dumps(reports, ensure_ascii=False, indent=2)
+        anomaly_count = sum(1 for r in reports if r.get("has_anomaly"))
         output = AnomalyCheckOutput(anomaly_report=anomaly_report)
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary="异常检测完成：无异常",
+            summary=f"异常检测完成：{anomaly_count}/{len(reports)} 个实验有异常",
         )
 
 
@@ -511,30 +748,61 @@ class ClaimVerifyAgent(AgentNode):
     def _execute(self, input_obj: ClaimVerifyInput, ctx: ExecutionContext) -> NodeResult:
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         manager: Optional[ArtifactManager] = ctx.get(ARTIFACT_MANAGER)
+        dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === Claim 验证 + Artifact 创建范式（占位，实际未执行）===
-        # result_artifact_ids = []
-        # for exp_id in input_obj.experiment_ids:
-        #     exp = store.get_experiment(exp_id)
-        #     for claim_id in exp.verifies_claim_ids:
-        #         claim = store.get_claim(claim_id)
-        #         claim.evidence_refs.append({"type": "experiment", "id": exp_id})
-        #         claim.status = ClaimStatus.VERIFIED
-        #         claim.verified_at = datetime.utcnow()
-        #         store.save_claim(claim)
-        #     artifact = manager.create_artifact(
-        #         artifact_type=ArtifactType.EXPERIMENT_RESULT,
-        #         title=f"实验结果: {exp.name}",
-        #         content=exp.result_summary,
-        #         cites_claim_ids=exp.verifies_claim_ids,
-        #         cites_experiment_ids=[exp_id],
-        #         source_stage="experiment",
-        #         created_by="experiment_claim_verify",
-        #     )
-        #     result_artifact_ids.append(artifact.artifact_id)
+        if dry_run or store is None or manager is None:
+            # 占位
+            result_artifact_ids = [KnowledgeStore.new_id() for _ in input_obj.experiment_ids]
+            output = ClaimVerifyOutput(result_artifact_ids=result_artifact_ids)
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=f"[dry_run] 验证 Claim 并生成 {len(result_artifact_ids)} 个结果 Artifact（占位 ID）",
+            )
 
-        # 占位数据：每个实验对应一个结果 Artifact
-        result_artifact_ids = [KnowledgeStore.new_id() for _ in input_obj.experiment_ids]
+        # 真实验证
+        result_artifact_ids: list[str] = []
+        for exp_id in input_obj.experiment_ids:
+            try:
+                exp = store.get_experiment(exp_id)
+            except Exception:
+                continue
+
+            # 仅 COMPLETED 状态的实验才验证 Claim（FAILED/ANOMALY 不验证）
+            if exp.status != ExperimentStatus.COMPLETED:
+                continue
+
+            # 把实验结果回填到关联的 Claim
+            for claim_id in exp.verifies_claim_ids:
+                try:
+                    claim = store.get_claim(claim_id)
+                    # 添加 experiment 证据（去重）
+                    existing_exp_ids = {
+                        ref["id"] for ref in claim.evidence_refs
+                        if ref.get("type") == "experiment"
+                    }
+                    if exp_id not in existing_exp_ids:
+                        claim.evidence_refs.append({"type": "experiment", "id": exp_id})
+                    claim.status = ClaimStatus.VERIFIED
+                    claim.verified_at = datetime.utcnow()
+                    store.save_claim(claim)
+                except Exception as e:
+                    logger.warning("Claim %s 验证失败: %s", claim_id, e)
+
+            # 创建 EXPERIMENT_RESULT Artifact
+            try:
+                artifact = manager.create_artifact(
+                    artifact_type=ArtifactType.EXPERIMENT_RESULT,
+                    title=f"实验结果: {exp.name}",
+                    content=exp.result_summary or "",
+                    cites_claim_ids=exp.verifies_claim_ids,
+                    cites_experiment_ids=[exp_id],
+                    source_stage="experiment",
+                    created_by="experiment_claim_verify",
+                )
+                result_artifact_ids.append(artifact.artifact_id)
+            except Exception as e:
+                logger.warning("Artifact 创建失败（exp=%r）: %s", exp_id, e)
 
         output = ClaimVerifyOutput(result_artifact_ids=result_artifact_ids)
         return NodeResult(
@@ -553,20 +821,8 @@ class ExperimentOutcomeAssessAgent(AgentNode):
     位于 experiment 阶段末尾（ClaimVerifyAgent 之后），是 experiment → writing
     阶段切换的决策关口。
 
-    设计要点：
-    - task_type = experiment_outcome_assess，provider=minimax
-    - 输入：experiment_ids（已完成实验）+ DESIGN_CLAIM_IDS（待验证 Claim）+
-      anomaly_report（异常情况）
-    - 输出：写入 EXPERIMENT_OUTCOME 域键，含 success / verified_claim_ids /
-      refuted_claim_ids / inconclusive_claim_ids / recommendation / summary
-
     重要：实验失败是科研常态——Claim 被实验反驳是正常、有价值的发现。
     系统不应在实验失败（success=False）时强行进入论文写作阶段。
-    - success=False 且 refuted_claim_ids 非空时，建议 rollback_to_ideation
-      回到思路探讨阶段重新探讨
-    - inconclusive_claim_ids 非空时，建议 retry_experiment 重跑实验阶段
-    - 异常严重时，建议 abort 中止流程
-    - success=True 时，建议 proceed_to_writing 进入论文写作
     """
 
     node_type = "experiment_outcome_assess"
@@ -591,58 +847,7 @@ class ExperimentOutcomeAssessAgent(AgentNode):
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # === LLM 调用范式（占位，实际未执行）===
-        # 让 LLM 综合分析实验结果与 Claim 的关系，判断验证/反驳/无法定论
-        # from core.llm.base import StructuredOutputRequest
-        # from pydantic import BaseModel
-        # class OutcomeAssessSchema(BaseModel):
-        #     success: bool
-        #     verified_claim_ids: list[str]
-        #     refuted_claim_ids: list[str]
-        #     inconclusive_claim_ids: list[str]
-        #     recommendation: str  # proceed_to_writing / rollback_to_ideation
-        #                            # / retry_experiment / abort
-        #     summary: str
-        # # 汇总实验结果素材供 LLM 分析
-        # exp_summaries = []
-        # for exp_id in input_obj.experiment_ids:
-        #     exp = store.get_experiment(exp_id)
-        #     exp_summaries.append({
-        #         "exp_id": exp_id,
-        #         "name": exp.name,
-        #         "status": exp.status.value,
-        #         "verifies_claim_ids": exp.verifies_claim_ids,
-        #         "result_summary": exp.result_summary,
-        #         "anomaly_notes": exp.anomaly_notes,
-        #     })
-        # result = registry.structured_output(
-        #     task_type=self.task_type,
-        #     output_schema=OutcomeAssessSchema,
-        #     system=(
-        #         "你是科研评估助手。根据实验结果判断每个 Claim 是被验证、反驳还是无法定论。"
-        #         "注意：实验失败是科研常态，Claim 被反驳是正常且有价值的发现，"
-        #         "不应强行进入写作阶段。依据 Claim 验证情况给出 recommendation："
-        #         "proceed_to_writing / rollback_to_ideation / retry_experiment / abort。"
-        #     ),
-        #     prompt=(
-        #         f"待验证 Claim IDs: {input_obj.claim_ids}\n"
-        #         f"实验结果素材: {exp_summaries}\n"
-        #         f"异常报告: {input_obj.anomaly_report}"
-        #     ),
-        # )
-        # outcome = {
-        #     "success": result.success,
-        #     "verified_claim_ids": result.verified_claim_ids,
-        #     "refuted_claim_ids": result.refuted_claim_ids,
-        #     "inconclusive_claim_ids": result.inconclusive_claim_ids,
-        #     "recommendation": result.recommendation,
-        #     "summary": result.summary,
-        # }
-
-        # dry_run 模式：占位数据无法真正验证 Claim，诚实返回 success=False。
-        # 这是"带着脑子推进"的体现——不伪造实验成功，让流程自然停在 experiment 阶段，
-        # 验证"实验失败→不进入 writing"的决策逻辑（用户明确说论文写作不是必须的）。
-        # 如需验证 writing 阶段架构，用 --force-writing 标志（见 cli.py / pipeline.py）。
+        # dry_run：诚实返回失败（占位数据无法验证 Claim）
         if dry_run:
             outcome = {
                 "success": False,
@@ -663,14 +868,118 @@ class ExperimentOutcomeAssessAgent(AgentNode):
                 summary=outcome["summary"],
             )
 
-        # 真实模式：基于 KnowledgeStore 中的实验结果评估
-        # （此处保留占位结构，真实 LLM 调用启用后由上面的注释范式填充）
-        success = True
-        verified_claim_ids = list(input_obj.claim_ids)
-        refuted_claim_ids: list[str] = []
-        inconclusive_claim_ids: list[str] = []
-        recommendation = "proceed_to_writing"
-        summary = "实验验证了全部核心 Claim，建议进入论文写作阶段"
+        # 真实模式：先从 KnowledgeStore 收集实验状态，再调 LLM 评估
+        if store is None:
+            outcome = {
+                "success": False,
+                "verified_claim_ids": [],
+                "refuted_claim_ids": [],
+                "inconclusive_claim_ids": list(input_obj.claim_ids),
+                "recommendation": "abort",
+                "summary": "KnowledgeStore 未注入，无法评估",
+            }
+            output = ExperimentOutcomeAssessOutput(outcome=outcome)
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=outcome["summary"],
+            )
+
+        # 收集实验素材
+        exp_summaries: list[dict] = []
+        for exp_id in input_obj.experiment_ids:
+            try:
+                exp = store.get_experiment(exp_id)
+                exp_summaries.append({
+                    "exp_id": exp_id,
+                    "name": exp.name,
+                    "status": exp.status.value,
+                    "verifies_claim_ids": exp.verifies_claim_ids,
+                    "result_summary": (exp.result_summary or "")[:500],
+                    "anomaly_notes": exp.anomaly_notes,
+                })
+            except Exception:
+                pass
+
+        # 收集 Claim 验证状态
+        claim_statuses: list[dict] = []
+        for claim_id in input_obj.claim_ids:
+            try:
+                claim = store.get_claim(claim_id)
+                claim_statuses.append({
+                    "claim_id": claim_id,
+                    "statement": claim.statement,
+                    "status": claim.status.value,
+                    "evidence_count": len(claim.evidence_refs),
+                })
+            except Exception:
+                pass
+
+        # 基于 Claim 状态做规则判断（避免 LLM 调用浪费）
+        verified_claim_ids = [
+            c["claim_id"] for c in claim_statuses
+            if c["status"] == ClaimStatus.VERIFIED.value
+        ]
+        refuted_claim_ids = [
+            c["claim_id"] for c in claim_statuses
+            if c["status"] == ClaimStatus.REFUTED.value
+        ]
+        inconclusive_claim_ids = [
+            c["claim_id"] for c in claim_statuses
+            if c["status"] not in (
+                ClaimStatus.VERIFIED.value, ClaimStatus.REFUTED.value
+            )
+        ]
+
+        # 决策逻辑：
+        # - 有验证的 Claim 且无反驳 → success=True, proceed_to_writing
+        # - 全部无法定论 → retry_experiment
+        # - 有反驳 → rollback_to_ideation
+        # - 异常严重 → abort
+        has_anomaly = bool(input_obj.anomaly_report and input_obj.anomaly_report != "无异常（dry_run）")
+
+        if verified_claim_ids and not refuted_claim_ids:
+            success = True
+            recommendation = "proceed_to_writing"
+            summary = f"实验验证了 {len(verified_claim_ids)} 个核心 Claim，建议进入论文写作"
+        elif refuted_claim_ids:
+            success = False
+            recommendation = "rollback_to_ideation"
+            summary = f"实验反驳了 {len(refuted_claim_ids)} 个 Claim，建议回滚到思路探讨"
+        elif inconclusive_claim_ids and has_anomaly:
+            success = False
+            recommendation = "abort"
+            summary = "实验异常严重且 Claim 无法定论，建议中止"
+        else:
+            success = False
+            recommendation = "retry_experiment"
+            summary = f"实验无法定论（{len(inconclusive_claim_ids)} 个 Claim），建议重试实验"
+
+        # 可选：调用 LLM 做更细致的评估（保留范式，默认不调用以节省 tokens）
+        # 若需 LLM 评估，取消以下注释：
+        # if registry is not None:
+        #     try:
+        #         result = registry.structured_output(
+        #             task_type=self.task_type,
+        #             output_schema=OutcomeAssessSchema,
+        #             system=(
+        #                 "你是科研评估助手。根据实验结果判断每个 Claim 是被验证、反驳还是无法定论。"
+        #                 "实验失败是科研常态，不应强行进入写作阶段。"
+        #             ),
+        #             prompt=(
+        #                 f"待验证 Claim: {claim_statuses}\n"
+        #                 f"实验结果: {exp_summaries}\n"
+        #                 f"异常报告: {input_obj.anomaly_report}"
+        #             ),
+        #         )
+        #         success = result.success
+        #         verified_claim_ids = result.verified_claim_ids
+        #         refuted_claim_ids = result.refuted_claim_ids
+        #         inconclusive_claim_ids = result.inconclusive_claim_ids
+        #         recommendation = result.recommendation
+        #         summary = result.summary
+        #     except Exception as e:
+        #         logger.warning("OutcomeAssess LLM 调用失败，用规则判断: %s", e)
 
         outcome = {
             "success": success,

@@ -45,6 +45,11 @@ class RelationType(str, Enum):
     ARTIFACT_CITES_CLAIM = "artifact_cites_claim"              # Artifact → Claim
     ARTIFACT_CITES_EXPERIMENT = "artifact_cites_experiment"    # Artifact → Experiment
     IDEA_RELATED_TO_IDEA = "idea_related_to_idea"              # Idea → Idea（关联思路）
+    # 材料知识（Task 2）：Material → Paper 来源
+    MATERIAL_EXTRACTED_FROM_PAPER = "material_extracted_from_paper"  # Material → Paper
+    # 材料性能：Material → Property（via MaterialKnowledge）
+    MATERIAL_HAS_PROPERTY = "material_has_property"            # Material → MaterialProperty
+    MATERIAL_HAS_SYNTHESIS = "material_has_synthesis"          # Material → MaterialSynthesis
 
 
 # ===== Paper =====
@@ -245,3 +250,141 @@ class Relation(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     # 关系元数据（如引证的具体页码、置信度等）
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ===== 材料知识实体（Task 2：材料-性能-合成三元组）=====
+
+class Material(BaseModel):
+    """材料实体：从论文中抽取的材料成分/结构。
+
+    满足赛题「知识抽取」要求：材料成分（化学式、元素组成、掺杂比例）、
+    晶体结构（空间群、晶格参数、对称性）。
+    """
+
+    material_id: EntityId
+    # 材料名称/化学式（规范化，如 "CH3NH3PbI3"、"MAPbI3"）
+    name: str
+    # 化学式（若可解析，如 "Cs0.05FA0.95PbI3"）
+    formula: str = ""
+    # 晶体结构：空间群 / 晶格参数 / 对称性
+    crystal_structure: str = ""
+    space_group: str = ""
+    lattice_parameters: str = ""  # 自由文本（如 "a=8.85 Å, cubic"）
+    symmetry: str = ""
+    # 组成描述（元素/掺杂比例，自由文本）
+    composition: str = ""
+    # 来源论文（证据链溯源）
+    paper_id: Optional[EntityId] = None
+    paper_title: str = ""
+    # 归一化名称（小写去空格，用于跨文献实体链接/去重）
+    norm_name: str = ""
+    # 结构化抽取置信度（0~1）
+    confidence: float = 0.0
+    # 抽取来源 chunk 片段（证据）
+    source_snippet: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"
+
+
+class MaterialProperty(BaseModel):
+    """材料性能实体（性能指标）：ZT、功率因子、热导率等。"""
+
+    property_id: EntityId
+    material_id: EntityId  # 归属材料
+    property_name: str  # 性能名称（如 "ZT"、"thermal_conductivity"）
+    property_name_cn: str = ""  # 中文名（如 "热电优值"）
+    value: str = ""  # 数值（含单位，如 "1.05 at 800K"）
+    value_num: Optional[float] = None  # 数值部分（若可解析）
+    unit: str = ""  # 单位（如 "W/mK"）
+    condition: str = ""  # 测试条件（温度/压力等）
+    paper_id: Optional[EntityId] = None
+    paper_title: str = ""
+    confidence: float = 0.0
+    source_snippet: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"
+
+
+class MaterialSynthesis(BaseModel):
+    """材料合成方法实体（合成条件）：温度、压力、时间、前驱体、工艺步骤。"""
+
+    synthesis_id: EntityId
+    material_id: EntityId  # 归属材料
+    method: str = ""  # 工艺方法（如 "solid-state reaction"、"CVD"）
+    precursors: list[str] = Field(default_factory=list)  # 前驱体
+    temperature: str = ""  # 温度条件（如 "500°C for 12h"）
+    pressure: str = ""  # 压力条件
+    atmosphere: str = ""  # 气氛（如 "Ar"、"N2"）
+    duration: str = ""  # 时间
+    steps: str = ""  # 工艺步骤描述
+    paper_id: Optional[EntityId] = None
+    paper_title: str = ""
+    confidence: float = 0.0
+    source_snippet: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"
+
+
+class ResearchGap(BaseModel):
+    """研究缺口实体（Task 3：Research Gap 识别）。
+
+    由 cross_validate 的 gaps（子问题字符串列表）升级为结构化实体：
+    - 类型：contradiction（矛盾结论）/ unexplored（未被探索方向）/
+      missing_link（缺失知识连接）
+    - 每条 Gap 带证据链（可溯源 paper_id + snippet，满足赛题「文献溯源完整性」）
+    - 可操作性评估与优先级排序，供下游 ideation/discovery/报告消费
+    """
+
+    gap_id: EntityId
+    # 类型：contradiction / unexplored / missing_link
+    gap_type: str = "unexplored"
+    # 一句话陈述（简明，供下游拼 prompt / 展示）
+    statement: str = ""
+    # 详细说明（背景、现状、为什么是缺口）
+    detail: str = ""
+    # 证据链：[{paper_id, title, snippet}]，可溯源
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # 关联材料（如 ["SnSe", "Mg3Sb2"]）
+    related_materials: list[str] = Field(default_factory=list)
+    # 可操作性：high / medium / low
+    actionability: str = "medium"
+    # 优先级 1（最高）~ 5（最低）
+    priority: int = 3
+    # 来源：llm / data_driven / hybrid
+    source: str = "llm"
+    # 建议行动（如 补充实验/进一步检索/组合验证）
+    suggested_actions: list[str] = Field(default_factory=list)
+    # 关联子问题（来源 cross_validate 报告）
+    subquery: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ResearchConflict(BaseModel):
+    """文献冲突实体（交叉验证产出，Task：冲突可视化）。
+
+    由 CrossValidateAgent 的 conflicts（子问题粒度冲突项）落库：
+    - claim：冲突陈述（同一问题下相互矛盾的论断）
+    - sources：立场证据 [{paper_id, title, stance}]，stance ∈ support / refute，
+      供 Web 展示「争议双方来源」（可点击跳转论文页溯源）
+    - resolution：处置建议（采纳来源 / 标记存疑 / 需进一步检索）
+    - 通过 conflict 关联的 paper_id 与 Claim.evidence_refs 求交集，
+      实现「Claim 处于争议中」的标记
+    """
+
+    conflict_id: EntityId
+    # 冲突陈述（子问题粒度）
+    claim: str = ""
+    # 立场证据：[{paper_id, title, stance}]，stance ∈ support / refute
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    # 处置建议
+    resolution: str = ""
+    confidence: float = 0.0
+    # 来源子问题
+    subquery: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    source_stage: str = "research"

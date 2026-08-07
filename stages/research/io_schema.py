@@ -78,13 +78,18 @@ class PaperFetchInput(NodeInput):
 
 
 class PaperFetchOutput(NodeOutput):
-    """论文抓取输出：论文元数据列表。
+    """论文抓取输出：论文元数据列表 + 检索证据链。
 
     每条元数据是 dict，含 title/authors/year/abstract/arxiv_id/source_subquery 等字段。
     source_subquery 标记该候选来自哪个子问题的检索（便于后续交叉验证）。
+
+    evidence_chain 是审计轨迹（赛题证据链要求）：每条记录一次检索命中，
+    含 subquery / source / title / external_id(doc_id|arxiv_id|s2_id) /
+    offset / evidence_score / snippet，由 PaperIngestAgent 落库并关联 paper_id。
     """
 
     paper_metas: list[dict[str, Any]]
+    evidence_chain: list[dict[str, Any]] = []
 
 
 # ===== PaperRelevanceFilterAgent（借鉴 PaperQA filter）=====
@@ -159,3 +164,69 @@ class CrossValidateOutput(NodeOutput):
     """
 
     report: dict[str, Any]
+
+
+# ===== MaterialKnowledgeExtractionAgent（Task 2：材料-性能-合成三元组）=====
+
+class MaterialExtractionInput(NodeInput):
+    """材料知识抽取输入：从入库论文摘要中抽取三元组。"""
+
+    paper_ids: list[str]
+
+
+class MaterialExtractionOutput(NodeOutput):
+    """材料知识抽取输出：结构化材料知识（三元组）。
+
+    materials: [{name, formula, crystal_structure, space_group, lattice_parameters,
+                 symmetry, composition, paper_id, paper_title, confidence,
+                 source_snippet}]
+    properties: [{material_name, property_name, property_name_cn, value, value_num,
+                  unit, condition, paper_id, confidence, source_snippet}]
+    synthesis: [{material_name, method, precursors, temperature, pressure,
+                 atmosphere, duration, steps, paper_id, confidence, source_snippet}]
+    """
+
+    materials: list[dict[str, Any]] = []
+    properties: list[dict[str, Any]] = []
+    synthesis: list[dict[str, Any]] = []
+
+
+# ===== ResearchGapIdentifyAgent（Task 3：研究缺口识别）=====
+
+class ResearchGapInput(NodeInput):
+    """研究缺口识别输入。
+
+    双通道：
+    - 通道 A（LLM）：cross_validate 报告（gaps/conflicts/consensus）+
+      论文摘要 + 材料知识 → 语义级识别矛盾/未探索/断链
+    - 通道 B（数据驱动）：KnowledgeStore 材料库统计规则 →
+      有性能无合成 / 材料体系零覆盖 / 孤立材料 / 性能类别稀疏
+    """
+
+    paper_ids: list[str]
+    subqueries: list[str]
+    cross_validation_report: dict[str, Any] = {}
+
+
+class ResearchGapOutput(NodeOutput):
+    """研究缺口识别输出：结构化 Gap 清单。
+
+    gaps: [
+        {
+            "gap_id": "gap_xxx",
+            "gap_type": "contradiction | unexplored | missing_link",
+            "statement": "一句话陈述",
+            "detail": "详细说明",
+            "evidence": [{"paper_id", "title", "snippet"}, ...],  # 证据链，可溯源
+            "related_materials": ["SnSe", ...],
+            "actionability": "high | medium | low",
+            "priority": 1~5,          # 1 最高
+            "source": "llm | data_driven | hybrid",
+            "suggested_actions": ["补充实验", ...],
+            "subquery": "关联子问题",
+        },
+        ...
+    ]
+    """
+
+    gaps: list[dict[str, Any]] = []

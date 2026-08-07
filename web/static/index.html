@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>科研 Agent 系统</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="app">
+    <!-- 左侧导航 -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1 class="sidebar-title">科研 Agent 系统</h1>
+            <div class="sidebar-subtitle">Scientific Research Assistant</div>
+        </div>
+        <nav class="nav" id="nav">
+            <div class="nav-section">项目</div>
+            <div class="nav-item" data-page="create">
+                <span>新建项目</span>
+            </div>
+            <div class="nav-item" data-page="topic-discovery">
+                <span>方向推荐</span>
+                <span class="nav-badge muted" id="badge-topic-discovery" style="display:none">!</span>
+            </div>
+            <div class="nav-item" data-page="progress">
+                <span>研究进度</span>
+                <span class="nav-badge muted" id="badge-progress" style="display:none">0</span>
+            </div>
+            <div class="nav-section">产出物</div>
+            <div class="nav-item" data-page="papers">
+                <span>论文浏览</span>
+                <span class="nav-badge muted" id="badge-papers" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="materials">
+                <span>材料知识</span>
+                <span class="nav-badge muted" id="badge-materials" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="gaps">
+                <span>研究缺口</span>
+                <span class="nav-badge muted" id="badge-gaps" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="claims">
+                <span>Claim</span>
+                <span class="nav-badge muted" id="badge-claims" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="experiments">
+                <span>实验</span>
+                <span class="nav-badge muted" id="badge-experiments" style="display:none">0</span>
+            </div>
+            <div class="nav-section">路线 A</div>
+            <div class="nav-item" data-page="discovery">
+                <span>构效关系发现</span>
+                <span class="nav-badge muted" id="badge-discovery" style="display:none">0</span>
+            </div>
+            <div class="nav-section">协作</div>
+            <div class="nav-item" data-page="notes">
+                <span>灵感笔记</span>
+                <span class="nav-badge muted" id="badge-notes" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="human">
+                <span>人工节点</span>
+                <span class="nav-badge" id="badge-human" style="display:none">!</span>
+            </div>
+        </nav>
+        <div class="sidebar-notes" id="sidebar-notes" style="display:none">
+            <div class="sidebar-notes-head">
+                <span class="sidebar-notes-title">科研灵感记录</span>
+                <span class="sidebar-notes-link" id="sidebar-note-link">全部 →</span>
+            </div>
+            <textarea class="sidebar-notes-input" id="sidebar-note-input"
+                placeholder="随时记录灵感、质疑或下一步方向…（Ctrl+Enter 提交）" rows="3"></textarea>
+            <button class="sidebar-notes-btn" id="sidebar-note-save">记录灵感</button>
+            <div class="sidebar-notes-list" id="sidebar-notes-list"></div>
+        </div>
+        <div class="sidebar-footer">
+            v0.1.0 · Dry-Run Demo
+        </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <div class="main">
+        <header class="topbar">
+            <div class="topbar-title" id="topbar-title">科研 Agent 系统</div>
+            <div class="topbar-spacer"></div>
+            <div class="topbar-project" id="topbar-project">
+                当前项目：<strong id="current-project-id">未创建</strong>
+            </div>
+        </header>
+        <main class="content" id="content">
+            <!-- 由 app.js 渲染 -->
+            <div class="loading">加载中…</div>
+        </main>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

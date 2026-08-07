@@ -79,7 +79,7 @@ class LLMConfig:
     # MiniMax Token Plan（兼容 OpenAI 协议）
     minimax_api_key_env: str = "MINIMAX_API_KEY"
     minimax_base_url_env: str = "MINIMAX_BASE_URL"
-    minimax_base_url_default: str = "https://api.minimax.io/v1"
+    minimax_base_url_default: str = "https://api.minimaxi.com/v1"
 
     # 小米 MiMo（兼容 OpenAI 协议）
     mimo_api_key_env: str = "MIMO_API_KEY"
