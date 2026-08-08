@@ -73,76 +73,12 @@
             .replace(/'/g, "&#39;");
     }
 
-    // ===== 骨架屏 =====
-    function renderSkeleton(type) {
-        const wrap = el("div", { class: "skeleton-wrap" });
-        if (type === "card") {
-            wrap.appendChild(el("div", { class: "skeleton skeleton-line lg" }));
-            wrap.appendChild(el("div", { class: "skeleton skeleton-line" }));
-            wrap.appendChild(el("div", { class: "skeleton skeleton-line sm" }));
-        } else if (type === "list") {
-            for (let i = 0; i < 4; i++) {
-                wrap.appendChild(el("div", { class: "skeleton skeleton-block" }));
-            }
-        } else if (type === "cards") {
-            for (let i = 0; i < 3; i++) {
-                wrap.appendChild(el("div", { class: "skeleton skeleton-card" }));
-            }
-        } else {
-            wrap.appendChild(el("div", { class: "skeleton skeleton-line lg" }));
-            wrap.appendChild(el("div", { class: "skeleton skeleton-line" }));
-        }
-        return wrap;
-    }
-
-    // ===== 空状态 =====
-    function renderEmptyState(opts) {
-        return el("div", { class: "empty-state" }, [
-            el("div", { class: "empty-state-icon", html: opts.icon || "📭" }),
-            el("div", { class: "empty-state-title", text: opts.title || "暂无数据" }),
-            el("div", { class: "empty-state-desc", text: opts.desc || "" }),
-            opts.actions ? el("div", { class: "empty-state-actions" }, opts.actions) : null,
-        ].filter(Boolean));
-    }
-
-    // ===== 错误状态 =====
-    function renderErrorState(opts) {
-        return el("div", { class: "error-state" }, [
-            el("div", { class: "error-state-icon", text: "⚠" }),
-            el("div", { class: "error-state-title", text: opts.title || "出错了" }),
-            el("div", { class: "error-state-desc", text: opts.desc || opts.message || "" }),
-            opts.actions ? el("div", { class: "error-state-actions" }, opts.actions) : null,
-        ].filter(Boolean));
-    }
-
-    // ===== 全局 Loading 遮罩 =====
-    function showLoadingOverlay(text) {
-        const overlay = document.getElementById("loading-overlay");
-        const txt = document.getElementById("loading-overlay-text");
-        if (overlay) {
-            if (text && txt) txt.textContent = text;
-            overlay.style.display = "flex";
-        }
-    }
-
-    function hideLoadingOverlay() {
-        const overlay = document.getElementById("loading-overlay");
-        if (overlay) overlay.style.display = "none";
-    }
-
-    // ===== 进度指示器 =====
-    function renderProgressIndicator(text) {
-        return el("span", { class: "progress-indicator", "data-tooltip": "系统正在后台运行" }, [
-            el("span", { class: "progress-dot" }),
-            el("span", { text: text || "运行中" }),
-        ]);
-    }
-
     function formatTime(iso) {
         if (!iso) return "—";
         try {
             // 后端存的是 UTC 时间（无时区后缀），前端显示为本地时区
             const d = new Date(iso + "Z"); // 加 Z 标记为 UTC
+            const d = new Date(iso);
             if (isNaN(d.getTime())) return iso;
             const pad = n => String(n).padStart(2, "0");
             return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
@@ -218,48 +154,6 @@
         return bar;
     }
 
-    // ===== 侧边栏全局下载入口（解决下载仅在 Dashboard 可见的问题） =====
-
-    // 项目 ID 切换/创建后刷新侧边栏下载列表
-    function renderSidebarDownload() {
-        const wrap = document.getElementById("sidebar-download");
-        const list = document.getElementById("sidebar-download-list");
-        if (!wrap || !list) return;
-        clear(list);
-        if (!state.currentProjectId) {
-            wrap.style.display = "none";
-            return;
-        }
-        wrap.style.display = "block";
-        // 与 Dashboard 一致的 9 类产物
-        const items = [
-            { type: "full-report", label: "全流程报告", icon: "📋" },
-            { type: "research-report", label: "调研报告", icon: "📚" },
-            { type: "ideas-summary", label: "思路汇总", icon: "💡" },
-            { type: "method-doc", label: "方法文档", icon: "🔬" },
-            { type: "experiment-code", label: "实验代码", icon: "💻" },
-            { type: "experiment-results", label: "实验结果", icon: "📊" },
-            { type: "claims-summary", label: "Claim 汇总", icon: "📝" },
-            { type: "discovery-report", label: "发现报告", icon: "🔍" },
-            { type: "paper-draft", label: "论文稿", icon: "📄" },
-        ];
-        items.forEach(it => {
-            const btn = el("button", {
-                class: "sidebar-download-item",
-                "data-tooltip": `下载 ${it.label}`,
-                onclick: () => {
-                    const fmt = document.getElementById("sidebar-download-fmt")?.value || "md";
-                    const filename = it.type + (fmt === "docx" ? ".docx" : fmt === "pdf" ? ".pdf" : ".md");
-                    downloadFile(it.type, filename, fmt);
-                },
-            }, [
-                el("span", { class: "sidebar-download-icon", text: it.icon }),
-                el("span", { text: it.label }),
-            ]);
-            list.appendChild(btn);
-        });
-    }
-
     async function api(method, path, body) {
         const opts = { method, headers: {} };
         if (body !== undefined) {
@@ -294,7 +188,7 @@
         brainstorm: "候选思路生成（与用户探讨）",
         idea_discuss: "思路讨论（等待人工输入）",
         cp_before_validate: "检查点：思路验证前",
-        idea_validate: "思路可行性/新颖性验证",
+        idea_validate: "思路可行性/���颖性验证",
         claim_draft: "核心 Claim 起草",
         // design 阶段
         atom_decompose: "方法原子概念分解",
@@ -409,9 +303,7 @@
             notes: "灵感笔记",
             human: "人工节点交互",
         };
-        const title = titles[page] || "科研 Agent 系统";
-        const topbarTitle = document.getElementById("topbar-title");
-        if (topbarTitle) topbarTitle.textContent = title;
+        document.getElementById("topbar-title").textContent = titles[page] || "科研 Agent 系统";
         renderPage();
     }
 
@@ -426,69 +318,6 @@
         setActivePage("experiments");
         return false;
     };
-
-    // ===== 顶部状态徽章更新 =====
-    function updateTopbarStatus(status) {
-        const node = document.getElementById("topbar-status");
-        const txt = document.getElementById("topbar-status-text");
-        if (!node || !txt) return;
-        if (!status || status === "idle") {
-            node.style.display = "none";
-            return;
-        }
-        node.style.display = "flex";
-        node.className = "topbar-status";
-        let cls = "", text = "";
-        if (status === "running" || status === "in_progress") { cls = "running"; text = "运行中"; }
-        else if (status === "completed") { cls = "completed"; text = "已完成"; }
-        else if (status === "failed" || status === "blocked") { cls = "failed"; text = "失败"; }
-        else if (status === "pending_human" || status === "pending_review") { cls = "pending"; text = "等待人工"; }
-        else if (status === "experiment_failed") { cls = "failed"; text = "实验失败"; }
-        else { cls = ""; text = status; }
-        node.classList.add(cls);
-        txt.textContent = text;
-    }
-
-    // ===== 快捷键 =====
-    function setupKeyboardShortcuts() {
-        document.addEventListener("keydown", (e) => {
-            // 帮助面板：? 或 F1
-            if (e.key === "?" || e.key === "F1") {
-                e.preventDefault();
-                toggleHelpPanel();
-                return;
-            }
-            // Esc：关闭帮助面板
-            if (e.key === "Escape") {
-                closeHelpPanel();
-                return;
-            }
-            // 数字键 1-8：导航（仅在非输入元素聚焦时）
-            const tag = (e.target.tagName || "").toLowerCase();
-            if (["input", "textarea"].includes(tag) || e.target.isContentEditable) return;
-            if (e.ctrlKey || e.metaKey || e.altKey) return;
-            const map = {
-                "1": "dashboard", "2": "create", "3": "progress",
-                "4": "research-report", "5": "papers", "6": "discovery",
-                "7": "claims", "8": "experiments",
-            };
-            const target = map[e.key];
-            if (target) {
-                e.preventDefault();
-                setActivePage(target);
-            }
-        });
-    }
-
-    function toggleHelpPanel() {
-        const panel = document.getElementById("help-panel");
-        if (panel) panel.style.display = panel.style.display === "none" ? "flex" : "none";
-    }
-
-    function closeHelpPanel() {
-        const panel = document.getElementById("help-panel");
-        if (panel) panel.style.display = "none";
-    }
 
     function updateProjectIdDisplay() {
         document.getElementById("current-project-id").textContent =
@@ -529,11 +358,9 @@
                     state.humanDraft = ""; // 新请求/消失/切换 → 丢弃上一节点草稿，避免串节点
                     renderPage();
                 }
-            }
             const prevPending = state.statusCache && state.statusCache.pending_human;
             state.statusCache = data;
             updateBadges(data);
-            updateTopbarStatus(data.status);
             const curPending = data.pending_human;
             // 人工节点出现时弹出 toast 提醒（仅状态从无→有时）
             if (!prevPending && curPending) {
@@ -541,16 +368,8 @@
             }
             // 仅在 pending 状态变化时重渲染 human 页，避免 textarea 被清空
             const pendingChanged = !!prevPending !== !!curPending;
-            // 仅在 status / counts / stages 等关键字段变化时刷新 progress 页，避免 2s 整页重建导致抖动
             if (state.currentPage === "progress") {
-                const statusChanged = !state.statusCachePrevious
-                    || state.statusCachePrevious.status !== data.status
-                    || JSON.stringify(state.statusCachePrevious.completed_stages || [])
-                       !== JSON.stringify(data.completed_stages || [])
-                    || JSON.stringify(state.statusCachePrevious.counts || {})
-                       !== JSON.stringify(data.counts || {});
-                if (statusChanged) renderPage();
-                state.statusCachePrevious = data;
+                renderPage();
             } else if (state.currentPage === "human" && pendingChanged) {
                 renderPage();
             }
@@ -592,6 +411,7 @@
         const content = document.getElementById("content");
         clear(content);
 
+        if (state.currentPage !== "create" && !state.currentProjectId) {
         if (state.currentPage !== "create" && state.currentPage !== "dashboard" && !state.currentProjectId) {
             content.appendChild(renderNoProject());
             return;
@@ -642,8 +462,7 @@
             return;
         }
 
-        // 骨架屏占位
-        content.appendChild(renderSkeleton("cards"));
+        content.appendChild(el("div", { class: "loading" }, "加载 Dashboard 数据…"));
         try {
             const data = await api("GET", `/api/projects/${state.currentProjectId}/dashboard`);
             state.dashboardCache = data;
@@ -672,16 +491,8 @@
             content.appendChild(renderDashboardActions(data));
         } catch (e) {
             clear(content);
-            content.appendChild(renderErrorState({
-                title: "Dashboard 加载失败",
-                desc: e.message || "请检查网络或项目状态",
-                actions: [
-                    el("button", {
-                        class: "btn",
-                        onclick: () => setActivePage("dashboard"),
-                    }, "重试"),
-                ],
-            }));
+            content.appendChild(el("div", { class: "status-banner danger" },
+                `加载失败：${escapeHtml(e.message)}`));
         }
     }
 
@@ -1069,7 +880,7 @@
             el("textarea", {
                 class: "textarea",
                 id: "topic-input",
-                placeholder: "示例：液冷材料",
+                placeholder: "示例：联邦学习场景下的公平激励机制设计——如何在不暴露客户端私有数据的前提下，避免激励分配被少数强势节点操纵。",
             }),
         ]);
         card.appendChild(topicField);
@@ -1091,10 +902,12 @@
                     style: "flex:1;min-width:0;",
                 }),
                 el("button", { class: "btn btn-outline", id: "resume-project-btn" }, "继续"),
-                el("button", { class: "btn btn-danger btn-outline", id: "delete-project-btn" }, "删除"),
             ]),
         ]);
         card.appendChild(resumeRow);
+
+        ]);
+        card.appendChild(btnRow);
 
         const resultArea = el("div", { id: "create-result" });
         card.appendChild(resultArea);
@@ -1128,47 +941,6 @@
             }
         });
 
-        // 绑定「删除项目」
-        document.getElementById("delete-project-btn").addEventListener("click", async () => {
-            const pid = document.getElementById("resume-project-input").value.trim();
-            if (!pid) {
-                showToast("请输入要删除的 Project ID", "error");
-                return;
-            }
-            if (!confirm(`确认删除项目 ${pid}？\n\n此操作不可恢复：内存中的运行状态将被清理，磁盘上的项目数据（论文/材料/Claim/实验等）也将一并删除。`)) {
-                return;
-            }
-            const btn = document.getElementById("delete-project-btn");
-            btn.disabled = true;
-            btn.textContent = "删除中…";
-            try {
-                await api("DELETE", `/api/projects/${pid}`);
-                // 若删的就是当前项目，重置前端状态并回到「新建项目」页
-                if (state.currentProjectId === pid) {
-                    state.currentProjectId = null;
-                    state.statusCache = null;
-                    state.discoveryCache = null;
-                    state.dashboardCache = null;
-                    state.researchReportCache = null;
-                    state.discoveryDetailCache = null;
-                    state.materialsCvCache = null;
-                    state.methodAlignmentCache = null;
-                    clearProjectFromStorage();
-                    stopPolling();
-                    updateProjectIdDisplay();
-                    renderSidebarNotes();
-                    setActivePage("create");
-                }
-                showToast("项目已删除", "success");
-                document.getElementById("resume-project-input").value = "";
-            } catch (e) {
-                showToast("删除失败：" + e.message, "error");
-            } finally {
-                btn.disabled = false;
-                btn.textContent = "删除";
-            }
-        });
-
         // 绑定按钮
         document.getElementById("create-btn").addEventListener("click", async () => {
             const topic = document.getElementById("topic-input").value.trim();
@@ -1179,7 +951,6 @@
             const btn = document.getElementById("create-btn");
             btn.disabled = true;
             btn.textContent = "创建中…";
-            showLoadingOverlay("正在创建项目…");
             try {
                 const data = await api("POST", "/api/projects", { topic });
                 state.currentProjectId = data.project_id;
@@ -1187,7 +958,6 @@
                 updateProjectIdDisplay();
                 startPolling();
                 renderSidebarNotes();
-                renderSidebarDownload();
                 renderCreateResult(resultArea, data);
                 showToast("项目已创建", "success");
             } catch (e) {
@@ -1195,7 +965,6 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = "启动科研";
-                hideLoadingOverlay();
             }
         });
 
@@ -1265,7 +1034,6 @@
                         saveProjectToStorage(p.project_id);
                         updateProjectIdDisplay();
                         startPolling();
-                        renderSidebarDownload();
                         showToast(`已切换到项目：${p.topic.slice(0, 30)}`, "success");
                         setActivePage("dashboard");
                     },
@@ -1422,6 +1190,11 @@
         container.appendChild(actions);
     }
 
+    async function startPipeline() {
+        if (!state.currentProjectId) return;
+        try {
+            await api("POST", `/api/projects/${state.currentProjectId}/run`);
+            showToast("Pipeline 已启动", "success");
     async function startPipeline(forceWriting) {
         if (!state.currentProjectId) return;
         try {
@@ -1650,18 +1423,7 @@
             });
             showToast("已选择：" + (rec.topic || ""), "success");
             state.humanFingerprint = null; // 强制下一轮刷新页面状态
-            // 后端在方向推荐完成后会自动启动 research pipeline。
-            // 这里轮询几次确认状态从 completed 切到 running 即跳到进度页。
-            setActivePage("progress");
-            for (let k = 0; k < 8; k++) {
-                await pollStatus();
-                if (state.statusCache && state.statusCache.status === "running") {
-                    renderPage();
-                    return;
-                }
-                await new Promise(r => setTimeout(r, 500));
-            }
-            renderPage();
+            pollStatus();
         } catch (e) {
             showToast("选择失败：" + e.message, "error");
         }
@@ -1674,21 +1436,7 @@
             state.discoveryCache = data;
             if (data.run_mode) state.runMode = data.run_mode;
             setBadge("badge-discovery", (data.relationships || []).length || null);
-            // 仅在数据真有变化时增量更新（避免每 2s 整页重建导致抖动）
-            if (state.currentPage === "discovery") {
-                const rels = data.relationships || [];
-                const prevRels = state.discoveryCachePrevious?.relationships || [];
-                const summary = data.discovery_summary || {};
-                const prevSummary = state.discoveryCachePrevious?.discovery_summary || {};
-                const relsChanged = JSON.stringify(rels) !== JSON.stringify(prevRels);
-                const summaryChanged = JSON.stringify(summary) !== JSON.stringify(prevSummary);
-                if (relsChanged || summaryChanged) {
-                    // 仅关系或汇总变化时整页重建（用户感知有意义的变化）
-                    renderPage();
-                }
-                // 否则不重渲染，避免滚动位置丢失、勾选状态丢失、闪屏
-                state.discoveryCachePrevious = data;
-            }
+            if (state.currentPage === "discovery") renderPage();
         } catch (e) {
             // 静默
         }
@@ -1739,47 +1487,6 @@
         ]);
         content.appendChild(actionCard);
 
-        // 实验失败时的特殊操作区
-        if (data.status === "experiment_failed") {
-            const failCard = el("div", { class: "card" }, [
-                el("div", { class: "card-title" }, "实验未通过 — 后续选择"),
-                el("p", { class: "muted small" },
-                    "实验未能验证核心 Claim 是科研常态。你可以选择：强制进入论文写作（撰写负面结果），" +
-                    "或重新启动 Pipeline 从思路探讨阶段改进方案。"),
-            ]);
-            const failRow = el("div", { class: "btn-row" }, [
-                el("button", {
-                    class: "btn btn-warning",
-                    onclick: () => startPipeline(true),
-                }, "强制生成论文（撰写负面结果）"),
-                el("button", {
-                    class: "btn btn-secondary",
-                    onclick: () => {
-                        startPipeline();
-                        showToast("已重新启动 Pipeline，将从未完成阶段继续", "success");
-                    },
-                }, "重新启动 Pipeline"),
-            ]);
-            failCard.appendChild(failRow);
-            content.appendChild(failCard);
-        }
-
-        // 中止/失败时的操作
-        if (data.status === "aborted" || data.status === "failed") {
-            const errCard = el("div", { class: "card" }, [
-                el("div", { class: "card-title" }, "异常恢复"),
-                el("p", { class: "muted small" },
-                    `Pipeline 状态为 ${data.status}。可以重新启动继续执行，或查看错误信息。`),
-                el("div", { class: "btn-row" }, [
-                    el("button", {
-                        class: "btn btn-success",
-                        onclick: () => startPipeline(),
-                    }, "重新启动"),
-                ]),
-            ]);
-            content.appendChild(errCard);
-        }
-
         // 节点历史时间线
         content.appendChild(renderTimeline(data.node_history || []));
     }
@@ -1829,6 +1536,68 @@
                 "任务已启动，正在初始化…"));
         }
         return card;
+        ]);
+        const actionRow = el("div", { class: "btn-row" }, [
+            el("button", {
+                class: "btn btn-success",
+                onclick: () => startPipeline(),
+            }, data.status === "created" ? "启动 Pipeline" : "继续 / 重启"),
+            el("button", {
+                class: "btn btn-accent",
+                onclick: () => startDiscovery(),
+            }, "启动构效关系发现"),
+            el("button", {
+                class: "btn btn-secondary",
+                onclick: () => { pollStatus(); showToast("已刷新", "success"); },
+            }, "刷新状态"),
+        ]);
+        actionCard.appendChild(actionRow);
+
+        // 实验失败时的特殊操作区
+        if (data.status === "experiment_failed") {
+            const failCard = el("div", { class: "card" }, [
+                el("div", { class: "card-title" }, "实验未通过 — 后续选择"),
+                el("p", { class: "muted small" },
+                    "实验未能验证核心 Claim 是科研常态。你可以选择：强制进入论文写作（撰写负面结果），" +
+                    "或重新启动 Pipeline 从思路探讨阶段改进方案。"),
+            ]);
+            const failRow = el("div", { class: "btn-row" }, [
+                el("button", {
+                    class: "btn btn-warning",
+                    onclick: () => startPipeline(true),
+                }, "强制生成论文（撰写负面结果）"),
+                el("button", {
+                    class: "btn btn-secondary",
+                    onclick: () => {
+                        startPipeline();
+                        showToast("已重新启动 Pipeline，将从未完成阶段继续", "success");
+                    },
+                }, "重新启动 Pipeline"),
+            ]);
+            failCard.appendChild(failRow);
+            content.appendChild(failCard);
+        }
+
+        // 中止/失败时的操作
+        if (data.status === "aborted" || data.status === "failed") {
+            const errCard = el("div", { class: "card" }, [
+                el("div", { class: "card-title" }, "异常恢复"),
+                el("p", { class: "muted small" },
+                    `Pipeline 状态为 ${data.status}。可以重新启动继续执行，或查看错误信息。`),
+                el("div", { class: "btn-row" }, [
+                    el("button", {
+                        class: "btn btn-success",
+                        onclick: () => startPipeline(),
+                    }, "重新启动"),
+                ]),
+            ]);
+            content.appendChild(errCard);
+        }
+
+        content.appendChild(actionCard);
+
+        // 节点历史时间线
+        content.appendChild(renderTimeline(data.node_history || []));
     }
 
     function renderStageProgress(data) {
@@ -1977,6 +1746,53 @@
                         break;
                     }
                 }
+            const data = await api("GET", `/api/projects/${state.currentProjectId}/papers`);
+            clear(content);
+            content.appendChild(el("div", { class: "page-header" }, [
+                el("h2", { class: "page-title" }, "论文浏览"),
+                el("p", { class: "page-desc" }, `共 ${data.papers.length} 篇入库论文，点击条目展开详情。`),
+            ]));
+
+            // 上传文献入口（与新建页共用 renderUploadCard）
+            if (state.currentProjectId) {
+                content.appendChild(renderUploadCard());
+            }
+
+            if (!data.papers.length) {
+                content.appendChild(el("div", { class: "list-empty" }, "暂无论文，可使用上方表单上传，或启动 research 阶段自动检索"));
+                return;
+            }
+            const list = el("div", { class: "list" });
+            data.papers.forEach(p => list.appendChild(renderPaperItem(p)));
+            content.appendChild(list);
+
+            // 若从证据跳转过来，自动展开匹配的论文并滚动到视口
+            if (state.pendingPaperId) {
+                const targetId = state.pendingPaperId;
+                state.pendingPaperId = null;  // 消费一次
+                setTimeout(() => {
+                    const items = list.querySelectorAll(".list-item");
+                    for (const it of items) {
+                        const body = it.querySelector(".list-item-body");
+                        if (body && body.textContent.includes(targetId)) {
+                            it.scrollIntoView({ behavior: "smooth", block: "center" });
+                            return;
+                        }
+                        // 未展开则先展开再判断
+                        if (!it.classList.contains("expanded")) {
+                            it.click();
+                            const b = it.querySelector(".list-item-body");
+                            if (b && b.textContent.includes(targetId)) {
+                                it.scrollIntoView({ behavior: "smooth", block: "center" });
+                                return;
+                            } else {
+                                it.classList.remove("expanded");
+                                const rm = it.querySelector(".list-item-body");
+                                if (rm) rm.remove();
+                            }
+                        }
+                    }
+                }, 100);
             }
         } catch (e) {
             clear(content);
@@ -2073,6 +1889,46 @@
                         <dt>证据片段</dt><dd>${escapeHtml(p.snippet || "（无片段）")}</dd>
                         <dt>命中子问题</dt><dd>${escapeHtml(p.subquery || "—")}</dd>
                     </dl>
+    function renderPaperItem(p) {
+        const item = el("div", { class: "list-item" });
+        const head = el("div", { class: "list-item-head" }, [
+            el("span", { class: "list-item-title", text: p.title || "(无标题)" }),
+            p.year ? el("span", { class: "badge badge-info badge-stage", text: String(p.year) }) : null,
+            p.venue ? el("span", { class: "badge badge-neutral", text: p.venue }) : null,
+            el("span", { class: "list-item-meta", text: (p.authors || []).slice(0, 2).join(", ") + ((p.authors || []).length > 2 ? " et al." : "") }),
+        ]);
+        item.appendChild(head);
+
+        item.addEventListener("click", () => {
+            const expanded = item.classList.toggle("expanded");
+            if (expanded && !item.querySelector(".list-item-body")) {
+                const body = el("div", { class: "list-item-body" });
+                // 构建链接区
+                let linksHtml = "";
+                if (p.url) {
+                    linksHtml += `<a href="${escapeHtml(p.url)}" target="_blank" class="link-external">原文链接 ↗</a>`;
+                }
+                if (p.doi_url) {
+                    linksHtml += ` <a href="${escapeHtml(p.doi_url)}" target="_blank" class="link-external">DOI ↗</a>`;
+                }
+                if (p.pdf_path) {
+                    linksHtml += ` <span class="badge badge-success">本地 PDF 已上传</span>`;
+                }
+                if (!linksHtml) linksHtml = '<span class="muted">无可用链接</span>';
+
+                body.innerHTML = `
+                    <dl>
+                        <dt>Paper ID</dt><dd>${escapeHtml(p.paper_id)}</dd>
+                        <dt>作者</dt><dd>${escapeHtml((p.authors || []).join(", ") || "—")}</dd>
+                        <dt>年份</dt><dd>${p.year || "—"}</dd>
+                        <dt>会议/期刊</dt><dd>${escapeHtml(p.venue || "—")}</dd>
+                        <dt>arXiv ID</dt><dd>${escapeHtml(p.arxiv_id || "—")}</dd>
+                        <dt>DOI</dt><dd>${escapeHtml(p.doi || "—")}</dd>
+                        <dt>链接</dt><dd>${linksHtml}</dd>
+                        <dt>来源</dt><dd>${escapeHtml(p.source_stage || "—")}</dd>
+                        <dt>入库时间</dt><dd>${escapeHtml(formatTime(p.created_at))}</dd>
+                    </dl>
+                    ${p.abstract ? `<div class="mt-8 abstract-box"><strong>摘要</strong><br>${escapeHtml(p.abstract)}</div>` : ""}
                 `;
                 item.appendChild(body);
             }
@@ -2236,43 +2092,6 @@
             (p.authors || []).slice(0, 2).join(", ") + ((p.authors || []).length > 2 ? " et al." : "") }));
         const head = el("div", { class: "list-item-head" }, headChildren);
         item.appendChild(head);
-
-        item.addEventListener("click", () => {
-            const expanded = item.classList.toggle("expanded");
-            if (expanded && !item.querySelector(".list-item-body")) {
-                const body = el("div", { class: "list-item-body" });
-                let linksHtml = "";
-                if (p.url) {
-                    linksHtml += `<a href="${escapeHtml(p.url)}" target="_blank" class="link-external">原文链接 ↗</a>`;
-                }
-                if (p.doi_url) {
-                    linksHtml += ` <a href="${escapeHtml(p.doi_url)}" target="_blank" class="link-external">DOI ↗</a>`;
-                }
-                if (p.pdf_path) {
-                    linksHtml += ` <span class="badge badge-success">本地 PDF 已上传</span>`;
-                }
-                if (!linksHtml) linksHtml = '<span class="muted">无可用链接</span>';
-
-                body.innerHTML = `
-                    <dl>
-                        <dt>Paper ID</dt><dd>${escapeHtml(p.paper_id)}</dd>
-                        <dt>作者</dt><dd>${escapeHtml((p.authors || []).join(", ") || "—")}</dd>
-                        <dt>年份</dt><dd>${p.year || "—"}</dd>
-                        <dt>会议/期刊</dt><dd>${escapeHtml(p.venue || "—")}</dd>
-                        <dt>arXiv ID</dt><dd>${escapeHtml(p.arxiv_id || "—")}</dd>
-                        <dt>DOI</dt><dd>${escapeHtml(p.doi || "—")}</dd>
-                        <dt>链接</dt><dd>${linksHtml}</dd>
-                        <dt>来源</dt><dd>${escapeHtml(p.source_stage || "—")}</dd>
-                        <dt>入库时间</dt><dd>${escapeHtml(formatTime(p.created_at))}</dd>
-                    </dl>
-                    ${p.abstract ? ('<div class="mt-8 abstract-box"><strong>摘要</strong><br>' + escapeHtml(p.abstract) + '</div>') : ""}
-                `;
-                item.appendChild(body);
-            }
-        });
-        return item;
-    }
-
     // ===== 4. Claim 页 =====
 
     let claimsFilter = "all";
@@ -2309,7 +2128,7 @@
                 : data.claims.filter(c => c.status === claimsFilter);
 
             if (!filtered.length) {
-                content.appendChild(el("div", { class: "list-empty" }, "无符合条件的 Claim"));
+                content.appendChild(el("div", { class: "list-empty" }, "���符合条件的 Claim"));
                 return;
             }
             const list = el("div", { class: "list" });
@@ -2917,6 +2736,185 @@
         return card;
     }
 
+    // ===== 4. Claim 页 =====
+
+    let claimsFilter = "all";
+
+    async function renderClaims(content) {
+        content.appendChild(el("div", { class: "loading" }, "加载中…"));
+        try {
+            const data = await api("GET", `/api/projects/${state.currentProjectId}/claims`);
+            clear(content);
+            content.appendChild(el("div", { class: "page-header" }, [
+                el("h2", { class: "page-title" }, "Claim 列表"),
+                el("p", { class: "page-desc" }, `共 ${data.claims.length} 条 Claim。`),
+            ]));
+
+            // 筛选条
+            const statuses = ["all", "draft", "evidence_linked", "verified", "refuted", "superseded"];
+            const bar = el("div", { class: "filter-bar" });
+            bar.appendChild(el("span", { class: "filter-label", text: "状态筛选：" }));
+            statuses.forEach(s => {
+                const chip = el("span", {
+                    class: "filter-chip" + (claimsFilter === s ? " active" : ""),
+                    text: s === "all" ? "全部" : s,
+                    onclick: () => {
+                        claimsFilter = s;
+                        renderPage();
+                    },
+                });
+                bar.appendChild(chip);
+            });
+            content.appendChild(bar);
+
+            const filtered = claimsFilter === "all"
+                ? data.claims
+                : data.claims.filter(c => c.status === claimsFilter);
+
+            if (!filtered.length) {
+                content.appendChild(el("div", { class: "list-empty" }, "无符合条件的 Claim"));
+                return;
+            }
+            const list = el("div", { class: "list" });
+            filtered.forEach(c => list.appendChild(renderClaimItem(c)));
+            content.appendChild(list);
+        } catch (e) {
+            clear(content);
+            content.appendChild(el("div", { class: "status-banner danger" },
+                `加载失败：${escapeHtml(e.message)}`));
+        }
+    }
+
+    function renderClaimItem(c) {
+        const item = el("div", { class: "list-item" });
+        const conflicts = c.conflicts || [];
+        const hasConflict = conflicts.length > 0;
+        const headChildren = [
+            el("span", { class: "list-item-title", text: c.statement || "(无陈述)" }),
+            el("span", { class: "badge badge-info", text: c.role || "contribution" }),
+            el("span", { class: "badge badge-neutral", text: `证据 ${c.evidence_count}` }),
+        ];
+        // 争议徽章：相关文献冲突非空 → 争议中（红色）；否则按状态
+        if (hasConflict) {
+            headChildren.push(el("span", {
+                class: "badge badge-danger claim-conflict-badge",
+                text: `争议中 ${conflicts.length}`,
+                title: "该 Claim 的证据来源存在文献冲突，点击展开查看争议双方",
+            }));
+        }
+        item.appendChild(el("div", { class: "list-item-head" }, headChildren));
+        // 状态徽章单独一行（便于颜色识别）
+        item.appendChild(el("div", { class: "mt-8" }));
+        item.insertAdjacentHTML("beforeend", `<div class="mt-8">${statusBadge(c.status)}</div>`);
+
+        item.addEventListener("click", () => {
+            const expanded = item.classList.toggle("expanded");
+            if (expanded && !item.querySelector(".list-item-body")) {
+                const body = el("div", { class: "list-item-body" });
+                body.innerHTML = `
+                    <dl>
+                        <dt>Claim ID</dt><dd class="mono">${escapeHtml(c.claim_id)}</dd>
+                        <dt>陈述</dt><dd>${escapeHtml(c.statement)}</dd>
+                        <dt>角色</dt><dd>${escapeHtml(c.role || "—")}</dd>
+                        <dt>状态</dt><dd>${escapeHtml(c.status)}</dd>
+                        <dt>证据数</dt><dd>${c.evidence_count}</dd>
+                        <dt>来源 Idea</dt><dd class="mono">${escapeHtml(c.source_idea_id || "—")}</dd>
+                        <dt>创建时间</dt><dd class="mono">${escapeHtml(formatTime(c.created_at))}</dd>
+                        <dt>验证时间</dt><dd class="mono">${escapeHtml(formatTime(c.verified_at))}</dd>
+                    </dl>
+                    ${(c.evidence_refs && c.evidence_refs.length)
+                        ? `<div class="mt-8"><strong>证据引用（可点击溯源）：</strong></div><div class="claim-ev-refs">${c.evidence_refs.map(r => renderClaimEvidenceRef(r)).join("")}</div>`
+                        : ""}
+                    ${hasConflict
+                        ? `<div class="mt-8"><strong class="claim-conflict-title">文献冲突（争议中）：</strong></div>
+                           <div class="claim-conflicts">${conflicts.map(cf => renderConflictCard(cf)).join("")}</div>`
+                        : ""}
+                `;
+                item.appendChild(body);
+            }
+        });
+        return item;
+    }
+
+    // 渲染 Claim 的一条证据引用（type=paper → 跳转论文页定位；type=experiment → 跳转实验页）
+    function renderClaimEvidenceRef(r) {
+        const id = r.id || "";
+        const label = r.type === "paper" ? "论文" : (r.type === "experiment" ? "实验" : "证据");
+        const chunk = r.chunk_id ? ` · chunk ${escapeHtml(String(r.chunk_id).slice(-8))}` : "";
+        if (r.type === "paper" && id) {
+            return `<span class="claim-ev-ref">
+                <span class="badge badge-neutral">${label}</span>
+                <a href="#" class="claim-ev-link" data-ev-type="paper" data-ev-id="${escapeHtml(id)}"
+                   onclick="return window.__sraGoPaper && window.__sraGoPaper('${escapeHtml(id)}')">
+                   ${escapeHtml(id.slice(-12))}</a>${chunk}</span>`;
+        }
+        if (r.type === "experiment" && id) {
+            return `<span class="claim-ev-ref">
+                <span class="badge badge-neutral">${label}</span>
+                <a href="#" class="claim-ev-link" data-ev-type="experiment" data-ev-id="${escapeHtml(id)}"
+                   onclick="return window.__sraGoExperiment && window.__sraGoExperiment('${escapeHtml(id)}')">
+                   ${escapeHtml(id.slice(-12))}</a>${chunk}</span>`;
+        }
+        return `<span class="claim-ev-ref"><span class="badge badge-neutral">${label}</span> ${escapeHtml(id.slice(-12))}${chunk}</span>`;
+    }
+
+    // 渲染一条文献冲突（争议双方来源 + 处置建议）
+    function renderConflictCard(cf) {
+        const sources = (cf.sources || []).map(s => {
+            const stance = s.stance === "refute" ? "反对" : "支持";
+            const stanceCls = s.stance === "refute" ? "conflict-stance-refute" : "conflict-stance-support";
+            const title = s.title || s.paper_id || "来源论文";
+            const link = s.paper_id
+                ? `<a href="#" class="claim-ev-link" onclick="return window.__sraGoPaper && window.__sraGoPaper('${escapeHtml(s.paper_id)}')">查看论文 →</a>`
+                : "";
+            return `<div class="conflict-src ${stanceCls}">
+                <span class="conflict-stance-tag">${stance}</span>
+                <span class="conflict-src-title">${escapeHtml(title)}</span>
+                ${link}</div>`;
+        }).join("");
+        const conf = Number(cf.confidence || 0);
+        return `<div class="conflict-card">
+            <div class="conflict-head">
+                <span class="gap-tag gap-tag-danger">文献冲突</span>
+                <span class="gap-priority">置信度 ${conf.toFixed(2)}</span>
+                ${cf.subquery ? `<span class="gap-source">子问题：${escapeHtml(cf.subquery)}</span>` : ""}
+            </div>
+            <div class="conflict-claim">${escapeHtml(cf.claim || "(无冲突陈述)")}</div>
+            <div class="conflict-srcs">${sources}</div>
+            ${cf.resolution ? `<div class="conflict-resolution"><strong>处置建议：</strong>${escapeHtml(cf.resolution)}</div>` : ""}
+        </div>`;
+    }
+
+    // ===== 5. 实验页 =====
+
+    async function renderExperiments(content) {
+        content.appendChild(el("div", { class: "loading" }, "加载中…"));
+                const body = el("div", { class: "list-item-body" });
+                body.innerHTML = `
+                    <dl>
+                        <dt>Claim ID</dt><dd>${escapeHtml(c.claim_id)}</dd>
+                        <dt>陈述</dt><dd>${escapeHtml(c.statement)}</dd>
+                        <dt>角色</dt><dd>${escapeHtml(c.role || "—")}</dd>
+                        <dt>状态</dt><dd>${escapeHtml(c.status)}</dd>
+                        <dt>证据数</dt><dd>${c.evidence_count}</dd>
+                        <dt>来源 Idea</dt><dd>${escapeHtml(c.source_idea_id || "—")}</dd>
+                        <dt>创建时间</dt><dd>${escapeHtml(formatTime(c.created_at))}</dd>
+                        <dt>验证时间</dt><dd>${escapeHtml(formatTime(c.verified_at))}</dd>
+                    </dl>
+                `;
+                // 证据引用：可点击跳转
+                if (c.evidence_refs && c.evidence_refs.length) {
+                    const evBox = el("div", { class: "mt-8" });
+                    evBox.appendChild(el("strong", {}, "证据引用："));
+                    evBox.appendChild(buildEvidenceList(c.evidence_refs));
+                    body.appendChild(evBox);
+                }
+                item.appendChild(body);
+            }
+        });
+        return item;
+    }
+
     // ===== 5. 实验页 =====
 
     async function renderExperiments(content) {
@@ -2989,6 +2987,7 @@
 
     function buildExperimentBody(e) {
         return `
+                body.innerHTML = `
                     <dl>
                         <dt>Experiment ID</dt><dd class="mono">${escapeHtml(e.experiment_id)}</dd>
                         <dt>名称</dt><dd>${escapeHtml(e.name)}</dd>
@@ -3004,12 +3003,16 @@
                         ? `<div class="mt-8"><strong>实验配置：</strong></div><pre class="code-block">${escapeHtml(JSON.stringify(e.config, null, 2))}</pre>`
                         : ""}
                 `;
+                item.appendChild(body);
+            }
+        });
+        return item;
     }
 
     // ===== 5b. 构效关系发现页（路线 A）=====
 
     async function renderDiscovery(content) {
-        content.appendChild(renderSkeleton("cards"));
+        content.appendChild(el("div", { class: "loading" }, "加载中…"));
         try {
             const data = await api("GET", `/api/projects/${state.currentProjectId}/discoveries`);
             state.discoveryCache = data;
@@ -3020,7 +3023,7 @@
             content.appendChild(el("div", { class: "page-header" }, [
                 el("h2", { class: "page-title" }, "构效关系发现"),
                 el("p", { class: "page-desc" },
-                    "路线 A：调研 → 假设生成 → 搜索空间 → LLM 引导搜索 → 验证 → 汇报。下方展示发现工作流的产出与节点执行状态。" +
+                    "路线 A：调研 → 假设生成 → 搜索空间 → LLM 引导搜索 → 验证 → 汇报。下方展示发现工作流的产出与节点执行状态。"),
                     "面向材料科学领域的文献驱动科学发现：从调研文献中提取构效关系假设，用 MCTS + LLM 融合搜索验证，产出含证据链的新颖发现。"),
             ]));
 
@@ -3052,18 +3055,8 @@
                 content.insertAdjacentHTML("beforeend",
                     `<div class="status-banner info"><span class="status-dot"></span><strong>discovery 模式</strong><span>当前项目已启用构效关系发现工作流，结果随轮询自动刷新。</span></div>`);
             } else if (!data.run_mode) {
-                // 空状态：未启动时引导用户启动
-                content.appendChild(renderEmptyState({
-                    icon: "🔬",
-                    title: "尚未运行构效关系发现",
-                    desc: "点击下方按钮启动发现工作流。系统将从调研文献中自动提取构效关系假设，用 MCTS + LLM 融合搜索验证，产出新颖的科学发现。",
-                    actions: [
-                        el("button", {
-                            class: "btn btn-accent",
-                            onclick: () => startDiscovery(),
-                        }, "启动构效关系发现"),
-                    ],
-                }));
+                content.insertAdjacentHTML("beforeend",
+                    `<div class="status-banner warning"><span class="status-dot"></span><strong>未启动</strong><span>尚未运行构效关系发现，点击下方按钮启动。</span></div>`);
             }
 
             // 操作区
@@ -3072,7 +3065,6 @@
                 el("div", { class: "btn-row" }, [
                     el("button", {
                         class: "btn btn-accent",
-                        "data-tooltip": "启动 5 步发现流程：假设 → 搜索空间 → MCTS → 验证 → 报告",
                         onclick: () => startDiscovery(),
                     }, "启动构效关系发现"),
                     el("button", {
@@ -3102,444 +3094,12 @@
             }
 
             // relationships 列表
-            const rels = data.relationships || [];
-            if (rels.length > 0) {
-                content.appendChild(renderRelationships(rels));
-            } else if (data.run_mode === "discovery") {
-                // 运行中但暂无结果
-                content.appendChild(renderEmptyState({
-                    icon: "🧪",
-                    title: "发现流程进行中中",
-                    desc: "MCTS + LLM 引导搜索正在执行。完成后将显示构效关系发现列表。",
-                }));
-            }
-
-            // 客观指标层（材料方向评审关键）：让评委/专家一眼可见「数据支持的质量」
-
-            // 1) Research Gap 质量评分（上游入口）
-            const gapScores = data.gap_scores || [];
-            if (gapScores.length) {
-                content.appendChild(renderGapQualityScores(gapScores, data.gap_summary || {}));
-            }
-
-            // 2) Discovery 可信度评分（核心：5 维度 + 风险标签）
-            const relScores = data.reliability_scores || [];
-            if (relScores.length) {
-                content.appendChild(renderReliabilityScores(relScores, data.reliability_summary || {}));
-            }
-
-            // 3) 专家辅助包（让材料专家感到「对我有用」）
-            const expertAssists = data.expert_assistances || [];
-            if (expertAssists.length) {
-                content.appendChild(renderExpertAssistances(expertAssists));
-            }
+            content.appendChild(renderRelationships(data.relationships || []));
         } catch (e) {
             clear(content);
-            content.appendChild(renderErrorState({
-                title: "发现数据加载失败",
-                desc: e.message || "请稍后重试",
-                actions: [
-                    el("button", {
-                        class: "btn",
-                        onclick: () => setActivePage("discovery"),
-                    }, "重试"),
-                ],
-            }));
+            content.appendChild(el("div", { class: "status-banner danger" },
+                `加载失败：${escapeHtml(e.message)}`));
         }
-    }
-
-    // ===== 客观指标层渲染（材料方向评审关键） =====
-
-    function renderGapQualityScores(scores, summary) {
-        const card = el("div", { class: "card" });
-        card.appendChild(el("div", { class: "card-title" },
-            `Research Gap 质量评分（4 维度 + 综合分，共 ${scores.length} 条）`));
-        card.appendChild(el("div", { class: "card-desc" },
-            "客观评分依据知识库真实数据：文献稀缺度 · 可填补性 · 行动清晰度 · 关联强度。" +
-            "综合分 = 0.30×稀缺度 + 0.30×可填补性 + 0.20×行动清晰度 + 0.20×关联强度。"));
-
-        // 顶部汇总
-        if (summary && (summary.avg_quality_score != null || summary.top_gap_id)) {
-            const topId = summary.top_gap_id || (scores[0] || {}).gap_id;
-            const topScore = (scores.find(s => s.gap_id === topId) || {}).quality_score;
-            const summaryBox = el("div", { class: "metric-summary" }, [
-                el("div", { class: "metric-summary-cell" }, [
-                    el("div", { class: "metric-summary-label" }, "平均综合分"),
-                    el("div", { class: "metric-summary-val", text:
-                        summary.avg_quality_score != null ? summary.avg_quality_score.toFixed(2) : "—" }),
-                ]),
-                el("div", { class: "metric-summary-cell" }, [
-                    el("div", { class: "metric-summary-label" }, "Top Gap 综合分"),
-                    el("div", { class: "metric-summary-val", text:
-                        topScore != null ? topScore.toFixed(2) : "—" }),
-                    el("div", { class: "metric-summary-sub mono", text:
-                        topId ? `id=${escapeHtml(topId)}` : "" }),
-                ]),
-                el("div", { class: "metric-summary-cell" }, [
-                    el("div", { class: "metric-summary-label" }, "评分版本"),
-                    el("div", { class: "metric-summary-val mono small", text:
-                        (summary.score_version || "v1.0") }),
-                ]),
-            ]);
-            card.appendChild(summaryBox);
-        }
-
-        const list = el("div", { class: "metric-list" });
-        scores.forEach((s, idx) => {
-            const item = el("div", { class: "list-item metric-item" });
-            const dims = s.dimensions || {};
-            const overall = s.quality_score != null ? s.quality_score.toFixed(2) : "0.00";
-
-            const head = el("div", { class: "list-item-head" }, [
-                el("span", { class: "metric-rank", text: `#${idx + 1}` }),
-                el("span", { class: "list-item-title mono small", text: s.gap_id || "" }),
-                el("span", { class: "badge badge-accent", text: `综合分 ${overall}` }),
-            ]);
-            item.appendChild(head);
-
-            if (s.reasoning) {
-                item.appendChild(el("div", { class: "metric-reasoning small", text: s.reasoning }));
-            }
-
-            // 4 维度条
-            const bars = [
-                { label: "文献稀缺度", val: dims.literature_scarcity || 0, weight: 0.30 },
-                { label: "可填补性", val: dims.fillability || 0, weight: 0.30 },
-                { label: "行动清晰度", val: dims.action_clarity || 0, weight: 0.20 },
-                { label: "关联强度", val: dims.related_strength || 0, weight: 0.20 },
-            ];
-            item.appendChild(buildMetricBars(bars));
-
-            // 权重说明
-            const weightNote = bars.map(b => `${b.label} ${(b.weight * 100).toFixed(0)}%`).join(" · ");
-            item.appendChild(el("div", { class: "metric-weights small muted", text: `权重：${weightNote}` }));
-
-            list.appendChild(item);
-        });
-        card.appendChild(list);
-        return card;
-    }
-
-    function renderReliabilityScores(scores, summary) {
-        const card = el("div", { class: "card" });
-        card.appendChild(el("div", { class: "card-title" },
-            `Discovery 可信度评分（5 维度 + 风险标签，共 ${scores.length} 条）`));
-        card.appendChild(el("div", { class: "card-desc" },
-            "让评委一眼可见「该发现是否值得实验验证」。综合分 = 0.25×外推安全性 + 0.20×文献密度 + 0.20×机制论证 + 0.20×交叉验证 + 0.15×CI 合理性。"));
-
-        // 顶部汇总（按风险标签聚合）
-        if (summary && (summary.avg_reliability != null || summary.by_risk_label)) {
-            const byRisk = summary.by_risk_label || {};
-            const cells = [
-                el("div", { class: "metric-summary-cell" }, [
-                    el("div", { class: "metric-summary-label" }, "平均可信度"),
-                    el("div", { class: "metric-summary-val", text:
-                        summary.avg_reliability != null ? summary.avg_reliability.toFixed(2) : "—" }),
-                ]),
-            ];
-            // 推荐级别计数
-            ["✓ 强烈推荐实验验证", "△ 谨慎推荐（建议先小规模验证）", "○ 高风险高回报（需 DFT 计算支撑）", "✗ 不建议直接实验（建议改进机制论证）"].forEach(label => {
-                const n = byRisk[label] || 0;
-                cells.push(el("div", { class: "metric-summary-cell" }, [
-                    el("div", { class: "metric-summary-label" }, label),
-                    el("div", { class: "metric-summary-val", text: String(n) }),
-                ]));
-            });
-            card.appendChild(el("div", { class: "metric-summary" }, cells));
-        }
-
-        const list = el("div", { class: "metric-list" });
-        scores.forEach((s, idx) => {
-            const item = el("div", { class: "list-item metric-item" });
-            const dims = s.dimensions || {};
-            const overall = s.reliability_score != null ? s.reliability_score.toFixed(2) : "0.00";
-            const riskCls = (s.risk_label || "").startsWith("✓")
-                ? "badge-success"
-                : (s.risk_label || "").startsWith("△")
-                    ? "badge-warning"
-                    : (s.risk_label || "").startsWith("○")
-                        ? "badge-info"
-                        : "badge-danger";
-
-            const head = el("div", { class: "list-item-head" }, [
-                el("span", { class: "metric-rank", text: `#${idx + 1}` }),
-                el("span", { class: "list-item-title mono small", text: s.claim_id || "" }),
-                el("span", { class: `badge ${riskCls}`, text: s.risk_label || "未评级" }),
-                el("span", { class: "badge badge-accent", text: `综合分 ${overall}` }),
-            ]);
-            item.appendChild(head);
-
-            // 元信息：novelty + LLM confidence
-            const meta = el("div", { class: "metric-meta small muted" });
-            meta.innerHTML =
-                `新颖性：<strong>${escapeHtml(s.novelty || "unknown")}</strong>` +
-                (s.llm_confidence != null
-                    ? ` · LLM 置信度：<strong>${s.llm_confidence.toFixed(2)}</strong>`
-                    : "") +
-                (s.score_version ? ` · 评分版本：${escapeHtml(s.score_version)}` : "");
-            item.appendChild(meta);
-
-            // 5 维度条
-            const bars = [
-                { label: "外推安全性", val: dims.extrapolation_safety || 0, weight: 0.25, sub: `风险 ${dims.extrapolation_risk != null ? dims.extrapolation_risk.toFixed(2) : "—"}` },
-                { label: "文献密度", val: dims.literature_density || 0, weight: 0.20 },
-                { label: "机制论证", val: dims.mechanism_evidence || 0, weight: 0.20 },
-                { label: "交叉验证", val: dims.cross_validation_consistency || 0, weight: 0.20 },
-                { label: "CI 合理性", val: dims.interval_reasonability || 0, weight: 0.15 },
-            ];
-            item.appendChild(buildMetricBars(bars));
-
-            const weightNote = bars.map(b => `${b.label} ${(b.weight * 100).toFixed(0)}%`).join(" · ");
-            item.appendChild(el("div", { class: "metric-weights small muted", text: `权重：${weightNote}` }));
-
-            list.appendChild(item);
-        });
-        card.appendChild(list);
-        return card;
-    }
-
-    function renderExpertAssistances(assistances) {
-        const card = el("div", { class: "card" });
-        card.appendChild(el("div", { class: "card-title" },
-            `专家辅助包（最近邻工艺 + 性能对照 + DFT 协议 + 实验 protocol，共 ${assistances.length} 条）`));
-        card.appendChild(el("div", { class: "card-desc" },
-            "针对每条构效关系发现，自动从材料库拉取：① 相似材料合成工艺 ② 性能基准对照表 ③ DFT 计算任务清单 ④ 实验 protocol（温区 / 表征 / 统计设计）。"));
-
-        const list = el("div", { class: "metric-list" });
-        assistances.forEach((pkg, idx) => {
-            const item = el("div", { class: "list-item metric-item collapsible" });
-            const head = el("div", { class: "list-item-head" }, [
-                el("span", { class: "metric-rank", text: `#${idx + 1}` }),
-                el("span", { class: "list-item-title mono small", text: pkg.claim_id || "" }),
-                el("span", { class: "badge badge-neutral", text: pkg.material || "—" }),
-                el("span", { class: "badge badge-accent", text:
-                    `${(pkg.nearest_neighbor_synthesis || []).length} 工艺` }),
-                el("span", { class: "badge badge-neutral", text:
-                    `${(pkg.similar_materials_table || []).length} 对照` }),
-                el("span", { class: "badge badge-neutral", text:
-                    `${(pkg.dft_verification_protocol || {}).tasks ? pkg.dft_verification_protocol.tasks.length : 0} DFT` }),
-                el("button", {
-                    class: "btn btn-secondary btn-small",
-                    onclick: (ev) => {
-                        ev.stopPropagation();
-                        item.classList.toggle("expanded");
-                    },
-                }, "展开/收起"),
-            ]);
-            item.appendChild(head);
-
-            // 默认收起，仅展示摘要
-            const summary = el("div", { class: "small muted mt-8" });
-            const nn = (pkg.nearest_neighbor_synthesis || [])[0];
-            summary.innerHTML = nn
-                ? `推荐合成工艺：<strong>${escapeHtml(nn.method || "—")}</strong>` +
-                  (nn.temperature ? ` · 温度：${escapeHtml(String(nn.temperature))}` : "") +
-                  (nn.source_material ? ` · 借鉴自 ${escapeHtml(nn.source_material)}` : "")
-                : "（暂无最近邻工艺数据）";
-            item.appendChild(summary);
-
-            // 展开后的详细内容
-            const body = el("div", { class: "metric-expert-body" });
-
-            // 1) 最近邻工艺
-            const nnSection = el("div", { class: "metric-section" });
-            nnSection.appendChild(el("div", { class: "metric-section-title" }, "① 最近邻材料合成工艺"));
-            const nnList = pkg.nearest_neighbor_synthesis || [];
-            if (nnList.length) {
-                const tbl = el("table", { class: "metric-table" });
-                tbl.appendChild(el("thead", {}, el("tr", {}, [
-                    el("th", {}, "材料"),
-                    el("th", {}, "相似度"),
-                    el("th", {}, "方法"),
-                    el("th", {}, "前驱体"),
-                    el("th", {}, "温度"),
-                    el("th", {}, "气氛"),
-                    el("th", {}, "时长"),
-                    el("th", {}, "来源"),
-                ])));
-                const tbody = el("tbody");
-                nnList.forEach(r => {
-                    tbody.appendChild(el("tr", {}, [
-                        el("td", { class: "mono small" }, escapeHtml(r.source_material || "")),
-                        el("td", { text: r.similarity != null ? r.similarity.toFixed(2) : "—" }),
-                        el("td", {}, escapeHtml(r.method || "—")),
-                        el("td", { class: "small" }, escapeHtml((r.precursors || []).join(", ") || "—")),
-                        el("td", { class: "small" }, escapeHtml(String(r.temperature || "—"))),
-                        el("td", { class: "small" }, escapeHtml(r.atmosphere || "—")),
-                        el("td", { class: "small" }, escapeHtml(r.duration || "—")),
-                        el("td", { class: "mono small" }, r.source_paper_id ? `[${escapeHtml(r.source_paper_id)}]` : "—"),
-                    ]));
-                });
-                tbl.appendChild(tbody);
-                nnSection.appendChild(tbl);
-            } else {
-                nnSection.appendChild(el("div", { class: "list-empty" }, "暂无"));
-            }
-            body.appendChild(nnSection);
-
-            // 2) 类似材料性能对照
-            const simSection = el("div", { class: "metric-section" });
-            simSection.appendChild(el("div", { class: "metric-section-title" }, "② 类似材料性能对照"));
-            const sims = pkg.similar_materials_table || [];
-            if (sims.length) {
-                const tbl = el("table", { class: "metric-table" });
-                tbl.appendChild(el("thead", {}, el("tr", {}, [
-                    el("th", {}, "材料"),
-                    el("th", {}, "相似度"),
-                    el("th", {}, "目标性能"),
-                    el("th", {}, "数值"),
-                    el("th", {}, "单位"),
-                    el("th", {}, "测试条件"),
-                    el("th", {}, "来源"),
-                ])));
-                const tbody = el("tbody");
-                sims.forEach(r => {
-                    tbody.appendChild(el("tr", {}, [
-                        el("td", { class: "mono small" }, escapeHtml(r.material || "")),
-                        el("td", { text: r.similarity != null ? r.similarity.toFixed(2) : "—" }),
-                        el("td", { class: "small" }, escapeHtml(r.target_property || "—")),
-                        el("td", { class: "mono small", text: r.value != null ? String(r.value) : "—" }),
-                        el("td", { class: "small" }, escapeHtml(r.unit || "")),
-                        el("td", { class: "small" }, escapeHtml(r.condition || "—")),
-                        el("td", { class: "mono small" }, r.source_paper_id ? `[${escapeHtml(r.source_paper_id)}]` : "—"),
-                    ]));
-                });
-                tbl.appendChild(tbody);
-                simSection.appendChild(tbl);
-            } else {
-                simSection.appendChild(el("div", { class: "list-empty" }, "暂无"));
-            }
-            body.appendChild(simSection);
-
-            // 3) DFT protocol
-            const dft = pkg.dft_verification_protocol || {};
-            const dftSection = el("div", { class: "metric-section" });
-            dftSection.appendChild(el("div", { class: "metric-section-title" }, "③ DFT 计算验证协议"));
-            if (dft.tasks && dft.tasks.length) {
-                dftSection.appendChild(el("div", { class: "small" }, [
-                    el("strong", {}, "计算任务："),
-                    " ",
-                    escapeHtml(dft.tasks.join(" / ")),
-                ]));
-                if (dft.expected_outputs && dft.expected_outputs.length) {
-                    dftSection.appendChild(el("div", { class: "small mt-4" }, [
-                        el("strong", {}, "预期产物："),
-                        " ",
-                        escapeHtml(dft.expected_outputs.join(" / ")),
-                    ]));
-                }
-                const refRows = [
-                    dft.reference_space_group ? `参考空间群：${dft.reference_space_group}` : null,
-                    dft.reference_lattice_parameters ? `参考晶格参数：${dft.reference_lattice_parameters}` : null,
-                    dft.software_recommendations ? `推荐软件：${(dft.software_recommendations || []).join(" / ")}` : null,
-                    dft.estimated_cpu_hours ? `预计 CPU·h：${dft.estimated_cpu_hours}` : null,
-                ].filter(Boolean);
-                if (refRows.length) {
-                    dftSection.appendChild(el("div", { class: "small mt-4 muted", text: refRows.join(" · ") }));
-                }
-                if (dft.notes) {
-                    dftSection.appendChild(el("div", { class: "small mt-4 muted", text: dft.notes }));
-                }
-            } else if (dft.warning) {
-                dftSection.appendChild(el("div", { class: "list-empty" }, dft.warning));
-            } else {
-                dftSection.appendChild(el("div", { class: "list-empty" }, "暂无"));
-            }
-            body.appendChild(dftSection);
-
-            // 4) 实验 protocol
-            const exp = pkg.experiment_protocol || {};
-            const expSection = el("div", { class: "metric-section" });
-            expSection.appendChild(el("div", { class: "metric-section-title" }, "④ 实验 Protocol"));
-            if (exp.synthesis) {
-                const syn = exp.synthesis;
-                expSection.appendChild(el("div", { class: "small mt-4" }, [
-                    el("strong", {}, "合成："),
-                    " 方法：",
-                    escapeHtml(syn.method_recommendation || "—"),
-                    syn.atmosphere ? ` · 气氛：${escapeHtml(syn.atmosphere)}` : "",
-                    syn.post_treatment ? ` · 后处理：${escapeHtml(syn.post_treatment)}` : "",
-                    syn.form ? ` · 形态：${escapeHtml(syn.form)}` : "",
-                ]));
-            }
-            if (exp.characterization && exp.characterization.length) {
-                expSection.appendChild(el("div", { class: "small mt-4" }, [
-                    el("strong", {}, "表征："),
-                    " " + escapeHtml(exp.characterization.join(" · ")),
-                ]));
-            }
-            if (exp.performance_test) {
-                const pt = exp.performance_test;
-                const rng = (pt.temperature_range_K || []).length === 2
-                    ? `${pt.temperature_range_K[0]}–${pt.temperature_range_K[1]} K（步长 ${pt.temperature_step_K} K）`
-                    : "—";
-                expSection.appendChild(el("div", { class: "small mt-4" }, [
-                    el("strong", {}, "性能测试："),
-                    ` 目标=${escapeHtml(pt.target_property || "—")}` +
-                    (pt.target_unit ? `（${escapeHtml(pt.target_unit)}）` : "") +
-                    ` · 温区=${rng}` +
-                    (pt.instruments && pt.instruments.length
-                        ? ` · 仪器=${escapeHtml(pt.instruments.join(" / "))}`
-                        : "") +
-                    (pt.estimated_time_per_sample
-                        ? ` · 单样时长=${escapeHtml(pt.estimated_time_per_sample)}`
-                        : ""),
-                ]));
-            }
-            if (exp.controls && exp.controls.length) {
-                expSection.appendChild(el("div", { class: "small mt-4" }, [
-                    el("strong", {}, "对照："),
-                    " " + escapeHtml(exp.controls.join(" · ")),
-                ]));
-            }
-            if (exp.statistical_design) {
-                const sd = exp.statistical_design;
-                expSection.appendChild(el("div", { class: "small mt-4 muted", text:
-                    `统计设计：${sd.sample_count || ""} · ${sd.uncertainty_quantification || ""} · ${sd.publication_threshold || ""}` }));
-            }
-            if (exp.duration_estimate_weeks) {
-                expSection.appendChild(el("div", { class: "small mt-4 muted", text:
-                    `预计周期：${escapeHtml(exp.duration_estimate_weeks)}` }));
-            }
-            body.appendChild(expSection);
-
-            // 默认折叠（仅 head + summary 显示），点击 button 才展开
-            body.style.display = "none";
-            head.querySelector("button").addEventListener("click", (ev) => {
-                ev.stopPropagation();
-                const shown = body.style.display !== "none";
-                body.style.display = shown ? "none" : "block";
-            });
-            item.appendChild(body);
-
-            list.appendChild(item);
-        });
-        card.appendChild(list);
-        return card;
-    }
-
-    function buildMetricBars(bars) {
-        const wrap = el("div", { class: "metric-bars" });
-        bars.forEach(b => {
-            const row = el("div", { class: "metric-bar-row" });
-            row.appendChild(el("span", { class: "metric-bar-label", text: b.label }));
-            const track = el("div", { class: "metric-bar-track" });
-            const pct = Math.max(0, Math.min(100, Math.round((b.val || 0) * 100)));
-            const fill = el("span", { class: "metric-bar-fill" });
-            fill.style.width = `${pct}%`;
-            // 颜色：≥0.7 绿 / 0.4-0.7 蓝 / <0.4 橙红
-            if (b.val >= 0.7) fill.style.background = "linear-gradient(90deg, #27ae60, #5dd39e)";
-            else if (b.val >= 0.4) fill.style.background = "linear-gradient(90deg, #2f80ed, #6ea8f5)";
-            else fill.style.background = "linear-gradient(90deg, #e67e22, #f0a35e)";
-            track.appendChild(fill);
-            row.appendChild(track);
-            row.appendChild(el("span", { class: "metric-bar-val mono", text: b.val.toFixed(2) }));
-            if (b.sub) {
-                row.appendChild(el("span", { class: "metric-bar-sub small muted", text: b.sub }));
-            }
-            wrap.appendChild(row);
-        });
-        return wrap;
     }
 
     function renderDiscoverySummary(summary) {
@@ -3676,6 +3236,7 @@
                         ${r.evidence_refs && r.evidence_refs.length
                             ? `<div class="mt-8"><strong>证据引用：</strong></div><pre class="code-block">${escapeHtml(JSON.stringify(r.evidence_refs, null, 2))}</pre>`
                             : ""}
+                    `;
                     `;
                     // 证据引用：可点击跳转（替换原 JSON <pre> 块，提升可读性）
                     if (r.evidence_refs && r.evidence_refs.length) {
@@ -3840,121 +3401,6 @@
                     el("button", { class: "btn btn-secondary", onclick: () => pollStatus() }, "立即刷新"),
                 ]),
             ]);
-            content.appendChild(card);
-            return;
-        }
-
-        // 有 pending 请求：渲染 prompt / options / textarea / 提交按钮
-        const prompt = pending.prompt || "(无 prompt)";
-        const options = Array.isArray(pending.options) ? pending.options : [];
-        const allowFreeText = pending.allow_free_text !== false;
-        const ctxDict = pending.context || {};
-
-        const card = el("div", { class: "card human-card" });
-
-        // Prompt 文本
-        card.appendChild(el("div", { class: "card-title" }, "Pipeline 等待你的输入"));
-        const promptBox = el("pre", { class: "human-prompt", text: prompt });
-        card.appendChild(promptBox);
-
-        // 上下文信息（如推荐主题、节点 ID 等）
-        const ctxKeys = Object.keys(ctxDict);
-        if (ctxKeys.length) {
-            const ctxBox = el("div", { class: "human-context mt-12" });
-            ctxBox.appendChild(el("div", { class: "small muted mb-8" }, "上下文信息："));
-            ctxKeys.forEach(k => {
-                ctxBox.appendChild(el("div", { class: "small" },
-                    `${k}: ${typeof ctxDict[k] === "object" ? JSON.stringify(ctxDict[k]) : String(ctxDict[k])}`));
-            });
-            card.appendChild(ctxBox);
-        }
-
-        // 选项按钮（若有）
-        let selectedOption = null; // 当前选中的 option
-        if (options.length) {
-            const optsBox = el("div", { class: "human-options mt-16" });
-            optsBox.appendChild(el("div", { class: "field-label mb-8" }, "选择一项："));
-            options.forEach((opt, i) => {
-                const optLabel = typeof opt === "string" ? opt : (opt.label || opt.value || JSON.stringify(opt));
-                const optValue = typeof opt === "string" ? opt : (opt.value || optLabel);
-                const btn = el("button", {
-                    class: "btn btn-outline human-option-btn",
-                    text: `[${i + 1}] ${optLabel}`,
-                    onclick: () => {
-                        selectedOption = optValue;
-                        // 视觉选中态
-                        optsBox.querySelectorAll(".human-option-btn").forEach(b => b.classList.remove("btn-success"));
-                        btn.classList.add("btn-success");
-                    },
-                });
-                optsBox.appendChild(btn);
-            });
-            card.appendChild(optsBox);
-        }
-
-        // 自由文本输入
-        let textarea = null;
-        if (allowFreeText) {
-            const taField = el("div", { class: "field mt-16" }, [
-                el("label", { class: "field-label", for: "human-response-input" },
-                    options.length ? "或输入自定义响应：" : "输入响应："),
-            ]);
-            textarea = el("textarea", {
-                class: "textarea",
-                id: "human-response-input",
-                placeholder: "请输入你的响应...",
-                rows: 4,
-            });
-            // 恢复草稿（避免轮询重建时丢失输入）
-            textarea.value = state.humanDraft || "";
-            textarea.addEventListener("input", () => {
-                state.humanDraft = textarea.value;
-            });
-            taField.appendChild(textarea);
-            card.appendChild(taField);
-        }
-
-        // 提交按钮
-        const actionRow = el("div", { class: "btn-row mt-16" }, [
-            el("button", {
-                class: "btn btn-success",
-                id: "human-submit-continue",
-                onclick: () => submitHumanResponse("continue", selectedOption, textarea),
-            }, "提交并继续"),
-            el("button", {
-                class: "btn btn-secondary",
-                id: "human-submit-abort",
-                onclick: () => submitHumanResponse("abort", null, null),
-            }, "中止 Pipeline"),
-        ]);
-        card.appendChild(actionRow);
-
-        content.appendChild(card);
-    }
-
-    async function submitHumanResponse(action, selectedOption, textarea) {
-        if (!state.currentProjectId) return;
-        const text = textarea ? textarea.value.trim() : "";
-        if (action === "continue" && !text && !selectedOption) {
-            showToast("请填写响应内容或选择一个选项", "error");
-            return;
-        }
-        try {
-            await api("POST", `/api/projects/${state.currentProjectId}/human-response`, {
-                action,
-                text,
-                selected_option: selectedOption,
-            });
-            state.humanDraft = "";
-            state.humanFingerprint = null;
-            showToast(action === "abort" ? "Pipeline 已中止" : "已提交响应，Pipeline 继续执行", "success");
-            await pollStatus();
-            renderPage();
-        } catch (e) {
-            showToast("提交失败：" + e.message, "error");
-        }
-    }
-
     // ===== 6c. 文献调研报告页（赛题基本任务核心产出）=====
 
     async function renderResearchReport(content) {
@@ -4026,120 +3472,17 @@
             } else {
                 const list = el("div", { class: "list" });
                 gaps.forEach((g, i) => {
-                    // ===== 结构化 Gap 字段解析（兼容旧版字符串）=====
-                    const isStructured = g && typeof g === "object";
-                    const gapText = isStructured
-                        ? (g.gap || g.description || JSON.stringify(g))
-                        : (g || "");
-                    const gapType = (isStructured && g.type) ? g.type : "underexplored";
-                    const importance = (isStructured && typeof g.importance === "number")
-                        ? g.importance : null;
-                    const actionability = (isStructured && g.actionability)
-                        ? g.actionability : "medium";
-                    const citedPids = (isStructured && Array.isArray(g.cited_paper_ids))
-                        ? g.cited_paper_ids : [];
-                    const citedChunks = (isStructured && Array.isArray(g.cited_chunk_ids))
-                        ? g.cited_chunk_ids : [];
-                    const rationale = (isStructured && g.rationale) ? g.rationale : "";
-
+                    const gapText = typeof g === "string" ? g : (g.gap || g.description || JSON.stringify(g));
+                    const evidence = typeof g === "object" ? (g.evidence || g.source_papers || []) : [];
                     const item = el("div", { class: "list-item gap-item" });
-
-                    // 头部：序号 + 标题 + type 彩色徽章
-                    const headChildren = [
+                    item.appendChild(el("div", { class: "list-item-head" }, [
                         el("span", { class: "gap-number", text: `#${i + 1}` }),
                         el("span", { class: "list-item-title", text: gapText }),
-                    ];
-                    // type 徽章
-                    headChildren.push(el("span", {
-                        class: `gap-type-badge gap-type-${gapType}`,
-                        text: gapType,
-                        title: `Research Gap 类型：${gapType}`,
-                    }));
-                    // actionability 徽章
-                    headChildren.push(el("span", {
-                        class: `gap-actionability gap-action-${actionability}`,
-                        text: `可操作 ${actionability}`,
-                        title: `可操作性：${actionability}（高/中/低）`,
-                    }));
-                    // importance 显示
-                    if (importance !== null) {
-                        headChildren.push(el("span", {
-                            class: "gap-importance mono small muted",
-                            text: `重要性 ${importance.toFixed(2)}`,
-                            title: "重要性 0~1",
-                        }));
+                    ]));
+                    if (evidence.length) {
+                        item.appendChild(el("div", { class: "gap-evidence" },
+                            `证据来源：${evidence.slice(0, 3).join("、")}${evidence.length > 3 ? ` 等 ${evidence.length} 篇` : ""}`));
                     }
-                    item.appendChild(el("div", { class: "list-item-head" }, headChildren));
-
-                    // rationale
-                    if (rationale) {
-                        item.appendChild(el("div", { class: "gap-rationale small" },
-                            `依据：${rationale}`));
-                    }
-
-                    // evidence（结构化：可点击 paper_id）
-                    if (citedPids.length) {
-                        const evBox = el("div", { class: "gap-evidence mt-8" });
-                        evBox.appendChild(el("span", { class: "gap-evidence-label small muted", text: "证据链 paper_id：" }));
-                        citedPids.slice(0, 5).forEach(pid => {
-                            const link = el("span", {
-                                class: "gap-paper-badge badge badge-info",
-                                text: String(pid).length > 16 ? String(pid).slice(0, 14) + "…" : String(pid),
-                                title: `点击跳转到论文浏览页：${pid}\n${citedChunks.length ? `含 chunk: ${citedChunks.length}` : ""}`,
-                                onclick: (ev) => {
-                                    ev.stopPropagation();
-                                    state.pendingPaperId = pid;
-                                    setActivePage("papers");
-                                },
-                            });
-                            link.style.cursor = "pointer";
-                            evBox.appendChild(link);
-                        });
-                        if (citedPids.length > 5) {
-                            evBox.appendChild(el("span", {
-                                class: "small muted",
-                                text: ` 等 ${citedPids.length} 篇`,
-                            }));
-                        }
-                        item.appendChild(evBox);
-                    } else {
-                        // 旧版兼容：从 evidence/source_papers 字段提取
-                        const legacy = isStructured
-                            ? (g.evidence || g.source_papers || [])
-                            : [];
-                        if (legacy.length) {
-                            const evBox = el("div", { class: "gap-evidence mt-8" });
-                            evBox.appendChild(el("span", {
-                                class: "small muted",
-                                text: `证据来源（旧版）：${legacy.slice(0, 3).join("、")}${legacy.length > 3 ? ` 等 ${legacy.length} 篇` : ""}`,
-                            }));
-                            item.appendChild(evBox);
-                        }
-                    }
-
-                    // 可展开：展示完整字段
-                    item.addEventListener("click", () => {
-                        if (item.classList.contains("expanded")) {
-                            item.classList.remove("expanded");
-                            const body = item.querySelector(".list-item-body");
-                            if (body) body.remove();
-                            return;
-                        }
-                        item.classList.add("expanded");
-                        const body = el("div", { class: "list-item-body" });
-                        body.innerHTML = `
-                            <dl>
-                                <dt>Gap</dt><dd>${escapeHtml(gapText)}</dd>
-                                <dt>类型</dt><dd><span class="gap-type-badge gap-type-${gapType}">${escapeHtml(gapType)}</span></dd>
-                                <dt>重要性</dt><dd>${importance !== null ? importance.toFixed(2) : "—"}</dd>
-                                <dt>可操作性</dt><dd><span class="gap-actionability gap-action-${actionability}">${escapeHtml(actionability)}</span></dd>
-                                <dt>关联 paper_id</dt><dd class="mono">${citedPids.length ? escapeHtml(citedPids.join(", ")) : "—"}</dd>
-                                <dt>关联 chunk_id</dt><dd class="mono">${citedChunks.length ? escapeHtml(citedChunks.join(", ")) : "—"}</dd>
-                                <dt>依据</dt><dd>${rationale ? escapeHtml(rationale) : "—"}</dd>
-                            </dl>
-                        `;
-                        item.appendChild(body);
-                    });
                     list.appendChild(item);
                 });
                 gapsCard.appendChild(list);
@@ -4212,28 +3555,6 @@
                     if (sources && sources.length) {
                         item.appendChild(el("div", { class: "gap-evidence" },
                             `涉及文献：${sources.slice(0, 3).join("、")}`));
-                    }
-                    // 结构化 source_paper_ids（赛题证据链增强）
-                    const confPids = (typeof c === "object" && Array.isArray(c.source_paper_ids))
-                        ? c.source_paper_ids : [];
-                    if (confPids.length) {
-                        const evBox = el("div", { class: "gap-evidence mt-8" });
-                        evBox.appendChild(el("span", { class: "small muted", text: "证据 paper_id： " }));
-                        confPids.slice(0, 5).forEach(pid => {
-                            const link = el("span", {
-                                class: "gap-paper-badge badge badge-info",
-                                text: String(pid).length > 16 ? String(pid).slice(0, 14) + "…" : String(pid),
-                                title: `点击跳转到论文浏览页：${pid}`,
-                                onclick: (ev) => {
-                                    ev.stopPropagation();
-                                    state.pendingPaperId = pid;
-                                    setActivePage("papers");
-                                },
-                            });
-                            link.style.cursor = "pointer";
-                            evBox.appendChild(link);
-                        });
-                        item.appendChild(evBox);
                     }
                     list.appendChild(item);
                 });
@@ -4985,6 +4306,278 @@
         return wrap;
     }
 
+    function renderHuman(content) {
+        const data = state.statusCache;
+        const pending = data && data.pending_human;
+
+        if (!pending) {
+            content.appendChild(el("div", { class: "page-header" }, [
+                el("h2", { class: "page-title" }, "人工节点交互"),
+                el("p", { class: "page-desc" },
+                    "当 Pipeline 遇到人工节点时，请求会显示在此页面。提交响应后 Pipeline 将继续执行。"),
+            ]));
+            content.appendChild(el("div", { class: "human-empty" }, [
+                el("div", { text: "当前无等待中的人工节点请求。", class: "mb-0" }),
+                el("div", { class: "small muted mt-8" },
+                    `Pipeline 状态：${data ? data.status : "未知"}`),
+            ]));
+            const card = el("div", { class: "card" }, [
+                el("div", { class: "card-title" }, "提示"),
+                el("p", { class: "muted small" },
+                    "此页面会自动每 2 秒检查一次是否有人工节点请求，无需手动刷新。"),
+                el("div", { class: "btn-row mt-16" }, [
+                    el("button", { class: "btn btn-secondary", onclick: () => pollStatus() }, "立即刷新"),
+                ]),
+            ]);
+            content.appendChild(card);
+            return;
+        }
+
+        // 渲染请求
+        const reqCard = el("div", { class: "human-request" });
+        reqCard.appendChild(el("div", { class: "request-label", text: "需要人工输入" }));
+        reqCard.appendChild(el("div", { class: "request-prompt", text: pending.prompt || "(无提示)" }));
+        if (pending.options && pending.options.length) {
+        // ===== 有待处理请求：醒目提醒 =====
+        const alertBanner = el("div", { class: "human-alert-banner" }, [
+            el("span", { class: "human-alert-icon" }, "⚠"),
+            el("div", { class: "human-alert-text" }, [
+                el("strong", {}, "需要您的人工决策"),
+                el("span", { class: "small" },
+                    ` · 出现于 ${formatTime(pending.appeared_at)} · Pipeline 已暂停等待您的响应`),
+            ]),
+        ]);
+        content.appendChild(alertBanner);
+
+        // ===== 决策辅助：当前上下文 =====
+        const ctxCard = el("div", { class: "card" });
+        ctxCard.appendChild(el("div", { class: "card-title" }, "决策上下文 · 辅助判断"));
+
+        // 当前阶段与状态
+        const ctxRow = el("div", { class: "ctx-info-row" });
+        const counts = (data && data.counts) || {};
+        const ctxItems = [
+            ["当前阶段", data ? (data.current_stage || "—") : "—"],
+            ["Pipeline 状态", data ? data.status : "—"],
+            ["已入库论文", String(counts.papers || 0)],
+            ["Claim 数", String(counts.claims || 0)],
+            ["实验数", String(counts.experiments || 0)],
+        ];
+        ctxItems.forEach(([k, v]) => {
+            ctxRow.appendChild(el("div", { class: "ctx-info-item" }, [
+                el("div", { class: "ctx-info-label", text: k }),
+                el("div", { class: "ctx-info-value", text: v }),
+            ]));
+        });
+        ctxCard.appendChild(ctxRow);
+
+        // 节点历史摘要（最近 3 个节点）
+        const history = (data && data.node_history) || [];
+        if (history.length) {
+            const recent = history.slice(-3).reverse();
+            const histList = el("div", { class: "ctx-history" }, [
+                el("div", { class: "ctx-history-title small muted" }, "最近节点："),
+            ]);
+            recent.forEach(h => {
+                histList.appendChild(el("div", { class: "ctx-history-item small" },
+                    `${h.node_id || "?"} — ${h.status || "?"}：${(h.summary || "").slice(0, 80)}`));
+            });
+            ctxCard.appendChild(histList);
+        }
+
+        // 人工节点携带的 context 数据
+        const ctxData = pending.context || {};
+        const ctxKeys = Object.keys(ctxData).filter(k =>
+            ctxData[k] != null && ctxData[k] !== "" && typeof ctxData[k] !== "object"
+        );
+        if (ctxKeys.length) {
+            const ctxDataList = el("div", { class: "ctx-data-list" }, [
+                el("div", { class: "ctx-history-title small muted" }, "节点上下文数据："),
+            ]);
+            ctxKeys.forEach(k => {
+                ctxDataList.appendChild(el("div", { class: "ctx-data-item small mono" },
+                    `${k} = ${ctxData[k]}`));
+            });
+            ctxCard.appendChild(ctxDataList);
+        }
+
+        // 决策建议
+        const hints = el("div", { class: "ctx-hints" }, [
+            el("div", { class: "ctx-hints-title small" }, "决策建议："),
+            el("ul", { class: "ctx-hints-list" }, [
+                el("li", { class: "small muted" },
+                    "「确认」：同意当前 Agent 产出，Pipeline 继续下一节点"),
+                el("li", { class: "small muted" },
+                    "「提交修改」：在文本框输入修改意见，Agent 将根据意见调整"),
+                el("li", { class: "small muted" },
+                    "「回滚」：回退到上一个检查点，重新执行当前阶段（适用于产出质量不佳）"),
+                el("li", { class: "small muted" },
+                    "「中止」：终止本次 Pipeline 运行（不可恢复）"),
+            ]),
+        ]);
+        ctxCard.appendChild(hints);
+        content.appendChild(ctxCard);
+
+        // ===== 请求详情 =====
+        const reqCard = el("div", { class: "card human-request-card" });
+        reqCard.appendChild(el("div", { class: "request-label" }, "Agent 请求内容"));
+        // 结构化渲染 prompt：识别编号列表/项目符号/标题行，避免一整块纯文本
+        reqCard.appendChild(renderPromptStructured(pending.prompt || "(无提示)"));
+
+        if (pending.options && pending.options.length) {
+            const optsLabel = el("div", { class: "small muted mt-8" }, "可选项（点击填入文本框）：");
+            reqCard.appendChild(optsLabel);
+            const opts = el("div", { class: "request-options" });
+            pending.options.forEach(o => {
+                opts.appendChild(el("span", { class: "badge badge-info", text: o }));
+            });
+            reqCard.appendChild(opts);
+        }
+        reqCard.appendChild(el("div", { class: "small muted" },
+            `出现时间：${formatTime(pending.appeared_at)} · 允许自由文本：${pending.allow_free_text ? "是" : "否"}`));
+
+        // 响应表单
+        reqCard.appendChild(el("div", { class: "small muted mt-8" },
+            `允许自由文本：${pending.allow_free_text ? "是" : "否"}`));
+
+        // ===== 响应表单 =====
+        const form = el("div", { class: "mt-16" });
+        const textarea = el("textarea", {
+            class: "textarea",
+            id: "human-text",
+            placeholder: "在此输入修改意见或确认说明（确认时也可留空，提交时将使用 'ok'）",
+        });
+        // 恢复草稿（轮询/切页导致重建时保留用户已输入的内容）
+        if (state.humanDraft) textarea.value = state.humanDraft;
+        textarea.addEventListener("input", () => { state.humanDraft = textarea.value; });
+        form.appendChild(el("label", { class: "field-label" }, "响应文本"));
+        form.appendChild(textarea);
+
+        // 选项快捷按钮（如果有 options）
+            rows: "4",
+            placeholder: "在此输入修改意见或确认说明。\n• 直接点「确认」可留空（将使用 'ok'）\n• 或输入具体修改建议\n• Ctrl+Enter 快速提交修改",
+        });
+        form.appendChild(el("label", { class: "field-label" }, "响应文本"));
+        form.appendChild(textarea);
+
+        // Ctrl+Enter 快捷提交
+        textarea.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                submitHuman("continue", textarea.value.trim().length > 0);
+            }
+        });
+
+        // 选项快捷按钮
+        if (pending.options && pending.options.length) {
+            const optRow = el("div", { class: "btn-row mt-8" });
+            pending.options.forEach(o => {
+                optRow.appendChild(el("button", {
+                    class: "btn btn-secondary btn-sm",
+                    text: o,
+                    onclick: () => {
+                        textarea.value = o;
+                        state.humanDraft = o; // 同步保存草稿
+                    },
+                }));
+            });
+            form.appendChild(optRow);
+        }
+
+        // 操作按钮
+        const actions = el("div", { class: "btn-row mt-16" }, [
+            el("button", {
+                class: "btn btn-success",
+                onclick: () => submitHuman("continue", false),
+            }, "确认（continue）"),
+            el("button", {
+                class: "btn",
+                onclick: () => submitHuman("continue", true),
+            }, "提交修改"),
+            el("button", {
+                class: "btn btn-secondary",
+                onclick: () => submitHuman("rollback", false),
+            }, "回滚"),
+            el("button", {
+                class: "btn btn-danger",
+                onclick: () => submitHuman("abort", false),
+            }, "中止"),
+        // 操作按钮（带说明）
+        const actions = el("div", { class: "human-actions" }, [
+            el("button", {
+                class: "btn btn-success",
+                onclick: () => submitHuman("continue", false),
+            }, "确认 · 同意并继续"),
+            el("button", {
+                class: "btn",
+                onclick: () => submitHuman("continue", true),
+            }, "提交修改 · 带意见继续"),
+            el("button", {
+                class: "btn btn-secondary",
+                onclick: () => {
+                    if (confirm("确认回滚？Pipeline 将回退到上一个检查点重新执行当前阶段。")) {
+                        submitHuman("rollback", false);
+                    }
+                },
+            }, "回滚 · 重新执行"),
+            el("button", {
+                class: "btn btn-danger",
+                onclick: () => {
+                    if (confirm("确认中止？将终止本次 Pipeline 运行，不可恢复。")) {
+                        submitHuman("abort", false);
+                    }
+                },
+            }, "中止 · 终止运行"),
+        ]);
+        form.appendChild(actions);
+
+        async function submitHuman(action, useText) {
+            const payload = { action };
+            if (action === "continue") {
+                if (useText) {
+                    const text = textarea.value.trim();
+                    if (!text) {
+                        showToast("请输入修改内容", "error");
+                        return;
+                    }
+                    payload.text = text;
+                } else {
+                    payload.text = textarea.value.trim() || "ok";
+                }
+            }
+            try {
+                const r = await api("POST",
+                    `/api/projects/${state.currentProjectId}/human-response`, payload);
+                if (r.submitted) {
+                    state.humanDraft = "";
+                    state.humanFingerprint = null; // 强制下一轮重建为空状态
+                    showToast("响应已提交", "success");
+                    const msgs = {
+                        continue: "已确认，Pipeline 继续执行",
+                        rollback: "已回滚，Pipeline 将从上一检查点重新执行",
+                        abort: "已中止，Pipeline 运行终止",
+                    };
+                    showToast(msgs[action] || "响应已提交", "success");
+                } else {
+                    showToast("未找到等待中的请求", "error");
+                }
+                pollStatus();
+                renderPage();
+            } catch (e) {
+                // 后端 409/404 的 detail 已由 api() 透传到 e.message
+                showToast("提交失败：" + e.message, "error");
+                state.humanFingerprint = null; // 让下一轮轮询重建，避免陈旧表单误导
+                showToast("提交失败：" + e.message, "error");
+            }
+        }
+
+        reqCard.appendChild(form);
+        content.appendChild(reqCard);
+    }
+
+    // ===== 初始化 =====
+
+    function init() {
     // ===== localStorage 持久化 =====
 
     function saveProjectToStorage(projectId) {
@@ -5015,23 +4608,6 @@
                 if (page) setActivePage(page);
             });
         });
-
-        // 顶部帮助按钮 + 帮助面板关闭
-        const helpBtn = document.getElementById("topbar-help");
-        if (helpBtn) helpBtn.addEventListener("click", toggleHelpPanel);
-        const helpClose = document.getElementById("help-panel-close");
-        if (helpClose) helpClose.addEventListener("click", closeHelpPanel);
-        // 点击帮助面板背景关闭
-        const helpPanel = document.getElementById("help-panel");
-        if (helpPanel) {
-            helpPanel.addEventListener("click", (e) => {
-                if (e.target === helpPanel) closeHelpPanel();
-            });
-        }
-
-        // 键盘快捷键
-        setupKeyboardShortcuts();
-
         // 侧边栏灵感笔记小组件
         const snSave = document.getElementById("sidebar-note-save");
         if (snSave) snSave.addEventListener("click", saveSidebarNote);
@@ -5080,7 +4656,6 @@
                     updateBadges(data);
                     startPolling();
                     renderSidebarNotes();
-                    renderSidebarDownload();
                 }
             } catch (e) {
                 // 项目已不存在（服务器重启等），清除存储

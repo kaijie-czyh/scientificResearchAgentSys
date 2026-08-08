@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-08-08T12:08:57.759533",
+  "total_elapsed": 56.15800333023071,
+  "validators": [
+    {
+      "name": "架构质量",
+      "status": "fail",
+      "exit_code": 1,
+      "elapsed": 0.9097635746002197
+    },
+    {
+      "name": "流水线",
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed": 10.88874363899231
+    },
+    {
+      "name": "产出质量",
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed": 6.46176815032959
+    },
+    {
+      "name": "赛题对齐",
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed": 37.8726282119751
+    },
+    {
+      "name": "API 接口",
+      "status": "fail",
+      "exit_code": 1,
+      "elapsed": 0.003604412078857422
+    }
+  ],
+  "summary": {
+    "total": 5,
+    "passed": 3,
+    "failed": 2,
+    "errors": 0
+  }
+}

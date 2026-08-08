@@ -1,0 +1,42 @@
+{
+  "Research Gap 质量": {
+    "score": 100,
+    "count": 4,
+    "structured": 4,
+    "types": {
+      "underexplored": 1,
+      "contradiction": 1,
+      "method_gap": 1,
+      "missing_connection": 1
+    }
+  },
+  "Claim 主题对齐": {
+    "score": 80,
+    "count": 4,
+    "avg_alignment": 1.0,
+    "avg_sim": 0.6737676527513693
+  },
+  "物理机制结构化": {
+    "score": 100,
+    "count": 1,
+    "structured": 1
+  },
+  "证据链完整性": {
+    "score": 60,
+    "with_evidence": 0,
+    "has_mp": true,
+    "has_oqmd": true
+  },
+  "新颖性分布": {
+    "score": 50,
+    "distribution": {
+      "novel": 0,
+      "partially_known": 1,
+      "known": 0
+    }
+  },
+  "报告可读性": {
+    "score": 100,
+    "length": 2390
+  }
+}

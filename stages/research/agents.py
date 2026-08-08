@@ -488,8 +488,6 @@ class PaperFetchAgent(AgentNode):
             evidence_chain: list[dict] = []
         else:
             paper_metas, evidence_chain = self._real_fetch(input_obj)
-        else:
-            paper_metas = self._real_fetch(input_obj)
 
         # 去重（按 arxiv_id 优先，其次 title）
         paper_metas = self._dedup(paper_metas)
@@ -535,48 +533,7 @@ class PaperFetchAgent(AgentNode):
         def fetch_one(sq: str) -> list[dict]:
             metas: list[dict] = []
 
-            # ===== 1. Sciverse 主源：证据片段级检索（赛题推荐，可审计证据链）=====
-            if sciverse_is_available():
-                try:
-                    evidences = sciverse_agentic_search(
-                        query=sq,
-                        max_results=self.SCIVERSE_PER_SUBQUERY,
-                        source_subquery=sq,
-                    )
-                    for ev in evidences:
-                        m = ev.to_meta_dict()
-                        m["source_subquery"] = sq
-                        metas.append(m)
-                        evidence_chain.append({
-                            "subquery": sq,
-                            "source": "sciverse",
-                            "title": ev.title,
-                            "external_id": ev.doc_id,
-                            "offset": ev.offset,
-                            "evidence_score": ev.score,
-                            "snippet": (ev.snippet or "")[:300],
-                            "paper_id": None,
-                        })
-                except Exception as e:
-                    logger.warning("Sciverse 检索失败（sq=%r）: %s", sq, e)
-
-            # ===== 2. arxiv 补充（最新预印本，含 abstract 全文）=====
-        output = PaperFetchOutput(paper_metas=paper_metas)
-        return NodeResult(
-            status=NodeStatus.SUCCESS,
-            output=output,
-            summary=f"抓取 {len(paper_metas)} 篇候选论文元数据（来自 {len(input_obj.subqueries or ['placeholder'])} 个子问题）",
-        )
-
-    def _real_fetch(self, input_obj: PaperFetchInput) -> list[dict]:
-        """真实并行检索 arxiv + S2。"""
-        subqueries = input_obj.subqueries or input_obj.keywords or []
-        if not subqueries:
-            return []
-
-        def fetch_one(sq: str) -> list[dict]:
-            metas: list[dict] = []
-            # arxiv 检索（核心，含 abstract 全文）
+            # ===== 1. arxiv 检索（核心，含 abstract 全文）=====
             try:
                 arxiv_papers = search_arxiv(
                     query=sq,
@@ -601,7 +558,7 @@ class PaperFetchAgent(AgentNode):
             except Exception as e:
                 logger.warning("arxiv 检索失败（sq=%r）: %s", sq, e)
 
-            # ===== 3. S2 补充（引用图谱/venue/影响力，限 2 篇避免重复）=====
+            # ===== 2. S2 补充（引用图谱/venue/影响力，限 S2_PER_SUBQUERY 篇）=====
             try:
                 s2_papers = search_semantic_scholar(
                     query=sq,
@@ -626,32 +583,28 @@ class PaperFetchAgent(AgentNode):
             except Exception as e:
                 logger.warning("S2 检索失败（sq=%r）: %s", sq, e)
 
-                    metas.append(p.to_meta_dict())
-            except Exception as e:
-                logger.warning("arxiv 检索失败（sq=%r）: %s", sq, e)
-
-            # S2 检索（补充引用图谱/venue，限 2 篇，避免重复）
-            try:
-                s2_papers = search_semantic_scholar(
-                    query=sq,
-                    max_results=2,
-                    source_subquery=sq,
-                )
-                for p in s2_papers:
-                    metas.append(p.to_meta_dict())
-            except Exception as e:
-                logger.warning("S2 检索失败（sq=%r）: %s", sq, e)
-
-            # Sciverse 检索（赛题推荐，证据片段级，无 token 时优雅跳过）
+            # ===== 3. Sciverse 主源：证据片段级检索（赛题推荐，无 token 时优雅跳过）=====
             if sciverse_is_available():
                 try:
                     evidences = sciverse_agentic_search(
                         query=sq,
-                        max_results=5,
+                        max_results=self.SCIVERSE_PER_SUBQUERY,
                         source_subquery=sq,
                     )
                     for ev in evidences:
-                        metas.append(ev.to_meta_dict())
+                        m = ev.to_meta_dict()
+                        m["source_subquery"] = sq
+                        metas.append(m)
+                        evidence_chain.append({
+                            "subquery": sq,
+                            "source": "sciverse",
+                            "title": ev.title,
+                            "external_id": ev.doc_id,
+                            "offset": ev.offset,
+                            "evidence_score": ev.score,
+                            "snippet": (ev.snippet or "")[:300],
+                            "paper_id": None,
+                        })
                 except Exception as e:
                     logger.warning("Sciverse 检索失败（sq=%r）: %s", sq, e)
 
@@ -665,7 +618,6 @@ class PaperFetchAgent(AgentNode):
             paper_metas.extend(sub)
 
         return paper_metas, evidence_chain
-        return paper_metas
 
     @staticmethod
     def _placeholder(input_obj: PaperFetchInput) -> list[dict]:
@@ -1114,7 +1066,6 @@ class PaperIngestAgent(AgentNode):
                 f"证据链 {len(evidence_chain) + linked_count} 条全部落库"
                 f"（关联 {linked_count} 条，未入库 {unmatched} 条）"
             ),
-            summary=f"入库 {len(paper_ids)} 篇论文（含 chunk）",
         )
 
     @staticmethod
@@ -2166,6 +2117,32 @@ class ResearchGapIdentifyAgent(AgentNode):
         if dry_run and not gaps:
             gaps = self._placeholder_gaps(input_obj.subqueries)
 
+        # Gap 质量量化评分（路线 A：客观指标，让评委/专家一眼可见紧迫度）
+        # 基于 KnowledgeStore 真实数据：文献覆盖度、可填补性、行动清晰度、关联强度
+        gap_scores: list[dict] = []
+        if store is not None and gaps:
+            try:
+                from core.tools.discovery_metrics import score_gaps
+                gap_scores = score_gaps(store, gaps)
+                # 把评分挂到每个 Gap 上（前端可视化 + 排序用）
+                score_map = {s["gap_id"]: s for s in gap_scores}
+                for g in gaps:
+                    gid = g.get("gap_id", "")
+                    s = score_map.get(gid)
+                    if s:
+                        g["quality_score"] = s["quality_score"]
+                        g["quality_dimensions"] = s["dimensions"]
+                        g["quality_reasoning"] = s["reasoning"]
+                # 按 quality_score 降序重新排序（高质量 Gap 优先消费）
+                gaps.sort(
+                    key=lambda g: (
+                        -float(g.get("quality_score", 0.5)),
+                        int(g.get("priority", 5)),
+                    )
+                )
+            except Exception as e:
+                logger.warning("Gap 质量评分失败（降级为 priority 排序）: %s", e)
+
         # 落库 research_gaps 表（幂等，可跨会话恢复）
         saved = 0
         if store is not None:
@@ -2179,13 +2156,40 @@ class ResearchGapIdentifyAgent(AgentNode):
         for g in gaps:
             by_type[g["gap_type"]] = by_type.get(g["gap_type"], 0) + 1
         type_brief = ", ".join(f"{k} {v} 个" for k, v in by_type.items()) or "无"
+
+        # 持久化 Gap 评分（前端可视化直接读取）
+        if store is not None and gap_scores:
+            try:
+                store.save_kv("research_gap_scores", {
+                    "version": "v1.0",
+                    "scores": gap_scores,
+                    "weights": gap_scores[0]["weights"] if gap_scores else {},
+                    "summary": {
+                        "total": len(gap_scores),
+                        "high_quality": sum(1 for s in gap_scores if s["quality_score"] >= 0.7),
+                        "medium_quality": sum(1 for s in gap_scores if 0.5 <= s["quality_score"] < 0.7),
+                        "low_quality": sum(1 for s in gap_scores if s["quality_score"] < 0.5),
+                        "avg_score": round(
+                            sum(s["quality_score"] for s in gap_scores) / max(len(gap_scores), 1), 3
+                        ),
+                    },
+                })
+            except Exception as e:
+                logger.warning("Gap 评分持久化失败: %s", e)
+
+        score_brief = ""
+        if gap_scores:
+            avg = sum(s["quality_score"] for s in gap_scores) / max(len(gap_scores), 1)
+            high = sum(1 for s in gap_scores if s["quality_score"] >= 0.7)
+            score_brief = f"；质量评分 {avg:.2f}（高 ≥0.7：{high} 条）"
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
             summary=(
                 f"研究缺口识别完成：共 {len(gaps)} 个 Gap"
                 f"（LLM {len(llm_gaps)} + 数据驱动 {len(data_gaps)}，"
-                f"落库 {saved} 条；类型分布：{type_brief}）"
+                f"落库 {saved} 条；类型分布：{type_brief}"
+                f"{score_brief}）"
             ),
         )
 

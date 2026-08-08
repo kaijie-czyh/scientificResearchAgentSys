@@ -200,9 +200,6 @@ class BrainstormAgent(AgentNode):
                         "  - feasibility_score 可行性：可落地、证据充分、约束可满足的程度\n"
                         "  - gap_relevance_score 缺口关联度：与 Research Gap / 未解决冲突的匹配程度\n"
                         "评分须与思路内容一致，不要全部给高分。"
-                    ),
-                    prompt=(
-                        "思路应当：可落地、相对已有工作有差异、有潜在学术贡献。"
                         "所有思路必须紧扣给定的研究主题，不得偏离。"
                     ),
                     prompt=(
@@ -219,12 +216,6 @@ class BrainstormAgent(AgentNode):
                         d.text, d.constraints, d.source_paper_ids,
                         d.novelty_score, d.feasibility_score, d.gap_relevance_score,
                     ))
-            except Exception as e:
-                logger.warning("Brainstorm 真实调用失败，回退占位: %s", e)
-                idea_drafts = self._placeholder_drafts(gaps, conflicts, consensus, paper_ids)
-        else:
-            idea_drafts = self._placeholder_drafts(gaps, conflicts, consensus, paper_ids)
-                    idea_drafts.append((d.text, d.constraints, d.source_paper_ids))
             except Exception as e:
                 logger.warning("Brainstorm 真实调用失败，回退占位: %s", e)
                 idea_drafts = self._placeholder_drafts(topic, gaps, conflicts, consensus, paper_ids)
@@ -296,20 +287,9 @@ class BrainstormAgent(AgentNode):
 
     @staticmethod
     def _placeholder_drafts(
-        gaps: list, conflicts: list, consensus: list, paper_ids: list
+        topic: str, gaps: list, conflicts: list, consensus: list, paper_ids: list
     ) -> list[tuple[str, list[str], list[str], float, float, float]]:
         drafts: list[tuple[str, list[str], list[str], float, float, float]] = []
-        if gaps:
-            gap0 = gaps[0] if isinstance(gaps[0], str) else str(gaps[0])
-            drafts.append((
-                f"针对证据缺口「{gap0}」提出假设：设计新方法填补该缺口，"
-                "并设计对照实验验证其有效性。",
-                ["需在现有公开数据集上可复现", "方法改动应可消融分析"],
-                paper_ids[:2],
-                0.7, 0.6, 0.9,
-        topic: str, gaps: list, conflicts: list, consensus: list, paper_ids: list
-    ) -> list[tuple[str, list[str], list[str]]]:
-        drafts: list[tuple[str, list[str], list[str]]] = []
         topic_label = f"（主题：{topic[:50]}）" if topic else ""
         if gaps:
             gap0 = gaps[0] if isinstance(gaps[0], str) else str(gaps[0])
@@ -558,8 +538,6 @@ class IdeaValidateAgent(AgentNode):
                             "评估研究思路，各维度给出 0~1 的分数与理由。"
                             "评分依据：可行性看方法路径与资源是否就绪；"
                             "新颖性看相对已有工作的差异度；贡献度看潜在学术/工程价值。"
-                        ),
-                        prompt=(
                             "评估须紧扣研究主题。"
                         ),
                         prompt=(
@@ -681,9 +659,6 @@ class ClaimDraftAgent(AgentNode):
                         system=(
                             "你是科研论点提炼助手。从研究思路中派生 1-2 个可验证的 Claim，"
                             "每个 Claim 用一句话陈述，须可被实验或证据验证/反驳。"
-                            "Claim 应当具体、可量化、可证伪。"
-                        ),
-                        prompt=(
                             "Claim 应当具体、可量化、可证伪，且紧扣研究主题。"
                         ),
                         prompt=(

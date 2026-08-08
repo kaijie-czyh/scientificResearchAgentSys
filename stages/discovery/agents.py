@@ -282,9 +282,6 @@ class HypothesisSeedAgent(AgentNode):
         return HypothesisSeedInput(
             topic=ctx.get(RESEARCH_TOPIC, ""),
             gaps=gaps,
-        return HypothesisSeedInput(
-            topic=ctx.get(RESEARCH_TOPIC, ""),
-            gaps=report.get("gaps", []) or [],
             conflicts=report.get("conflicts", []) or [],
             consensus=report.get("consensus", []) or [],
             paper_ids=ctx.get(RESEARCH_PAPER_IDS, []) or [],
@@ -437,8 +434,6 @@ class SearchSpaceAgent(AgentNode):
                     prompt=(
                         f"研究主题：{input_obj.topic}\n\n"
                         f"候选假设：\n" + json.dumps(input_obj.hypotheses, ensure_ascii=False, indent=2) + "\n\n"
-                        f"可用 paper_ids: {input_obj.paper_ids}\n\n"
-                        f"文献片段（用于抽取数据点）：\n" + "\n---\n".join(chunk_texts[:8])
                         f"可用 paper_ids: {input_obj.paper_ids[:10]}\n\n"
                         f"文献证据片段（含数值，用于抽取数据点）：\n"
                         + "\n---\n".join(all_evidence_texts[:15])
@@ -481,6 +476,14 @@ class SearchSpaceAgent(AgentNode):
 
         output = SearchSpaceOutput(search_space=search_space)
         n_pts = len(search_space.get("literature_points", []))
+        # 持久化搜索空间 + 文献数据点到 KV，供后续 discovery_validate / discovery_report 读取
+        if store is not None:
+            try:
+                store.save_kv("discovery_search_space", search_space)
+                # 单独持久化 literature_points（评分时直接读取）
+                store.save_kv("discovery_literature_points", search_space.get("literature_points", []) or [])
+            except Exception as e:
+                logger.warning("搜索空间持久化失败: %s", e)
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
@@ -497,12 +500,6 @@ class SearchSpaceAgent(AgentNode):
         if store is None or not paper_ids:
             return []
         texts: list[str] = []
-        for pid in paper_ids[:6]:
-            try:
-                chunks = store.get_paper_chunks(pid)
-                for c in chunks[:3]:
-                    texts.append(f"[paper={pid}] {c.text[:400]}")
-        # 扩大扫描范围：前 12 篇 × 前 4 chunk × 600 字符
         for pid in paper_ids[:12]:
             try:
                 chunks = store.get_paper_chunks(pid)
@@ -983,19 +980,6 @@ class DiscoveryValidateAgent(AgentNode):
                     output_schema=RelationshipBatchSchema,
                     system=(
                         "你是材料科学发现验证助手。对候选构效关系做文献交叉验证与新颖性评估：\n"
-                        "1. relationship：用一句话陈述构效关系\n"
-                        "2. evidence_paper_ids：从给定 paper_ids 中选取支持该发现的论文\n"
-                        "3. novelty：novel（文献未明确报告）/ partially_known / known\n"
-                        "4. novelty_reason：新颖性判断依据\n"
-                        "5. mechanism：物理机制解释（来自搜索阶段，可补充）\n"
-                        "6. confidence：综合置信度 0~1（证据强度 + 代理置信度 + 合理性）\n"
-                        "known 的发现置信度应较低；novel 的发现需文献间接支撑。"
-                    ),
-                    prompt=(
-                        f"目标性能：{target_prop}\n"
-                        f"可用 paper_ids: {input_obj.paper_ids}\n\n"
-                        f"候选构效关系（含代理预测与机制）：\n"
-                        + json.dumps(input_obj.candidates, ensure_ascii=False, indent=2)
                         "1. relationship：用一句话陈述构效关系（含具体变量组合与预测性能）\n"
                         "2. evidence_paper_ids：从给定 paper_ids 中选取支持该发现的论文\n"
                         "3. novelty：novel / partially_known / known\n"
@@ -1016,7 +1000,7 @@ class DiscoveryValidateAgent(AgentNode):
                         "**重要**：代理模型预测的具体配置组合通常是文献数据点的插值/外推，\n"
                         "这些具体组合在文献中往往未被直接报告，应评估为 novel 或 partially_known。\n"
                         "只有当文献明确报告了相同材料+相同掺杂浓度+相同温度的相同性能值时才标 known。\n"
-                        "避免「可能/也许/或许」等模糊词汇，机制解释需基于已建立的物理理论。"
+                        "known 的发现置信度应较低；novel 的发现需文献间接支撑。"
                     ),
                     prompt=(
                         f"目标性能：{target_prop}\n"
@@ -1144,6 +1128,64 @@ class DiscoveryValidateAgent(AgentNode):
                 )
             except Exception as e:
                 logger.warning("材料数据库交叉验证失败: %s", e)
+
+        # ===== 发现可信度量化评分（路线 A 客观指标，独立于交叉验证）=====
+        # 5 维度：外推安全 / 文献密度 / 机制论证 / 交叉验证 / CI 合理性
+        # 注：即使没有 MP/OQMD API key 也跑（基于已有数据）
+        if store is not None and relationships:
+            try:
+                from core.tools.discovery_metrics import (
+                    DiscoveryReliabilityScorer,
+                    ExpertAssistanceBuilder,
+                )
+                # 读取搜索空间 + 文献数据点
+                search_space = store.get_kv("discovery_search_space", {}) or {}
+                lit_points = store.get_kv("discovery_literature_points", []) or []
+
+                scorer = DiscoveryReliabilityScorer(store)
+                expert = ExpertAssistanceBuilder(store)
+                scores = []
+                assistances = []
+                for rel in relationships:
+                    s = scorer.score(rel, search_space, lit_points)
+                    rel["reliability_score"] = s["reliability_score"]
+                    rel["reliability_dimensions"] = s["dimensions"]
+                    rel["risk_label"] = s["risk_label"]
+                    scores.append(s)
+                    # 为材料专家生成辅助包
+                    try:
+                        a = expert.build_for_discovery(rel, search_space)
+                        rel["expert_assistance"] = a
+                        assistances.append(a)
+                    except Exception as e:
+                        logger.warning("专家辅助包生成失败（claim=%s）: %s", rel.get("claim_id", ""), e)
+
+                # 持久化发现评分（前端可视化直接读取）
+                store.save_kv("discovery_reliability_scores", {
+                    "version": "v1.0",
+                    "scores": scores,
+                    "weights": scores[0]["weights"] if scores else {},
+                    "summary": {
+                        "total": len(scores),
+                        "strong_recommend": sum(1 for s in scores if "强烈推荐" in s["risk_label"]),
+                        "cautious_recommend": sum(1 for s in scores if "谨慎推荐" in s["risk_label"]),
+                        "high_risk_high_reward": sum(1 for s in scores if "高风险高回报" in s["risk_label"]),
+                        "not_recommended": sum(1 for s in scores if "不建议" in s["risk_label"]),
+                        "avg_score": round(
+                            sum(s["reliability_score"] for s in scores) / max(len(scores), 1), 3
+                        ),
+                    },
+                })
+                if assistances:
+                    store.save_kv("discovery_expert_assistance", assistances)
+                logger.info(
+                    "发现可信度评分完成：avg=%.2f，强烈推荐=%d，谨慎推荐=%d",
+                    sum(s["reliability_score"] for s in scores) / max(len(scores), 1),
+                    sum(1 for s in scores if "强烈推荐" in s["risk_label"]),
+                    sum(1 for s in scores if "谨慎推荐" in s["risk_label"]),
+                )
+            except Exception as e:
+                logger.warning("发现可信度评分失败: %s", e)
 
         return NodeResult(
             status=NodeStatus.SUCCESS,
@@ -1404,6 +1446,11 @@ class DiscoveryReportAgent(AgentNode):
                 pred_high = pred * 1.15
                 ci_width = (pred_high - pred_low) / 2
 
+                # 可信度量化指标
+                rel_score = r.get("reliability_score")
+                rel_dims = r.get("reliability_dimensions", {})
+                risk_label = r.get("risk_label", "")
+
                 lines.append(f"### 发现 {i + 1}: {r.get('relationship', '?')[:80]}")
                 lines.append("")
                 lines.append("| 维度 | 详情 |")
@@ -1412,8 +1459,17 @@ class DiscoveryReportAgent(AgentNode):
                 lines.append(f"| **配置** | {json.dumps(config, ensure_ascii=False)} |")
                 lines.append(f"| **预测 {target_prop}** | **{pred:.3f}** |")
                 lines.append(f"| **95% 预测区间** | [{pred_low:.3f}, {pred_high:.3f}]（±{ci_width:.3f}）|")
-                lines.append(f"| **置信度** | {conf:.2f}（{'高' if conf >= 0.6 else '中' if conf >= 0.4 else '低'}）|")
+                lines.append(f"| **LLM 置信度** | {conf:.2f}（{'高' if conf >= 0.6 else '中' if conf >= 0.4 else '低'}）|")
                 lines.append(f"| **新颖性** | `{novelty}`（novelty_score = {novelty_score:.2f}）|")
+                if rel_score is not None:
+                    lines.append(f"| **客观可信度评分** | **{rel_score:.2f}** / 1.00 |")
+                if risk_label:
+                    lines.append(f"| **风险标签** | {risk_label} |")
+                if rel_dims:
+                    lines.append(f"| **外推安全性** | {rel_dims.get('extrapolation_safety', '-')} |")
+                    lines.append(f"| **文献密度** | {rel_dims.get('literature_density', '-')} |")
+                    lines.append(f"| **机制论证** | {rel_dims.get('mechanism_evidence', '-')} |")
+                    lines.append(f"| **交叉验证一致性** | {rel_dims.get('cross_validation_consistency', '-')} |")
                 lines.append(f"| **证据 paper** | {', '.join(r.get('evidence_paper_ids', [])) or '(无)'} |")
 
                 # 交叉验证结果
@@ -1443,13 +1499,68 @@ class DiscoveryReportAgent(AgentNode):
                         lines.append(f"- {dp}")
                     lines.append("")
 
-                # 实验建议
+                # 实验建议（基础版）
                 lines.append("**实验指导建议**：")
                 lines.append(f"- 目标配置：`{json.dumps(config, ensure_ascii=False)}`")
                 lines.append(f"- 建议测试温度：{config.get('temperature', 'N/A')} K（围绕该值做 ±50 K 扫描）")
                 lines.append(f"- 预期 {target_prop}：{pred:.3f} ±{ci_width:.3f}")
                 lines.append(f"- 推荐验证方法：合成 → 表征（XRD/SEM）→ 性能测试（ZT 测试系统）")
                 lines.append("")
+
+                # 专家辅助包（基于知识库实际数据生成）
+                expert = r.get("expert_assistance")
+                if expert:
+                    lines.append("**📋 材料专家辅助包**（基于知识库实际数据生成）：")
+                    lines.append("")
+                    # 最近邻合成工艺
+                    nns = expert.get("nearest_neighbor_synthesis", []) or []
+                    if nns:
+                        lines.append("- **借鉴工艺**（按相似度排序）：")
+                        for s in nns[:3]:
+                            sim_str = f"相似度 {s['similarity']:.2f}"
+                            mat_name = s.get('source_material', '?')
+                            method = s.get('method', '?')
+                            temp = s.get('temperature', '?')
+                            prec = ', '.join(s.get('precursors', []) or []) or '?'
+                            lines.append(f"  - {mat_name}（{sim_str}）：{method}；前驱体 {prec}；温度 {temp}")
+                        lines.append("")
+                    # 类似材料性能对比
+                    sim_table = expert.get("similar_materials_table", []) or []
+                    if sim_table:
+                        lines.append("- **性能基准对比**（同元素族材料）：")
+                        lines.append("")
+                        lines.append("  | 材料 | 相似度 | 性能值 | 条件 |")
+                        lines.append("  |---|---|---|---|")
+                        for row in sim_table[:4]:
+                            lines.append(
+                                f"  | {row.get('material', '?')} | {row.get('similarity', 0):.2f} | "
+                                f"{row.get('value', '-')}{row.get('unit', '')} | {row.get('condition', '-')[:30]} |"
+                            )
+                        lines.append("")
+                    # DFT 验证建议
+                    dft = expert.get("dft_verification_protocol") or {}
+                    if dft:
+                        tasks = ", ".join(dft.get("tasks", []) or []) or "-"
+                        lines.append(f"- **DFT 验证 protocol**：{tasks}")
+                        if dft.get("software_recommendations"):
+                            lines.append(f"  - 推荐软件：{', '.join(dft['software_recommendations'])}")
+                        if dft.get("notes"):
+                            lines.append(f"  - 注意事项：{dft['notes']}")
+                        lines.append("")
+                    # 实验 protocol
+                    exp_p = expert.get("experiment_protocol") or {}
+                    if exp_p:
+                        perf = exp_p.get("performance_test", {})
+                        synth = exp_p.get("synthesis", {})
+                        lines.append(f"- **实验 protocol**（预估 {exp_p.get('duration_estimate_weeks', '?')}）：")
+                        lines.append(f"  - 合成：{synth.get('method_recommendation', '-')}")
+                        temp_range = perf.get("temperature_range_K", [])
+                        if temp_range:
+                            lines.append(f"  - 温区扫描：{temp_range[0]}-{temp_range[1]} K（步长 {perf.get('temperature_step_K', '?')} K）")
+                        controls = exp_p.get("controls", [])
+                        if controls:
+                            lines.append(f"  - 对照组：{' / '.join(controls[:2])}")
+                        lines.append("")
 
         # 4. 局限性
         lines.append("## 4. 局限性")

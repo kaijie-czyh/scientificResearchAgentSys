@@ -650,7 +650,6 @@ class Pipeline:
                 session, ctx, LifecycleStage.RESEARCH, human_callback,
                 on_progress=on_progress,
                 on_node_started=on_node_started,
-                session, ctx, LifecycleStage.RESEARCH, human_callback
             )
             result.node_history = research_result.node_history
             if research_result.status == "pending_human":

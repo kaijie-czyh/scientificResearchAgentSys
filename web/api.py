@@ -10,6 +10,7 @@ Pipeline 在独立线程中异步执行，人工节点通过 HumanCallbackBridge
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import threading
 import uuid
@@ -133,7 +134,6 @@ class HumanCallbackBridge:
         on_pending: Optional[Callable[[], None]] = None,
         on_resume: Optional[Callable[[], None]] = None,
     ):
-    def make_callback(self, project_id: str):
         def _cb(req: HumanRequest) -> HumanResponse:
             event = threading.Event()
             payload = {
@@ -141,7 +141,6 @@ class HumanCallbackBridge:
                 "options": list(req.options) if req.options else [],
                 "allow_free_text": req.allow_free_text,
                 "context": dict(req.context) if req.context else {},
-                "appeared_at": datetime.utcnow().isoformat(),
                 "appeared_at": datetime.now().isoformat(),
             }
             with self._lock:
@@ -155,8 +154,6 @@ class HumanCallbackBridge:
             # 收到响应/超时后恢复 running
             if on_resume is not None:
                 on_resume()
-            # 阻塞直到 REST 接口提交响应或超时
-            triggered = event.wait(timeout=3600)
             with self._lock:
                 resp = self._responses.pop(project_id, None)
                 self._pending.pop(project_id, None)
@@ -319,7 +316,6 @@ def _make_progress_callback(
     return _on_progress, _on_node_started
 
 
-def _run_pipeline_thread(project_id: str, topic: str, resume: bool) -> None:
 # ===== Pipeline 工作线程 =====
 
 
@@ -513,6 +509,20 @@ def _run_topic_discovery_thread(project_id: str, interest: str, resume: bool) ->
         state.next_nodes = []
         # 存储方向推荐完整数据（推荐列表 + 选择结果）
         state.topic_discovery = result.extra or {}
+        # 若用户已选定主题，自动把所选主题写入 state.topic，并启动 research pipeline
+        selected = (result.extra or {}).get("selected_topic", "") or ""
+        if result.status == "completed" and selected.strip():
+            with _LOCK:
+                state.topic = selected.strip()
+                state.run_mode = "pipeline"
+            # 在新线程中异步启动 research pipeline，避免阻塞 topic_discovery 线程
+            resume2 = True  # 复用已有 project_dir 中的 snapshots
+            pipeline_thread = threading.Thread(
+                target=_run_pipeline_thread,
+                args=(project_id, selected.strip(), resume2, False),
+                daemon=True,
+            )
+            pipeline_thread.start()
     except Exception as e:  # noqa: BLE001
         state.status = "failed"
         state.error = f"{type(e).__name__}: {e}"
@@ -597,7 +607,6 @@ def create_project(req: CreateProjectRequest) -> dict:
         project_id=project_id,
         topic=topic,
         created_at=datetime.utcnow().isoformat(),
-        created_at=datetime.now().isoformat(),
     )
     with _LOCK:
         _PROJECTS[project_id] = state
@@ -621,6 +630,26 @@ def list_projects() -> dict:
     # 按创建时间降序
     items.sort(key=lambda x: x["created_at"], reverse=True)
     return {"projects": items}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str) -> dict:
+    """删除项目：清理内存中的 ProjectState，并删除磁盘上的项目目录（含 knowledge.db）。"""
+    # 内存清理
+    with _LOCK:
+        state = _PROJECTS.pop(project_id, None)
+        if state is not None and state.thread and state.thread.is_alive():
+            # 线程仍在运行：不允许删除，避免留下孤立线程
+            _PROJECTS[project_id] = state
+            raise HTTPException(
+                status_code=409,
+                detail="项目正在运行中，请先中止 Pipeline 再删除",
+            )
+    # 磁盘清理：项目目录（knowledge.db / vectors / snapshots / artifacts / uploads / experiments）
+    project_dir = _CONFIG.paths.project_dir(project_id)
+    if project_dir.exists() and project_dir.resolve().is_relative_to(_CONFIG.paths.projects.resolve()):
+        shutil.rmtree(project_dir, ignore_errors=True)
+    return {"project_id": project_id, "deleted": True}
 
 
 @app.get("/api/projects/{project_id}/status")
@@ -680,8 +709,6 @@ def get_status(project_id: str) -> dict:
 
 
 @app.post("/api/projects/{project_id}/run")
-def run_project(project_id: str) -> dict:
-    """启动/继续 pipeline（异步执行，立即返回）。"""
 def run_project(project_id: str, req: Optional[RunProjectRequest] = None) -> dict:
     """启动/继续 pipeline（异步执行，立即返回）。
 
@@ -701,10 +728,6 @@ def run_project(project_id: str, req: Optional[RunProjectRequest] = None) -> dic
             detail="项目主题为空（服务重启后恢复的项目不持久化 topic），请重新创建项目或补充主题",
         )
     resume = state.status not in ("created",)
-    thread = threading.Thread(
-        target=_run_pipeline_thread,
-        args=(project_id, state.topic, resume),
-    resume = state.status not in ("created",)
     force_writing = (req.force_writing if req else False)
     thread = threading.Thread(
         target=_run_pipeline_thread,
@@ -714,7 +737,6 @@ def run_project(project_id: str, req: Optional[RunProjectRequest] = None) -> dic
     state.thread = thread
     state.error = None
     thread.start()
-    return {"project_id": project_id, "message": "pipeline 已启动", "resumed": resume}
     msg = "pipeline 已启动"
     if force_writing:
         msg = "pipeline 已启动（强制写作模式：绕过实验成败判断）"
@@ -754,12 +776,27 @@ def run_discovery(project_id: str) -> dict:
 
 @app.get("/api/projects/{project_id}/discoveries")
 def get_discoveries(project_id: str) -> dict:
-    """获取构效关系发现产出（路线 A）。"""
+    """获取构效关系发现产出（路线 A）。
+
+    返回内容包括：
+    - relationships：构效关系 Claim 列表
+    - discovery_summary：发现汇总（含 novel 计数）
+    - reliability_scores：客观可信度评分（5 维度 + 风险标签）
+    - expert_assistance：专家辅助包（最近邻工艺 + 类似材料 + DFT + 实验 protocol）
+    - gap_scores：上游 Research Gap 质量评分（4 维度 + 综合分）
+    - run_mode：运行模式
+    """
     state = _require_project(project_id)
     # 从 KnowledgeStore 读取 discovery 阶段产出的 Claim（构效关系发现）
     relationships: list[dict] = []
+    reliability_scores: list[dict] = []
+    expert_assistances: list[dict] = []
+    gap_scores: list[dict] = []
+    gap_summary: dict = {}
+    rel_summary: dict = {}
     try:
         store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        # Claim
         for c in store.list_claims():
             if c.source_stage == "discovery":
                 relationships.append({
@@ -769,12 +806,27 @@ def get_discoveries(project_id: str) -> dict:
                     "evidence_refs": c.evidence_refs,
                     "created_at": c.created_at.isoformat() if c.created_at else None,
                 })
+        # 客观可信度评分（路线 A 客观指标：5 维度）
+        rel_kv = store.get_kv("discovery_reliability_scores") or {}
+        reliability_scores = rel_kv.get("scores", []) if isinstance(rel_kv, dict) else []
+        rel_summary = rel_kv.get("summary", {}) if isinstance(rel_kv, dict) else {}
+        # 专家辅助包（让材料专家感到"对我有用"）
+        expert_assistances = store.get_kv("discovery_expert_assistance") or []
+        # 上游 Gap 质量评分
+        gap_kv = store.get_kv("research_gap_scores") or {}
+        gap_scores = gap_kv.get("scores", []) if isinstance(gap_kv, dict) else []
+        gap_summary = gap_kv.get("summary", {}) if isinstance(gap_kv, dict) else {}
     except Exception as e:  # noqa: BLE001
         pass
     return {
         "project_id": project_id,
         "discovery_summary": state.discovery,
         "relationships": relationships,
+        "reliability_scores": reliability_scores,
+        "reliability_summary": rel_summary,
+        "expert_assistances": expert_assistances,
+        "gap_scores": gap_scores,
+        "gap_summary": gap_summary,
         "run_mode": state.run_mode,
     }
 
@@ -1437,12 +1489,6 @@ def submit_human_response(project_id: str, req: HumanResponseRequest) -> dict:
                 "请刷新页面查看最新状态。"
             ),
         )
-    return {"project_id": project_id, "submitted": True, "action": action}
-
-
-        # 没有等待中的人工请求，仍记录状态便于前端展示
-        state.summary = "未找到等待中的人工请求，响应已忽略"
-        return {"project_id": project_id, "submitted": False, "message": "无等待中的人工请求"}
     return {"project_id": project_id, "submitted": True, "action": action}
 
 

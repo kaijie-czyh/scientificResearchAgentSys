@@ -558,3 +558,137 @@ class KnowledgeStore:
     @staticmethod
     def new_id() -> EntityId:
         return uuid.uuid4().hex
+
+    # ===== Task 2/3：材料知识与研究缺口 =====
+
+    def save_material(self, mat: Material) -> None:
+        """保存材料实体。"""
+        with self._connect() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO materials (material_id, content, created_at) VALUES (?, ?, ?)",
+                (mat.material_id, mat.model_dump_json(), mat.created_at.isoformat()),
+            )
+
+    def get_material(self, material_id: EntityId) -> Optional[Material]:
+        with self._connect() as c:
+            row = c.execute("SELECT content FROM materials WHERE material_id = ?", (material_id,)).fetchone()
+        if not row:
+            return None
+        return Material.model_validate_json(row[0])
+
+    def list_materials(self, limit: Optional[int] = None) -> list[Material]:
+        with self._connect() as c:
+            sql = "SELECT content FROM materials"
+            if limit is not None:
+                sql += f" LIMIT {int(limit)}"
+            rows = c.execute(sql).fetchall()
+        return [Material.model_validate_json(r[0]) for r in rows]
+
+    def save_material_property(self, prop: MaterialProperty) -> None:
+        with self._connect() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO material_properties (property_id, material_id, content, created_at) VALUES (?, ?, ?, ?)",
+                (prop.property_id, prop.material_id, prop.model_dump_json(), prop.created_at.isoformat()),
+            )
+
+    def list_material_properties(self, material_id: Optional[EntityId] = None, limit: Optional[int] = None) -> list[MaterialProperty]:
+        with self._connect() as c:
+            if material_id:
+                sql = "SELECT content FROM material_properties WHERE material_id = ?"
+                params: tuple = (material_id,)
+            else:
+                sql = "SELECT content FROM material_properties"
+                params = ()
+            if limit is not None:
+                sql += f" LIMIT {int(limit)}"
+            rows = c.execute(sql, params).fetchall()
+        return [MaterialProperty.model_validate_json(r[0]) for r in rows]
+
+    def save_material_synthesis(self, syn: MaterialSynthesis) -> None:
+        with self._connect() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO material_synthesis (synthesis_id, material_id, content, created_at) VALUES (?, ?, ?, ?)",
+                (syn.synthesis_id, syn.material_id, syn.model_dump_json(), syn.created_at.isoformat()),
+            )
+
+    def list_material_synthesis(self, material_id: Optional[EntityId] = None, limit: Optional[int] = None) -> list[MaterialSynthesis]:
+        with self._connect() as c:
+            if material_id:
+                sql = "SELECT content FROM material_synthesis WHERE material_id = ?"
+                params: tuple = (material_id,)
+            else:
+                sql = "SELECT content FROM material_synthesis"
+                params = ()
+            if limit is not None:
+                sql += f" LIMIT {int(limit)}"
+            rows = c.execute(sql, params).fetchall()
+        return [MaterialSynthesis.model_validate_json(r[0]) for r in rows]
+
+    def save_research_gap(self, gap: ResearchGap) -> None:
+        with self._connect() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO research_gaps (gap_id, content, created_at) VALUES (?, ?, ?)",
+                (gap.gap_id, gap.model_dump_json(), gap.created_at.isoformat()),
+            )
+
+    def save_research_gaps(self, gaps: list[ResearchGap]) -> int:
+        """批量保存 Research Gap。返回成功保存数。"""
+        count = 0
+        for g in gaps:
+            try:
+                self.save_research_gap(g)
+                count += 1
+            except Exception as e:
+                logger.warning("保存 Research Gap 失败（id=%s）: %s", getattr(g, "gap_id", ""), e)
+        return count
+
+    def list_research_gaps(self) -> list[ResearchGap]:
+        with self._connect() as c:
+            rows = c.execute("SELECT content FROM research_gaps").fetchall()
+        return [ResearchGap.model_validate_json(r[0]) for r in rows]
+
+    def save_research_conflicts(self, conflicts: list[ResearchConflict]) -> int:
+        """批量保存 Research Conflict。"""
+        count = 0
+        for conf in conflicts:
+            try:
+                self.save_research_conflict(conf)
+                count += 1
+            except Exception as e:
+                logger.warning("保存 Research Conflict 失败: %s", e)
+        return count
+
+    def save_research_conflict(self, conf: ResearchConflict) -> None:
+        with self._connect() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO research_conflicts (conflict_id, content, created_at) VALUES (?, ?, ?)",
+                (conf.conflict_id, conf.model_dump_json(), conf.created_at.isoformat()),
+            )
+
+    def list_research_conflicts(self) -> list[ResearchConflict]:
+        with self._connect() as c:
+            rows = c.execute("SELECT content FROM research_conflicts").fetchall()
+        return [ResearchConflict.model_validate_json(r[0]) for r in rows]
+
+    def material_stats(self) -> dict:
+        """统计材料知识库的三元组覆盖度。
+
+        Returns:
+            dict 含 total_materials / total_properties / total_synthesis /
+                  complete_triples（同时有材料+性能+合成的三元组数）
+        """
+        materials = self.list_materials()
+        properties = self.list_material_properties()
+        synthesis = self.list_material_synthesis()
+
+        # 计算完整三元组（材料同时有性能 + 合成）
+        mat_with_prop = {p.material_id for p in properties}
+        mat_with_syn = {s.material_id for s in synthesis}
+        complete = mat_with_prop & mat_with_syn
+
+        return {
+            "total_materials": len(materials),
+            "total_properties": len(properties),
+            "total_synthesis": len(synthesis),
+            "complete_triples": len(complete),
+        }
