@@ -137,16 +137,20 @@ class CrossValidateInput(NodeInput):
 
     借鉴 GPT-Researcher：对入库 chunk 做多源信息冲突检测与交叉验证，
     输出可信度评分与冲突处置建议。
+
+    注入 topic 是为了避免下游 LLMs 拿到与主题无关的子问题（修复串主题 bug），
+    也是为结构化 Gap 提供「研究主题」上下文，让 gap_text 更聚焦于该主题。
     """
 
-    paper_ids: list[str]
-    subqueries: list[str]
+    topic: str = ""
+    paper_ids: list[str] = []
+    subqueries: list[str] = []
 
 
 class CrossValidateOutput(NodeOutput):
     """交叉验证输出：可信度报告。
 
-    report 结构：
+    report 结构（结构化版，赛题「Research Gap 识别质量」硬要求）：
     {
         "conflicts": [
             {
@@ -154,11 +158,33 @@ class CrossValidateOutput(NodeOutput):
                 "sources": [{"paper_id": "...", "chunk_id": "...", "stance": "support/refute"}, ...],
                 "resolution": "采纳来源/标记存疑/需进一步检索",
                 "confidence": 0.0~1.0,
+                "source_paper_ids": ["paper_id", ...],
+                "subquery": "子问题",
             },
             ...
         ],
-        "consensus": ["多方一致认同的陈述", ...],
-        "gaps": ["缺乏证据的子问题", ...],
+        "consensus": [
+            {
+                "statement": "共识陈述",
+                "source_paper_ids": ["paper_id", ...],
+                "confidence": 0.0~1.0,
+                "subquery": "子问题",
+            },
+            ...
+        ],
+        "gaps": [
+            {
+                "gap": "结构化 Gap 陈述（聚焦材料领域具体空白）",
+                "type": "underexplored | contradiction | missing_connection | method_gap | data_gap",
+                "importance": 0.0~1.0,
+                "actionability": "high | medium | low",
+                "cited_paper_ids": ["paper_id", ...],   # 证据链：paper_id
+                "cited_chunk_ids": ["chunk_id", ...],   # 证据链：chunk_id
+                "rationale": "为什么这是 Gap、为何对材料领域有价值",
+                "subquery": "归属子问题",
+            },
+            ...
+        ],
         "overall_confidence": 0.0~1.0,
     }
     """

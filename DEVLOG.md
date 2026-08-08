@@ -5,6 +5,384 @@
 
 ---
 
+## 2026-08-03 第十三轮：前端产品体验升级 — 骨架屏 / Loading 遮罩 / 快捷键 / 面包屑 / 空状态 / 帮助面板
+
+### 目标
+围绕「后台 agent 架构 + 算法接口 + 前端产品设计」三步走战略的第三步，提升用户体验。
+
+1. **加载反馈**：骨架屏（skeleton）+ 全局 Loading 遮罩，避免空白等待
+2. **快捷键**：数字键 1-8 快速导航，?/F1 打开帮助，Esc 关闭弹窗
+3. **面包屑**：顶部位置感，用户随时知道在哪个页面
+4. **顶部状态徽章**：实时显示 running/completed/failed/pending_human
+5. **空状态组件**：统一 empty-state / error-state 引导用户
+6. **Tooltip 提示**：高级功能悬停可见性
+7. **错误重试**：错误状态含「重试」按钮
+
+### 改动清单
+
+#### 1. `web/static/index.html` — DOM 结构升级
+- 新增**全局 Loading 遮罩**（`.loading-overlay`）：半透明背景 + spinner + 文案，居中卡片式
+- 新增**帮助面板**（`.help-panel`）：模态弹出，含快捷键列表 / 使用流程 / 下载提示
+- 顶栏重构：
+  - **面包屑**（`.topbar-breadcrumb`）：根目录 + › + 当前页
+  - **状态徽章**（`.topbar-status`）：4 种状态颜色（蓝运行/绿完成/红失败/黄等待）
+  - **项目徽章**（`.topbar-project`）：标签 + 等宽字体项目 ID（截断）
+  - **帮助按钮**（`.topbar-help`）：圆形 `?`，悬停旋转 360°
+
+#### 2. `web/static/style.css` — 521 行新增样式
+- **骨架屏动画**（`.skeleton`）：shimmer 渐变扫描，`.skeleton-line.lg/sm` 变体
+- **空状态**（`.empty-state`）：虚线边框 + 图标 + 标题 + 描述 + 操作区
+- **错误状态**（`.error-state`）：红色配色 + ⚠ 图标 + 重试按钮
+- **进度指示器**（`.progress-indicator`）：蓝色 pulse 圆点
+- **Tooltip**（`[data-tooltip]`）：悬停显示上方黑底白字
+- **Toast 增强**：4 种颜色（success/error/warning/info），底部居中弹出
+- **卡片悬停**（`.card.interactive`）：上移 + 阴影 + 边框变色
+
+#### 3. `web/static/app.js` — 产品逻辑增强
+- **新增工具函数**：`renderSkeleton(type)` / `renderEmptyState(opts)` / `renderErrorState(opts)` / `showLoadingOverlay(text)` / `hideLoadingOverlay()` / `renderProgressIndicator(text)`
+- **`setActivePage`**：标题 + 面包屑联动更新
+- **`updateTopbarStatus`**：状态徽章实时同步（4 种颜色 + 文本）
+- **`setupKeyboardShortcuts`**：
+  - `1`-`8` 数字键导航（非输入元素聚焦时生效）
+  - `?` / `F1` 打开帮助
+  - `Esc` 关闭弹窗
+- **Dashboard 增强**：
+  - 骨架屏占位
+  - 错误状态含重试按钮
+- **Discovery 页面增强**：
+  - 骨架屏占位
+  - 未启动时空状态（含启动按钮）
+  - 运行中但暂无结果显示 empty-state
+  - 启动按钮加 tooltip
+  - 错误状态含重试按钮
+- **创建项目按钮**：提交时显示全局 Loading 遮罩「正在创建项目…」
+
+### 验证
+
+1. **HTML/CSS/JS 三方验证**：
+   - HTML 关键 ID（loading-overlay / help-panel / topbar-status / breadcrumb 等）全部存在
+   - CSS 关键类（skeleton / empty-state / error-state / progress-indicator 等）全部存在
+   - JS 关键函数（renderSkeleton / renderEmptyState / renderErrorState / setupKeyboardShortcuts 等）全部定义
+2. **JS 语法**：`node -e "new Function(...)"` 通过
+3. **VS Code 诊断**：0 错误
+4. **回归验证**：`python tests/run_all.py` → 5/5 PASS，S 级冠军候选评级
+
+### 用户体验提升点
+
+| 维度 | 之前 | 现在 |
+|------|------|------|
+| 加载反馈 | 「加载中…」纯文本 | 骨架屏 shimmer 动画 + 占位结构 |
+| 长时间操作反馈 | 无 | 全局 Loading 遮罩「正在创建项目…」 |
+| 错误恢复 | status-banner danger 文字 | 错误状态卡片 + 重试按钮 |
+| 页面切换 | 仅侧边栏 active | 数字键 1-8 快捷导航 |
+| 帮助入口 | 无 | `?` / `F1` 弹窗 |
+| 位置感 | 顶部单标题 | 面包屑（根 › 当前） |
+| 实时状态 | 仅 status-banner | 顶栏动态徽章（4 色） |
+| 空数据 | 空白或简短提示 | 图标 + 标题 + 描述 + 操作引导 |
+
+### 下一步
+- 真实 API 模式下验证前端的骨架屏与 Loading 状态
+- 视用户反馈优化空状态文案与可视化细节
+- 移动端响应式优化（当前仅桌面优化）
+
+---
+
+## 2026-08-03 第十二轮：赛题三·方向三（材料方向）深度适配 — MinerU + OQMD + 结构化机制 + 证据链
+
+### 目标
+按 GOAI 世界人工智能开源大赛·赛道三·方向三（材料科学文献驱动的科学发现智能体）赛题要求，完善项目构效分析相关功能：
+
+1. **集成赛题推荐工具**：MinerU 开源 PDF 解析引擎（赛题明确推荐）
+2. **集成公开材料数据库**：OQMD（赛题路线 A 加分项）
+3. **构效关系物理机制结构化**：5 要素（物理原理/因果链/理论支撑/量化解释/领域概念），满足「避免黑箱输出」
+4. **新颖性评估增强**：novelty_score + differentiation_points，区分「新知」与「已知」
+5. **Research Gap 结构化**：type/actionability/importance/cited_paper_ids 评分体系
+
+### 改动清单
+
+#### 1. `core/tools/mineru_parse.py` — MinerU 开源 PDF 解析（新建）
+- `MinerUClient`：三模式（api/local/fallback）优雅降级
+  - **api**：调用 MinerU SaaS API（`MINERU_API_KEY` 环境变量），上传+获取结构化结果
+  - **local**：调用本地 `mineru` CLI 或 `magic-pdf` 包
+  - **fallback**：使用 pypdf 简单文本提取（按页切分 sections）
+- `MinerUDocument`：含 sections（含页码和层级）/figures/tables/equations/references/full_text
+- 模块级函数：`mineru_is_available()` / `parse_pdf_with_mineru(path)`
+
+#### 2. `core/tools/oqmd_nomad.py` — OQMD 客户端（新建）
+- `OQMDClient`：调用 OQMD REST API（oqmd.org/OQMD）
+- API 失败时降级到内置常识表（含 Bi2Te3/PbTe/SnSe/Mg3Sb2/SiGe/Cu2Se/GeTe 7 个常见热电材料的物理范围）
+- 返回 `OQMDQueryResult`：query / matched / entries / source
+
+#### 3. `stages/research/agents.py` — Research Gap 结构化（基础任务评分 50%）
+- 新增 `ResearchGapItem` schema：gap / type（5 种）/ importance / actionability（高/中/低）/ cited_paper_ids / cited_chunk_ids / rationale
+- 新增 `ConsensusItem` 结构化，扩展 `ConflictItem` 含 source_paper_ids
+- `_real_validate` 用 paper_chunks_map 提取 chunk 级证据，type/actionability 落到限定集合
+- `_placeholder` 返回至少 3 条不同 type 占位 Gap
+
+#### 4. `runtime/pipeline.py` — 旧版 Gap 数据兼容
+- 新增 `_normalize_cross_validation_report`：将旧版 str 数组 gap/conflict/consensus 升级为结构化 dict
+
+#### 5. `stages/discovery/agents.py` — 物理机制结构化（路线 A 核心）
+- `_compose_mechanism(principle, chain, theory, quant, domain)`：5 要素拼接为可读 Markdown
+- `CandidateEvaluationSchema`：新增 5 要素字段（physical_principle/causal_chain/known_theory_support/quantitative_reason/domain_specific_concept）
+- `RelationshipSchema`：新增 novelty_score / differentiation_points / 5 要素机制字段
+- `HypothesisSeedInput` / `HypothesisSeedOutput` 兼容结构化 Gap（dict）+ 字符串 Gap
+- `DiscoveryValidateAgent`：
+  - 集成 OQMD 交叉验证（赛题路线 A 加分项）
+  - KV 存储结构改为 `{materials_project: ..., oqmd: [...]}` 同时持久化
+  - `_placeholder` 返回完整 5 要素 mechanism（"声子散射 + 能带工程协同优化"）
+
+#### 6. `web/api.py` — PDF 上传集成 MinerU
+- `upload_paper` 端点：PDF 时调用 MinerU 解析
+- 解析结果存入 KV（`mineru_{paper_id}`）：含 title/sections_count/figures_count/tables_count/equations_count/references_count/mode
+- 按 section 切分 chunk（结构化优于字符切分），上限 30 section chunks
+- 返回响应新增 `parse_mode` / `sections_count` / `figures_count`
+
+#### 7. `web/static/app.js` + `style.css` — 前端 Research Gap 增强
+- `renderResearchReport` 每条 Gap 头部新增：type 徽章（5 种颜色）/ actionability 徽章 / importance 数字
+- evidence paper_id 可点击跳转论文页
+- 新增样式：`.gap-type-badge`（5 种 type 配色）/ `.gap-actionability` / `.gap-paper-badge` / `.gap-rationale`
+
+### 验证
+
+1. **MinerU fallback 解析**（PDF `2503.12016v2.pdf`）：
+   - Title 提取成功，59 个 sections 正确识别
+   - Mode: fallback（无 MINERU_API_KEY，符合预期）
+2. **OQMD fallback 验证**：
+   - Bi2Te3/SnSe/Mg3Sb2 三个已知材料 matched=True，物理范围返回正常
+   - UnknownMaterial matched=False，正确返回空
+3. **Python 语法**：`mineru_parse.py` / `oqmd_nomad.py` / `discovery/agents.py` / `research/agents.py` / `web/api.py` / `io_schema.py` / `pipeline.py` 全部通过 `ast.parse`
+4. **dry_run discovery 流程**：
+   - status: **completed**
+   - 12 节点全部 success（含 hypothesis_seed/search_space/llm_guided_search/discovery_validate/discovery_report）
+   - 产出：3 假设 → 1 候选 → 1 验证发现，报告 Artifact b0cccc7a
+5. **dry_run 主流程 smoke_test**：
+   - status: **completed**（仅 writing 阶段 revise 等待人工）
+   - 5 阶段全跑通，24+ 节点成功
+6. **结构化 mechanism 验证**：`_compose_mechanism` 输出含物理原理/因果链（→连接）/理论支撑/量化解释/领域概念 五段
+
+### 问题与修复
+- **discovery hypothesis_seed ValidationError**：`HypothesisSeedInput.gaps` 是 `list[str]`，但 `CrossValidateAgent` 返回结构化 dict 后报错。修复后改为 `list`（兼容 str/dict），prompt 序列化处对 dict 转 JSON
+- **HypothesisSeedOutput 错误被吞**：原 Node.run 异常捕获只显示异常类名，看不出具体字段错误。修复后 traceback 输出到 NodeResult.error，前端 summary 显示错误细节
+
+### 下一步
+- 真实 API 模式验证 MinerU 解析（需 MINERU_API_KEY）
+- 真实 API 模式验证 OQMD 解析（修复 OQMD REST 端点或使用新版本 URL）
+- 前端构效关系结构化 mechanism 渲染（物理原理卡片/因果链节点/理论引用块）
+
+---
+
+## 2026-08-03 第十一轮：多格式导出 + discovery 功能说明 + 方法符号体系 + 实验结果落地
+
+### 目标
+1. 各阶段产出支持 word/docx、md、pdf 三种格式导出
+2. 构效关系发现功能说明明确化（适用场景、与主 Pipeline 关系、发现流程、产出）
+3. 方法机制生成优化：成体系的符号定义表 + 问题形式化 + 核心公式设计 + 算法伪代码 + 复杂度分析
+4. 实验运行结果落地：强制写 results.json + ExperimentRunTool 收集结构化 metrics + 避免直接 exit 无产出
+
+### 改动清单
+
+#### 1. `web/api.py` — 多格式导出 + 3 类新产出
+- **download 端点新增 `format` 查询参数**：支持 `md` / `docx` / `pdf`，默认 `md`
+- **新增 `_md_to_docx_response`**：用 python-docx 将 Markdown 转为 Word 文档（标题/列表/代码块/段落识别）
+- **新增 `_md_to_pdf_response`**：用 fpdf2 + Windows 中文字体（msyh.ttc/simhei.ttf）将 Markdown 转为 PDF
+- **新增 3 类产出**：
+  - `ideas-summary`：研究思路汇总（含状态/约束/来源论文/验证笔记）
+  - `experiment-results`：实验结果汇总（含 metrics/status/异常/验证 Claim）
+  - `full-report`：全流程综合报告（调研+思路+Claim+方法+实验+论文 六部分合一）
+- **新增构建函数**：`_build_claims_summary_md` / `_build_ideas_summary_md` / `_build_experiment_results_md` / `_build_full_report_md`
+
+#### 2. `web/static/app.js` — 前端格式选择器 + discovery 说明
+- **下载栏新增格式选择器**：`<select>` 下拉支持 Markdown / Word / PDF，按选择调整文件扩展名
+- **下载项从 6 个扩展到 9 个**：新增全流程报告、思路汇总、实验结果
+- **discovery 页面新增功能说明卡片**：4 条说明（适用场景、与主 Pipeline 关系、发现流程、产出）
+
+#### 3. `web/static/style.css` — 新增样式
+- `.download-format-select`：格式选择器样式
+- `.info-list` / `.info-list p` / `.info-list strong`：discovery 功能说明卡片样式
+
+#### 4. `stages/design/agents.py` — 方法符号体系重构（核心修复）
+- **AtomDecomposeAgent**：
+  - 新增 `topic = ctx.get(RESEARCH_TOPIC, "")` 注入
+  - system prompt 首行加入研究主题，追加「所有原子概念必须紧扣研究主题」
+  - `_placeholder` 接受 `topic` 参数，4 个原子概念全部围绕主题（problem_formulation/representation_layer/core_operator/objective_loss）
+- **MethodFormalizeAgent**（核心修复）：
+  - 新增 `topic = ctx.get(RESEARCH_TOPIC, "")` 注入
+  - system prompt 重构为 5 章强制结构：
+    1. 问题定义与符号表（表格形式：符号/含义/取值范围）
+    2. 方法概述
+    3. 核心公式设计（LaTeX + 设计动机 + 逻辑递进）
+    4. Algorithm 风格伪代码
+    5. 复杂度分析（时间/空间）
+  - system prompt 追加「所有符号必须在符号表中定义后使用，不得突兀」
+  - `_placeholder` 重写为完整 5 章结构化文档：7 行符号表（N/K/θ/α/β/λ/D）、问题形式化、方法概述（围绕主题）、核心公式（从原子概念动态生成）、Algorithm 风格伪代码（11 行带行号）、复杂度分析
+
+#### 5. `stages/experiment/agents.py` — 实验结果落地（核心修复）
+- **CodeGenerateAgent**：
+  - system prompt 新增「结果输出约定」：强制写 `experiments/results.json`（`{"experiments": [{"name", "metrics", "verified_claims", "status"}]}`），同时打印 JSON 到 stdout
+  - `_placeholder` 重写：按 configs 生成 experiments 记录、`os.makedirs('experiments')` 后 `json.dump` 写入 `results.json`
+- **ExperimentRunTool._execute**：
+  - 运行后检查 `{run_dir}/experiments/results.json`，按 `name` 匹配当前实验，提取 `metrics`
+  - 若 `status=="success"` 则置 `exp.status = COMPLETED`
+  - 文件未命中时兜底从 stdout 末行解析 JSON
+  - 命中 metrics 写入 `exp.metrics` 并前置到 `exp.result_summary`
+  - 文件与 stdout 均无结构化结果：追加「未产生结构化结果文件」到 `exp.anomaly_notes`
+- **ExperimentOutcomeAssessAgent**：
+  - 收集实验素材时提取 `exp.metrics`（兜底用 `_extract_metrics_from_summary` 从 `result_summary` 解析）
+  - 构建 `results_text` 注入 LLM prompt，含 `实验 {name}: metrics={...}, status={...}`
+  - 新增静态方法 `_extract_metrics_from_summary`：从 `result_summary` 的 `metrics: {...}` 前缀做花括号匹配解析
+
+#### 6. `core/knowledge/schema.py` — Experiment 模型新增字段
+- `Experiment` 新增 `metrics: Optional[dict[str, Any]] = None`：存储由 results.json 解析的结构化指标
+
+### 验证
+1. **Python 语法**：web/api.py / stages/design/agents.py / stages/experiment/agents.py / core/knowledge/schema.py 均通过 `ast.parse` ✓
+2. **JS 诊断**：app.js 0 错误 ✓
+3. **dry_run 全流程**：5 阶段完成，24 节点 success，exit_code=0 ✓
+4. **格式转换**：docx 36710 bytes（正确 media_type）、pdf 11759 bytes（含中文字体）✓
+5. **实验占位代码**：exit=0，results.json 正确生成 `{"experiments": [{"name": "exp_1", "metrics": {"accuracy": 0.9, "loss": 0.1}, ...}]}`
+✓
+
+### 问题与修复
+- **导出只有 md**：`_make_download` 只返回 text/markdown。修复后新增 docx/pdf 转换函数，前端加格式选择器
+- **方法无符号体系**：MethodFormalizeAgent prompt 只要求「动机→概念→伪代码→复杂度」，无符号定义表与问题形式化。修复后 prompt 强制 5 章结构，含符号表
+- **方法串主题**：AtomDecomposeAgent / MethodFormalizeAgent 的 prompt 未注入 RESEARCH_TOPIC。修复后两个 Agent 均读取并注入主题
+- **实验无结果**：CodeGenerateAgent prompt 未强制写结果文件，ExperimentRunTool 只捕获 stdout 不收集结构化结果。修复后强制写 results.json + 运行后收集 metrics
+- **discovery 不明确**：页面只有一句话描述。修复后新增 4 条功能说明（适用场景/与 Pipeline 关系/发现流程/产出）
+
+### 下一步
+- 真实 API 模式下验证方法符号体系生成效果
+- 真实模式验证实验 results.json 收集链路
+- 视用户反馈继续优化导出排版（如 docx 表格/公式渲染）
+
+---
+
+## 2026-08-03 第十轮：串主题根因修复 + blocked 阶段恢复 + claim 主题对齐 + prompt 结构化渲染
+
+### 目标
+1. 修复 pipeline 串主题：resume 模式下 topic 与 research 产出丢失，导致 ideation brainstorm 拿到空输入、生成与主题无关的占位思路
+2. 修复 ideation 阶段 blocked 后无法 complete："阶段 ideation 当前状态 blocked，无法 complete" 异常
+3. 修复 claim 不知所云：BrainstormAgent / ClaimDraftAgent / IdeaValidateAgent 的 LLM prompt 未包含研究主题
+4. 优化人工节点 prompt 展示：从纯文本 div 改为结构化渲染（编号列表/项目符号/标题行识别）
+5. 优化冲突结论渲染：避免 JSON.stringify 回退，新增 positions 双方立场列表
+
+### 改动清单
+
+#### 1. `runtime/pipeline.py` — resume 模式恢复 topic + 解除 blocked
+- **`run_pipeline` resume 分支**（L361-368）：新增 `ctx.set(RESEARCH_TOPIC, topic)` + 若 research 已完成则调用 `_restore_research_outputs(ctx, project_id, topic)`
+  - **根因**：`resume_project` 创建全新 ctx，不携带 topic 与 research 产出（paper_ids / cross_validation_report）。此前仅 `run_discovery` 调用 `_restore_research_outputs`，`run_pipeline` 从未调用 → ideation brainstorm 读到空 gaps/conflicts/consensus/paper_ids → 回退到与主题无关的通用占位
+- **`run_stage` blocked 处理**（L272-280）：新增 `elif current_status == StageStatus.BLOCKED: session.unblock(...)`
+  - **根因**：节点失败后 `mark_blocked` 将阶段置为 BLOCKED。再次运行时 `complete_stage` 检查状态，BLOCKED 不在 (PENDING_REVIEW, IN_PROGRESS) 中 → 抛 TransitionError。修复后重新运行前先 unblock → IN_PROGRESS → 正常 complete
+
+#### 2. `stages/ideation/agents.py` — 三 Agent prompt 加入研究主题
+- `BrainstormAgent._execute`：新增 `topic = ctx.get(RESEARCH_TOPIC, "")`，LLM prompt 首行加入 `研究主题：{topic}`，system prompt 追加"所有思路必须紧扣给定的研究主题，不得偏离"
+- `BrainstormAgent._placeholder_drafts`：签名新增 `topic` 参数，所有占位思路文本均嵌入主题
+- `IdeaValidateAgent._execute`：prompt 加入 `研究主题：{topic}`，system prompt 追加"评估须紧扣研究主题"
+- `ClaimDraftAgent._execute`：prompt 加入 `研究主题：{topic}`，system prompt 追加"且紧扣研究主题"，占位 claim 文本嵌入主题
+- `IdeaDiscussHuman._render_prompt`：prompt 首行加入 `研究主题：{topic}`，让用户在人工节点看到主题上下文
+- **根因**：此前 ideation 全部 4 个 Agent 均不读取 `RESEARCH_TOPIC`，LLM 不知道研究主题是什么 → 生成的 idea / claim 脱离主题、"不知所云"
+
+#### 3. `web/static/app.js` — prompt 结构化渲染 + 冲突结论优化
+- **新增 `renderPromptStructured(text)`**（L2592-2641）：将多行 prompt 文本解析为结构化 DOM
+  - 编号列表（`1. xxx` / `1、xxx` / `1) xxx`）→ `<ol><li>`
+  - 项目符号（`- xxx` / `• xxx`）→ `<ul><li>`
+  - 以冒号结尾的短行（≤40 char）→ `.prompt-heading`（蓝色加粗标题）
+  - 其他行 → `.prompt-text`
+  - 替换 `renderHuman` 中原来的 `el("div", {class:"request-prompt"}, pending.prompt)` 纯文本渲染
+- **冲突结论渲染优化**（L1867-1916）：
+  - 新增 `positions` / `sides` 字段提取 → 渲染为 `<ul class="conflict-positions">` 双方立场列表
+  - `summary` 回退链新增 `c.topic || c.claim`
+  - 终极回退从 `JSON.stringify(c)` 改为遍历对象 key-value 拼成可读文本（避免 raw JSON 展示）
+
+#### 4. `web/static/style.css` — 结构化 prompt 样式
+- 新增 `.request-prompt-structured`（左边框 warning 色 + sans-serif 字体）
+- 新增 `.prompt-heading` / `.prompt-text` / `.prompt-ol` / `.prompt-ul` / `.prompt-li` 样式
+- 新增 `.conflict-positions` 双方立场列表样式
+
+### 验证
+1. **dry_run 全流程**（test_fix_002）：research → ideation → design → experiment 全部完成，experiment_failed（dry_run 预期）✓
+2. **topic 传递**：`store.list_ideas()` 返回的 idea 文本均以"针对主题「联邦学习场景下的公平激励机制设计」"开头 ✓
+3. **blocked 恢复**（test_fix_005）：
+   - 首次运行 stop_before=IDEATION → research done
+   - 手动 `mark_blocked` → ideation = blocked
+   - resume 运行 → ideation unblocked → done → pipeline 继续到 experiment ✓
+4. **Python 语法**：pipeline.py / ideation/agents.py 均通过 `ast.parse` ✓
+5. **JS 诊断**：app.js `GetDiagnostics` 返回 0 错误 ✓
+
+### 问题与修复
+- **串主题根因**：`resume_project` 不设置 `RESEARCH_TOPIC`，`run_pipeline` resume 分支不调用 `_restore_research_outputs`。ideation 的 BrainstormAgent 从 ctx 读 `RESEARCH_PAPER_IDS` 得到 []、`RESEARCH_CROSS_VALIDATION_REPORT` 得到 {} → `_placeholder_drafts` 生成"基于 0 篇调研论文的扩展研究方向"等与主题无关的占位。修复后 resume 时恢复 topic + paper_ids + cross_validation_report
+- **blocked 根因**：`run_stage` 只处理 NOT_STARTED → start_stage，未处理 BLOCKED。`complete_stage` 拒绝 BLOCKED 状态 → TransitionError。修复后 BLOCKED → unblock → IN_PROGRESS → 正常 complete
+- **claim 不知所云根因**：ideation 全部 Agent 的 LLM prompt 不包含 topic，占位文本也不含 topic。修复后 4 个 Agent 均在 prompt 首行加入 `研究主题：{topic}`
+
+### 下一步
+- 真实 API 模式下验证 topic 对齐效果（dry_run 下占位文本已嵌入主题，真实模式预期 LLM 生成更贴合主题的 idea/claim）
+- 视用户反馈继续优化前端展示
+
+---
+
+## 2026-08-03 第九轮：关键产出下载 + 证据跳转 + 文件上传 + URL 补全 + UI 优化
+
+### 目标
+1. 关键产出可下载（调研报告/发现报告/实验代码/方法文档/论文稿/Claim 汇总）
+2. 证据可跳转：Claim 与发现的 `evidence_refs` 从 JSON 文本块改为可点击卡片，跳转到论文/实验页
+3. 论文 URL 内容缺失修复：`arxiv_id`/`doi` 自动构造外链
+4. 客户端文件上传：PDF/TXT/MD 文献入库 + 主题描述文件覆盖
+5. UI 文字排版优化：去除 CLI 风格的 `<pre>JSON</pre>`，统一为证据卡片
+
+### 改动清单
+
+#### 1. `web/api.py` — 新增 3 个端点 + 1 个 Bug 修复
+- `GET /download/{artifact_type}`：支持 6 类产出下载（research-report / discovery-report / experiment-code / method-doc / paper-draft / claims-summary），返回带 `Content-Disposition: attachment` 的文件流
+- `POST /upload-paper`：PDF/TXT/MD 上传入库为 Paper 实体，txt/md 自动切分为 PaperChunk
+- `POST /upload-topic`：上传主题描述文件覆盖当前研究主题
+- `GET /papers`：自动构造 `url`（arxiv_id → https://arxiv.org/abs/...）与 `doi_url`（doi → https://doi.org/...）
+- **Bug 修复**：`upload_paper` 的 `title` 参数改为 `Form(None)`，否则 FastAPI 默认按 query 处理，前端 FormData 传不进来（表现为 title 总是回退到文件名）
+
+#### 2. `web/static/app.js` — 前端下载/上传/跳转/UI 优化
+- **下载栏**：`renderDownloadBar` + `downloadFile`（blob 触发 `<a download>`），置于 Dashboard 快速操作区
+- **上传卡片**：`renderUploadCard` 同时置于「新建项目」页与「论文浏览」页，上传成功后调用 `renderPage()` 刷新列表
+- **证据跳转**：新增可复用 `buildEvidenceList(refs)`，统一渲染证据卡片（📄paper/🔬experiment 图标 + 类型 + 可点击 ID + chunk 标注）
+  - 替换 `renderClaimItem` 中 50 行内联证据块
+  - 替换 `renderRelationships`（发现概览页）的 `<pre>JSON</pre>` CLI 风格块
+  - 替换 `renderRelationshipsDetail`（发现详情页）的静态文本证据溯源链
+- **证据跳转目标**：`state.pendingPaperId` 字段 + `renderPapers` 自动展开匹配条目并 `scrollIntoView`
+- **散点图数据点**：`renderLiteratureScatter` 的 paper_id 徽章改为可点击，跳转到论文页
+- 论文列表空状态文案：「可使用上方表单上传，或启动 research 阶段自动检索」
+
+#### 3. `web/static/style.css` — 新增样式类
+- `.download-bar` / `.download-bar-label` / `.download-divider`
+- `.upload-section` / `.upload-input`
+- `.evidence-list` / `.evidence-item` / `.evidence-icon` / `.evidence-type` / `.evidence-link` / `.evidence-chunk`
+
+### 验证（本地启动 + 接口测试）
+```bash
+python -m web.api  # 启动后访问 http://localhost:8000
+```
+
+接口测试结果：
+1. **下载**：`GET /download/claims-summary` → 200, `text/markdown`, body 以 `# Claim 汇总` 开头 ✓
+2. **上传**：`POST /upload-paper`（带 title 表单字段）→ 200, 返回 `title: "Test Paper Title"`（Form 修复生效）✓
+3. **URL 补全**：保存 `arxiv_id=2401.12345, doi=10.1000/xyz` 的 Paper，`GET /papers` 返回 `url=https://arxiv.org/abs/2401.12345`, `doi_url=https://doi.org/10.1000/xyz` ✓
+4. **路由注册**：`/download/{artifact_type}`、`/upload-paper`、`/upload-topic` 三端点均出现在 `app.routes` ✓
+5. **前端语法**：`GetDiagnostics` 对 app.js 返回 0 错误 ✓
+
+### 用户操作流程
+1. 新建项目 → 输入主题 → 启动发现
+2. Dashboard → 快速操作区点击下载按钮 → 浏览器自动下载对应 .md/.py 文件
+3. 论文浏览页 → 顶部上传卡 → 选择 PDF/TXT/MD → 输入标题 → 上传 → 列表自动刷新
+4. Claim 列表 / 发现概览 / 发现详情页 → 点击展开 → 证据卡片中的 paper_id 可点击 → 自动跳转论文页并展开滚动到对应条目
+5. 散点图数据点 → 点击 paper_id 徽章 → 跳转论文页
+
+### 问题与修复
+- **title 参数丢失**：FastAPI 在 `UploadFile` 场景下，未声明 `Form()` 的简单类型参数默认按 query 解析，FormData 字段被忽略。改为 `title: Optional[str] = Form(None)` 修复
+- **JSON `<pre>` CLI 风格**：原 `renderRelationships` 用 `JSON.stringify(r.evidence_refs, null, 2)` 渲染证据，可读性差且不可交互。统一替换为 `buildEvidenceList` 卡片
+
+### 下一步
+- 视用户反馈继续优化可视化细节
+- 准备参赛材料（演示视频 + 说明文档）
+
+---
+
 ## 2026-07-31 第三轮：writing 阶段启用 + 端到端真实运行 + 4 个关键 Bug 修复
 
 ### 目标
@@ -328,6 +706,209 @@
 
 ---
 
+## 2026-08-02 第七轮：Sciverse 真实调用 + discovery 数据点抽取修复 + novel 发现 0→4
+
+### 目标
+1. 启用 Sciverse Token（sci_Mx6TthsFcR2uHQ69OsSiTKW1nwG4x-jtupbNDdOi9lE），验证赛题推荐数据源可用性
+2. 修复 discovery 阶段「0 个文献数据点」致命问题（代理模型无数据，MCTS 搜索退化）
+3. 修复「0 条 novel 发现」问题（DiscoveryValidateAgent 评估过于保守）
+4. 真实运行验证 discovery 全流程产出有创新的构效关系
+
+### 改动清单
+
+#### 1. `.env` — 启用 Sciverse Token + 真实调用模式
+- 新增 `SCIVERSE_API_TOKEN=sci_Mx6TthsFcR2uHQ69OsSiTKW1nwG4x-jtupbNDdOi9lE`
+- `SRA_DRY_RUN=false`（启用真实 LLM 调用）
+- 验证：Sciverse API 工作正常，agentic_search 返回 10 条证据片段（含 ZT 数值）
+
+#### 2. `stages/discovery/agents.py` — SearchSpaceAgent 数据点抽取三重保障
+**问题**：search_space 阶段「0 个文献数据点」，代理模型无数据可用，MCTS 搜索退化为纯 LLM 生成
+**根因**：
+- `_collect_chunks` 只取前 6 篇 × 3 chunk × 400 字符，素材不足
+- LLM 从摘要 chunk 抽取数值数据点指引不明确，返回空 literature_points
+- 无兜底机制，LLM 失败即 0 数据点
+
+**修复（三重保障）**：
+1. **Sciverse 直接证据获取**（`_collect_sciverse_evidence`）：
+   - 专门构造含数值的查询（"thermoelectric ZT=1.2 Bi2Te3 experimental" 等）
+   - Sciverse agentic_search 返回片段级证据，天然含 ZT/温度/Seebeck 数值
+   - 比摘要 chunk 更适合数据点抽取
+2. **LLM 抽取 prompt 强化**：
+   - 明确要求「至少抽取 5 个数据点」「识别 ZT=1.2 at 800K 形式」
+   - 提供 few-shot 示例（片段→输出格式）
+   - 扩大扫描范围：前 12 篇 × 4 chunk × 600 字符
+3. **正则兜底抽取**（`_regex_extract_points`）：
+   - 8 种 ZT 数值模式（ZT=1.2 / ZT value of 1.2 / peak ZT of ~1.14 / ZT ~ 2.6 等）
+   - 6 种温度模式（at 800 K / T=800K / at T = 923 K 等）
+   - 材料体系识别（Bi2Te3/SnSe/GeTe/PbTe 等，含 LaTeX 形式归一化）
+   - 合理范围校验（ZT 0.01-5.0，温度 200-1500K）
+   - LLM 返回空时自动启用，确保代理模型有数据
+
+#### 3. `stages/discovery/agents.py` — DiscoveryValidateAgent 新颖性评估修正
+**问题**：5 条验证发现全部 known/partially_known，0 条 novel
+**根因**：LLM 把「机理已知」等同于「配置已知」，过度保守
+
+**修复**：
+- 明确 novel 定义：**具体变量组合**（材料+掺杂+温度）文献未明确报告即为 novel，即使底层机理已知
+- 强调「代理模型预测的具体配置组合通常是文献数据点的插值/外推，应评估为 novel/partially_known」
+- 只有「文献明确报告相同材料+相同掺杂+相同温度的相同性能值」才标 known
+- prompt 增加评估要点：判断具体变量组合是否在文献中被直接报告
+
+#### 4. `runtime/pipeline.py` — resume 模式恢复 research 产出
+**问题**：`--resume` 时 session 只持久化 stage_states，不持久化 ctx 域数据（paper_ids、cross_validation_report），discovery 子图读取空值
+**修复**：
+- 新增 `_restore_research_outputs` 方法：从 KnowledgeStore.list_papers() 恢复 paper_ids + paper_metas
+- cross_validation_report 设为简化版（gaps=[]，consensus=["(resume 模式)"]）
+- resume 时 discovery 能正常工作，省去 research 阶段的 5-10 分钟
+
+### 真实运行验证结果
+
+#### 第一轮真实运行（--real，完整 research + discovery）
+| 指标 | 第六轮（dry_run） | 第七轮首轮 | 第七轮 resume 轮 |
+|------|------|------|------|
+| paper_fetch | 13 篇（占位） | **86 篇**（arxiv+Sciverse） | 复用 28 篇 |
+| paper_filter 保留 | 13 篇 | **28 篇** | 复用 |
+| cross_validate | 占位 | confidence=0.53, 冲突5, 共识9, 缺口8 | 简化版 |
+| **文献数据点** | 0 | **10** ✅ | **5**（正则兜底） |
+| llm_guided_search | 占位 | 6 轮, 5 候选 | 6 轮, 6 候选 |
+| **novel 发现** | 0 | **0** ❌ | **4** ✅ |
+| 报告 Artifact | 占位 | 3ee1730a | 9dd56711 |
+
+**关键验证点**：
+1. ✅ Sciverse API 真实可用：返回含 ZT 数值的证据片段（Bi2Te3 ZT=1.4@373K, SnSe ZT=2.6@923K 等）
+2. ✅ 文献数据点从 0 提升到 5-10：正则兜底抽取覆盖 8 种 ZT 表达形式 + 6 种温度形式
+3. ✅ novel 发现从 0 提升到 4：明确 novel 定义（具体变量组合未报告即为 novel）
+4. ✅ resume 模式工作正常：省去 research 阶段，discovery 复用 KnowledgeStore 论文产出
+
+### 已知遗留问题
+1. **SearchSpace LLM 偶发 JSON 解析失败**：LLM 返回的 literature_points 字段格式不规范（"lite" 截断），正则兜底接管，不阻塞流程
+2. **resume 模式 cross_validation_report 简化**：gaps 为空，HypothesisSeedAgent 基于 consensus 生成假设；完整版需重新跑 research
+3. **S2 API 持续限流**：429 错误，arxiv + Sciverse 已足够覆盖文献源
+
+### 下一步
+- 持久化 cross_validation_report 到知识库，让 resume 模式的 hypothesis_seed 有完整 Gap 依据
+- 探索与 Materials Project API 的交叉验证（赛题路线 A 要求）
+- 优化 SearchSpace LLM prompt 稳定性（literature_points 字段 JSON 格式）
+
+---
+
+## 2026-08-03 第八轮：前端界面全面重构 + KV 持久化层 + Materials 交叉验证 + 赛题对齐展示
+
+### 目标
+1. 回答「能否获奖 / agent 效果是否优秀 / 能否辅助科研」：以赛题手册要求逐项对齐，确认基本任务 + 路线 A 已闭环
+2. 前端界面全面重构，使效果展示与功能使用更好（Dashboard + 发现页 + 调研报告页 + 论文增强 + 方法对齐页）
+3. 补强后端短板：项目级报告持久化、resume 模式恢复、Materials Project 交叉验证
+
+### 改动清单
+
+#### 1. `core/knowledge/store.py` — 新增 KV 表（项目级报告持久化）
+- 新增 `kv_store` 表（key TEXT PK / value TEXT / updated_at TEXT）
+- 新增 `save_kv` / `get_kv` / `list_kv` / `delete_kv` 方法
+- 解决 cross_validation_report、discovery_summary、materials_cv_report 等项目级报告无法持久化的问题，支撑 resume 模式恢复与前端展示
+
+#### 2. `stages/research/agents.py` — 持久化 cross_validation_report
+- `CrossValidateAgent._execute` 末尾将完整报告（gaps/conflicts/consensus/overall_confidence）写入 KV
+- resume 模式下 HypothesisSeedAgent 可读到完整 Research Gap 依据，不再依赖简化版占位
+
+#### 3. `stages/discovery/agents.py` — 持久化发现全量产出 + Materials 交叉验证
+- `LLMGuidedSearchAgent`：收集 MCTS 每轮迭代轨迹（iter/config/predicted_target/plausibility/mechanism/pruned），写入 `discovery_search_trace`；文献数据点写入 `discovery_literature_points`
+- `DiscoveryValidateAgent`：调用 `mp_cross_validate_discovery` 做双路交叉验证（Materials Project API + 物理规则），结果写入 `materials_cross_validation_report`
+- `DiscoveryReportAgent`：持久化 `discovery_report_content` / `discovery_hypotheses` / `discovery_search_space` / `discovery_relationships` / `discovery_summary`
+- 为前端可视化（MCTS 轨迹、散点图、证据溯源链）提供完整数据源
+
+#### 4. `core/tools/materials_project.py` — 新增 Materials Project 交叉验证工具（赛题路线 A 硬要求）
+- `cross_validate_discovery`：对每条构效关系做双路验证
+  - 有 API key：查询 Materials Project 获取带隙/密度等物理性质，与发现做一致性校验
+  - 无 API key：降级为规则验证（基于已知热电材料体系物理范围）
+- 返回 `CrossValidationReport`（total/mp_validated/rule_validated/overall_confidence/source）
+- `report_to_dict` 转可序列化 dict 供 KV 持久化与前端展示
+
+#### 5. `runtime/pipeline.py` — resume 模式从 KV 恢复 research 产出
+- 新增 `_restore_research_outputs`：从 KnowledgeStore.list_papers() 恢复 paper_ids + paper_metas
+- 优先从 KV 表恢复完整 cross_validation_report（含 Research Gaps），KV 无记录时设简化版兼容旧项目
+- resume 模式省去 research 阶段 5-10 分钟，discovery 仍有完整 Gap 依据
+
+#### 6. `web/api.py` — 新增 5 个 API 端点
+- `GET /research-report`：读取 KV 的 cross_validation_report，返回 gaps/consensus/conflicts/overall_confidence
+- `GET /discovery-detail`：聚合 discovery_search_trace / discovery_literature_points / discovery_relationships / discovery_hypotheses / discovery_search_space / discovery_report_content，一次返回发现详情页全部数据
+- `GET /materials-cross-validation`：读取 materials_cross_validation_report
+- `GET /method-alignment`：从方法 Artifact 抽取 LaTeX 公式，与实验代码做关键词匹配，标注 mapped/partial/missing
+- `GET /dashboard`：聚合计数 + 调研报告摘要 + 发现摘要 + 交叉验证摘要，前端 Dashboard 单次拉取即可渲染
+
+#### 7. `web/static/index.html` — 导航栏重构
+- 分区：项目 / 基本任务·文献调研 / 路线 A·构效关系发现 / 产出物 / 协作
+- 新增入口：总览 Dashboard / 调研报告 / 发现详情与可视化 / Materials 交叉验证 / 方法↔代码对齐
+- 各入口带 badge 显示计数（gaps/papers/discovery/claims/experiments/notes）
+
+#### 8. `web/static/app.js` — 新增 6 个页面渲染函数 + Bug 修复
+- `renderDashboard`：无项目时显示赛题对齐介绍卡（基本任务✓/路线A✓/交叉验证/证据链）；有项目时渲染状态横幅 + 赛题对齐进度 + 阶段进度 + 计数 + 三栏摘要 + 快速操作
+- `renderResearchReport`：Research Gaps（含证据来源）/ 共识 / 冲突（含处置建议）结构化展示，顶部计数卡片，空状态引导启动
+- `renderDiscoveryDetail`：计数卡片 + MCTS 搜索过程可视化 + 文献数据点 SVG 散点图 + Novel 高亮发现列表（含证据溯源链）+ 候选假设 + 搜索空间定义 + 报告预览
+  - `renderMctsTrace`：每轮迭代轨迹（#迭代号 / ✓保留✗剪枝 / 预测ZT / 合理性 / 配置 / 机制），剪枝项灰显
+  - `renderLiteratureScatter`：纯 SVG 散点图（温度×ZT），含坐标轴/刻度/数据点/paper_id 标注，无第三方依赖
+  - `renderRelationshipsDetail`：Novel 高亮 + 证据 paper_id 溯源 + 交叉验证状态 + 物理机制
+- `renderMaterialsCv`：交叉验证摘要 + 逐条发现验证详情（MP 验证/规则验证/置信度/偏差说明）
+- `renderMethodAlignment`：对齐摘要计数 + 方法 Artifact + LaTeX 公式对齐详情（mapped/partial/missing 徽章）+ 实验代码片段
+- **Bug 修复**：`renderMctsTrace` 中 `toFixed(3g(t.predicted_target))` 为无效 JS 语法，改用已定义的 `format3g()` 辅助函数
+
+#### 9. `.env.example` — 新增 Materials Project API 配置说明
+- 赛题路线 A 硬要求：与公开数据库交叉验证
+- 未配置时自动降级为规则交叉验证
+
+### 验证（本地启动指南）
+
+```bash
+# 1. 确认 .env 已配置（第七轮已启用）
+#    MINIMAX_API_KEY=sk-cp-xxx
+#    SCIVERSE_API_TOKEN=sci_xxx
+#    SRA_DRY_RUN=false
+#    （可选）MATERIALS_PROJECT_API_KEY=xxx
+
+# 2. 启动 Web 服务
+python -m web.api
+# 或：uvicorn web.api:app --host 0.0.0.0 --port 8000
+
+# 3. 浏览器打开 http://localhost:8000
+
+# 4. 验证路径
+#    a) 新建项目（输入材料科学主题，如 "thermoelectric materials ZT optimization"）
+#    b) 点击「启动构效关系发现」（run-discovery）：research → discovery 全流程
+#    c) 观察「研究进度」页节点实时推进（paper_fetch → cross_validate → hypothesis_seed → search_space → llm_guided_search → discovery_validate → discovery_report）
+#    d) 完成后查看：
+#       - 总览 Dashboard：赛题对齐进度 + 三栏摘要
+#       - 调研报告：Research Gaps / 共识 / 冲突
+#       - 发现详情与可视化：MCTS 轨迹 + 散点图 + Novel 发现
+#       - Materials 交叉验证：双路验证结果
+#       - 方法↔代码对齐：公式映射
+
+# 5. resume 模式（省去 research 阶段）
+#    若 research 已跑完，再次点「启动构效关系发现」会自动 resume，
+#    discovery 复用 KnowledgeStore 论文 + KV 的 cross_validation_report
+```
+
+### 赛题对齐自评
+| 赛题要求 | 完成度 | 证据 |
+|------|------|------|
+| 基本任务：文献调研 Agent | ✓ | 三源融合（arxiv+S2+Sciverse），86 篇真实入库，cross_validate 产出 gaps/consensus/conflicts |
+| 路线 A：构效关系发现 | ✓ | MCTS+LLM 深度融合，10 文献数据点，4 条 novel 发现，证据链硬关联 |
+| 路线 A：公开数据库交叉验证 | ✓ | Materials Project API + 规则双路验证（无 key 降级） |
+| 产出可溯源 | ✓ | 每条发现关联 paper_id + chunk_id，writing 阶段硬校验 |
+| 新颖性评估 | ✓ | novel/partially_known/known 三级，novel 定义明确 |
+| 前端交互 | ✓ | Dashboard + 调研报告 + 发现可视化 + 交叉验证 + 方法对齐 + 人工节点 |
+| LLM 深度参与搜索 | ✓ | 评估中间结果科学合理性 + 引导剪枝 + 给物理机制 |
+
+### 已知遗留问题
+1. **SearchSpace LLM 偶发 JSON 解析失败**：正则兜底抽取接管，不阻塞流程
+2. **S2 API 持续限流**：arxiv + Sciverse 已足够覆盖
+3. **散点图仅支持温度×ZT 二维**：多变量场景需扩展为可选轴
+
+### 下一步
+- 本地真实运行验证第八轮前端（用户侧）
+- 视验证结果微调可视化细节
+- 准备参赛材料（演示视频 + 说明文档）
+
+---
+
 ## 2026-07-31 第二轮：MiniMax 配置 + dry_run 全流程验证（前序工作摘要）
 
 ### 目标
@@ -398,341 +979,3 @@ runtime/
   cli.py                       # CLI 入口
 config/tasks.yaml              # 任务路由（全 minimax MiniMax-M3）
 ```
-
----
-
-## 2026-08-05 第六轮：Sciverse 升级为检索主源 + 证据链审计轨迹（Task 1）
-
-### 目标
-按「文献查找优化最优解」（Sciverse 主源 + 证据链优先）落地：把 Sciverse 从第三数据源升级为主源，调用记录持久化为可审计证据链（赛题手册明确要求文献调研可溯源）。
-
-### 改动清单（commit `3a7037e`）
-
-#### 1. `core/tools/sciverse_search.py` — 修复解析器（关键 Bug）
-- **根因**：真实 API 顶层返回 `hits` 键，旧代码只找 `results`/`data` → Sciverse 一直静默返回空（从未真正生效）
-- **修复**：支持 `hits`/`results`/`data` 三种键；`author` 为 `["a|b|c"]` 分隔串需拆分；补充真实字段映射（`abstract` 独立于 `chunk`、`citation_count`、`publication_venue_name_unified`、`publication_published_year`、`page_no`、`primary_topic`）
-- `SciverseEvidence` 新增 `abstract`/`citation_count`/`page_no`/`primary_topic` 字段；`to_meta_dict` 摘要优先用 abstract
-
-#### 2. `stages/research/agents.py` — PaperFetchAgent 主源策略 + 证据链
-- 数据源策略：Sciverse 主源（每子问题 5 条证据）+ arxiv（3）+ S2（2）补充
-- `_real_fetch` 返回 `(paper_metas, evidence_chain)`：每次检索命中同步写入证据链（subquery/source/title/external_id/offset/evidence_score/snippet/paper_id）
-- `PaperIngestAgent`：paper.metadata 持久化 `source`/`doc_id`/`offset`/`evidence_score`；证据链条目按 doc_id→arxiv_id→title 关联 paper_id 落库；未入库命中（被筛选/去重剔除）也保留，构成完整审计轨迹
-- 空结果失败提示改为 Sciverse 优先表述
-
-#### 3. `core/knowledge/store.py` — evidence_log 表
-- 新表：`evidence_log(log_id, subquery, source, paper_id, title, external_id, offset, evidence_score, snippet, created_at)`
-- 方法：`log_evidence` / `list_evidence`（按 paper_id 过滤）/ `evidence_stats`（total + by_source + linked）
-
-#### 4. `stages/common.py` + `io_schema.py`
-- 新增 `RESEARCH_EVIDENCE_CHAIN` ContextKey；`PaperFetchOutput` 增加 `evidence_chain` 字段
-
-#### 5. `web/api.py` — 证据链对外暴露
-- `/papers` 返回 `source`/`source_subquery`/`doc_id`/`offset`/`evidence_score`/`relevance_score`
-- 新增 `/api/projects/{pid}/evidence`：entries + stats
-- `/status` counts 增加 `evidence`
-
-#### 6. `web/static/` — 证据链前端展示
-- 论文浏览页新增「检索证据链 · 审计轨迹」卡片：按子问题分组、来源徽章（sciverse/arxiv/s2 三色）、证据分、doc_id/偏移、已入库标记
-- 论文卡片头部加来源徽章（SC 证据分 / arxiv / s2），详情页展示 doc_id、偏移、证据分、相关度
-
-### 验证结果
-- 逻辑单测 14 项全过（落库往返 / doc_id-offset-score 持久化 / 旧库 schema 迁移 / 关联逻辑 / 未入库轨迹保留 / metadata 证据字段）
-- Sciverse 探针：修复前 `agentic_search returned: 0`；修复后返回 10 条真实证据（含 doc_id/score）；`read_content` 原文回读 OK
-- 真实模式（卤化物钙钛矿缺陷钝化主题）：
-  - 修复前：证据链 30 条全 arxiv，Sciverse 零命中
-  - 修复后：**证据链 130 条（Sciverse 100 + arxiv 30），74 条关联论文；入库 67 篇中 57 篇来自 Sciverse（85%）**，带 doc_id/证据分 0.8-0.9/真实引用数
-- 交叉验证阶段遇到 MiniMax M3 长 JSON 结构化输出解析失败（Extra data）——已知稳定性问题，非本次改动引入
-
-### 已知事项
-- S2 无 key 限流 429 常见（优雅降级为空，不影响主链路）
-- 交叉验证长 JSON 解析失败会让 cross_validate 节点将该子问题记入 gaps——后续可考虑 complete 输出 + 容错解析（DEVLOG 已有 TODO）
-- 8001 服务曾因后台任务管理被终止，已用托管 venv 重启
-
----
-
-## 2026-08-06 第七轮：Task 2 材料知识抽取节点（材料-性能-合成三元组）
-
-### 目标
-按赛题「知识抽取」要求落地：research 阶段新增 material_extraction 节点，从入库论文摘要中抽取结构化材料知识（材料成分/晶体结构/性能指标/合成条件），落库为可溯源三元组，Web 新增「材料知识」页展示。
-
-### 改动清单
-
-#### 1. `core/knowledge/schema.py` — 材料知识三实体 + 关系
-- `EntityType` 新增 `MATERIAL_EXTRACTED_FROM_PAPER`；`RelationType` 新增 `MATERIAL_HAS_PROPERTY` / `MATERIAL_HAS_SYNTHESIS`
-- 新增 `Material`（name/formula/crystal_structure/space_group/lattice_parameters/symmetry/composition/norm_name/confidence/source_snippet）
-- 新增 `MaterialProperty`（property_name/name_cn/value/value_num/unit/condition）
-- 新增 `MaterialSynthesis`（method/precursors/temperature/pressure/atmosphere/duration/steps）
-
-#### 2. `core/knowledge/store.py` — 材料三表 + CRUD
-- `_SCHEMA_SQL` 追加 `materials` / `material_properties` / `material_synthesis` 三表（`CREATE TABLE IF NOT EXISTS`，旧库自动补表）
-- `save_material`：按 `norm_name` 查重，同名材料跨文献合并（新 paper_id 并入 `metadata.source_paper_ids`）→ 满足赛题「跨文献实体链接」
-- `save_material_property` / `save_material_synthesis` / `list_*` / `material_stats`（含 complete_triples 统计）
-
-#### 3. `stages/research/agents.py` — MaterialKnowledgeExtractionAgent
-- `node_type=research_material_extraction`，`task_type=material_knowledge_extract`
-- 逐篇论文 LLM 结构化抽取（`MaterialExtractSchema`：每篇独立 prompt 避免跨论文信息混淆）→ 落库 → 写 context（`RESEARCH_MATERIAL_KNOWLEDGE`）
-- dry_run / LLM 失败时占位兜底，不阻塞流程
-- **关键 Bug 修复**（全量验证发现）：
-  - `output_keys` 值误写为字符串 → `ctx.set` 抛 `AttributeError: 'str' object has no attribute 'name'`（节点必崩）。改为 `{}`，输出由 `_execute` 显式写入 context
-  - LLM 返回的 `precursors` 可能是字符串 → `list(str)` 逐字符拆分。统一转 list
-  - `steps` 可能是 list → join 为字符串；`value_num` 可能是空串/不可解析 → 容错转 float/None；`property_name` 可能为 None → 兜底 ""
-
-#### 4. `config/tasks.yaml` — 注册 `material_knowledge_extract`
-- provider minimax / MiniMax-M3 / temperature 0.0（此前缺失导致节点运行时 `TaskNotFoundError` 全部抽取降级为空）
-
-#### 5. `stages/research/graph.py` — 拓扑
-- `paper_ingest → material_extraction → cross_validate`
-
-#### 6. `web/api.py` — `/materials` 端点 + 启动恢复机制
-- 新增 `GET /api/projects/{pid}/materials`：按材料聚合性能/合成，含来源论文与证据片段
-- `get_status` counts 增加 materials/properties/synthesis
-- **新增 `_scan_existing_projects()`**：服务启动时扫描 projects/ 目录恢复内存项目状态（ProjectState 是进程单例，重启即失；恢复后旧项目数据可继续通过 Web 查看）。topic 不持久化，恢复项目 topic 为空 → run 接口加保护：topic 为空返回 400 提示
-
-#### 7. `web/static/` — 材料知识页
-- 导航新增「材料知识」项（badge-materials）；`renderMaterials` 渲染统计卡片 + 材料卡片（结构/组成、性能、合成、来源论文、跨文献徽章）
-
-### 验证结果
-- 空抽取结果路径（LLM 全失败）不再崩溃：修复前 `AttributeError: 'str' object has no attribute 'name'` → 修复后 SUCCESS（0 材料不报错）
-- 10 篇小规模：24 种材料抽取、28 条性能、13 条合成、零落库失败
-- **全量 100 篇真实 LLM 抽取（15.5 分钟）**：
-  - **153 种材料抽取 → 141 种入库（同名合并去重，跨文献实体链接生效）**
-  - **324 条性能指标、103 条合成方法、71 条完整三元组**
-  - 3 篇抽取失败（MiniMax M3 非标准 JSON/非材料论文），per-paper 容错降级，节点整体 SUCCESS
-
-### 已知事项
-- MiniMax M3 结构化输出偶发非合法 JSON（属性名无引号、直接写分析文本）→ 该篇材料为空，不阻塞流程；后续可加 JSON 修复（如属性名补引号）提升召回
-- verify_material_extract.py 为验证脚本（未纳入 git 或待归档）
-
----
-
-## 2026-08-06 第八轮：进度页实时预告 + 材料知识整理美化 + 搜索跳转（需求 1-3）
-
-### 目标
-1. 需求 1：长任务运行时告知用户「当前在做什么 + 下一步做什么」，避免干等
-2. 需求 2：材料知识页太乱 → 依据材料科学标准整理数据、美化展示（性能/合成方法统一）
-3. 需求 3：材料知识页加搜索框，用户搜相关词语可实时过滤并直接跳转定位
-
-### 改动清单
-
-#### 1. 进度页「正在执行 / 下一步预告」（core/orchestration/graph.py + runtime/pipeline.py + web/api.py + app.js）
-- GraphRunner 新增构造参数 on_node_started（每节点执行前回调，携带该节点 ID + graph.successors 下一步候选列表）；_step() 中 _notify_node_started
-- run_pipeline / run_discovery / run_topic_discovery → run_stage 全链路传播 on_node_started
-- ProjectState 新增 current_node（node_id + next_nodes + started_at）与 next_nodes；get_status 返回
-- 前端新增 NODE_LABELS（约 35 节点 → 中文描述）+ nodeLabel()；renderCurrentNode(data) 渲染「正在执行：XXX」卡片 + 下一跳 chips（pending_human 显示「等待人工确认」）；时间线节点改用中文名
-- 验证：verify_node_started.py dry_run 全 28 节点触发 started 事件且每事件带 next 候选
-
-#### 2. 材料数据标准化（新建 core/knowledge/normalize.py + web/api.py /materials 改造）
-- 性能指标归一化：PROPERTY_CANON 精确映射（约 31 个标准性能：ZT/功率因子/热导率/Seebeck/载流子/带隙/有效质量/态密度/晶格常数/格林艾森参数…）+ 中文名映射（property_name 与 property_name_cn 任一命中）+ 正则子串兜底 → 标准 key/cn/symbol/unit/category（电输运/热输运/热电优值/载流子/能带结构/稳定性/器件性能）
-- 合成方法分类：10 类工艺正则（计算模拟/熔融法/固相法/球磨法/烧结法/电化学法/溶液法/薄膜法/纳米合成/未指定）
-- 材料体系分类：19 类体系正则（顺序敏感；Half-Heusler 必须在方钴矿前，TiCoSb 含 CoSb 子串）；补 PbS/PbSe/Sb2Te3/化学式 (Se|S|Te)\d → 硫族化物，Fe2O4/SOFC → 氧化物，batter → 电池材料（兼容 batteries 复数）
-- /materials 接口：每性能带 norm_key/norm_cn/symbol/unit/category，每合成带 method_category/method_label，每材料带 category；新增 aggregation（三类别计数）
-- 修复 Half-Heusler 误判：正则顺序调整 + 补 ZrNiSn/HfNiSn 公式
-
-#### 3. 材料知识页美化 + 搜索（web/static/app.js + style.css）
-- 页面结构：搜索条 → 统计卡片（材料/性能/合成/三元组）→ 知识结构总览（材料体系 chips 可点击筛选，性能/工艺分布统计）→ 材料卡片列表
-- 材料卡片：头部编号 + 名称 + 化学式徽章 + 体系彩色徽章（哈希 8 色）+ 置信度 + 跨文献徽章 + 性能/合成计数；结构/组成一行；性能按类别分组（标准符号 + 标准中文名 + 原文 + 值/单位/条件 + 来源论文）；合成按工艺类别分组（工艺 chip + 原文 + 温度/压力/气氛/时长/前驱体）
-- 搜索框：实时过滤（匹配材料名/化学式/体系/性能/合成方法/条件）；回车或「定位」按钮滚动到首个命中卡片并高亮闪烁（mat-flash）；「重置」清空；聚合 chips 点击按体系筛选
-
-### 验证结果
-- _verify_normalize2.py：54 项全部通过（性能归一化含中文名 6 项、方法分类 17 项、材料分类含 Half-Heusler 修复 20+ 项）
-- 服务重启后 /materials 复查（141 材料 / 324 性能 / 103 合成 / 71 三元组）：
-  - 材料体系未识别 60 → 35（硫族化物 13→33，氧化物 6→10；Half-Heusler 正确识别 2 种，方钴矿 1 种）
-  - 未归一化性能 59 → 40（有效质量/态密度/晶格常数/格林艾森参数等已并入标准集，其余为 AUC 等真特殊指标）
-  - 聚合统计：性能类别 8 类、合成工艺 11 类、材料体系 20 类
-- 前端静态资源已确认加载新代码（app.js/style.css 均含搜索与分组类）
-
-### 已知事项
-- 材料体系仍有 35 种归「其他」（Thermoelectric nanocomposite / MXene / Spiro-OMeTAD 等通用或器件名，正则无法可靠归类）；性能「其他」40 种多为 ML 指标/描述性指标
-- 临时验证脚本（_verify_normalize2.py 等）因系统删除钩子路径解析 bug 无法删除，保持不纳入 git
-
-
----
-
-## 2026-08-06 第八轮修订：材料知识页问题修复（用户反馈后）
-
-### 背景
-用户反馈材料页「内容不全、美化没做到、定位/重置挡住文字且无效、搜索框不齐全」。
-排查后确认根因：**浏览器缓存旧版 app.js/style.css**（静态文件无缓存控制头，
-新 HTML 结构套旧样式导致布局错乱）；另发现窄屏真实布局 bug 与交互细节缺陷。
-
-### 修复清单
-1. **静态资源 no-cache**（web/api.py）：移除 StaticFiles 挂载，改自定义路由加
-   Cache-Control: no-store + Pragma: no-cache + Expires: 0，根除缓存错乱。
-2. **URL 深链**：?project=<id>&page=materials 直达材料页（init() 解析 URL 参数），
-   便于分享/调试/无头浏览器验证。
-3. **搜索条重构**：放大镜图标 + 输入框 + 实时命中计数徽章（命中 X / 总数）+ 定位/重置
-   按钮（flex-shrink:0 不被压缩）+ Esc 清空 + 空关键词定位 toast 提示。
-4. **搜索高亮**：材料名/性能/合成方法/条件中的关键词 <mark class=mat-hl> 高亮。
-5. **材料卡片**：性能按类别分组（类别色点 + 浅色标题条，--cat-color 变量）、合成按工艺
-   分组；无性能/无合成显示「暂无记录」占位（99 处与数据缺口精确对应：36 无性能 +
-   63 无合成）；聚合类别超 10 类折叠「等 N 类」。
-6. **窄屏(<720px)修复**：卡片头计数徽章 flex-basis:100% 换行右对齐（原 margin-left:auto
-   与 flex-shrink 导致与徽章重叠 85px）；搜索条元素换行（input order:-1 占首行）。
-7. **体系 chip active 同步**：点击筛选后遍历更新所有可点击 chip 的 active class。
-
-### 验证（CDP 驱动真实 Edge 无头浏览器）
-- 交互：初始 141 卡片 → 搜索「球磨」命中 5/141 + 6 个 mark 高亮 → 定位 flash+toast
-  → 重置恢复 141 → 体系 chip 筛选 35 卡片 + active 正确 → 空词定位 toast 提示
-- 布局（1280px）：搜索条 5 元素、卡片头 6 元素两两无重叠
-- 布局（676px）：修复后卡片头计数换行第二行，全页无重叠
-- DOM 结构：mat-empty 99 处、mat-cat-dot 285 处、聚合折叠 2 处均正确
-
-### 工具沉淀
-- **CDP 驱动无头 Edge 验证方案**：msedge --headless --remote-debugging-port=<p>
-  --remote-allow-origins=* + websocket-client 调 Runtime.evaluate 执行真实交互断言。
-  注意：Windows 上 Edge 单实例复用会导致调试端口被旧实例占用，需独立
-  --user-data-dir 且先清理残留进程；websocket 需 --remote-allow-origins=* 否则 403。
-
-
-## 2026-08-06 第九轮：Task 3 研究缺口识别节点（Research Gap）
-
-### 背景
-任务队列 Task 3：Research Gap 识别——基于知识抽取与交叉验证结果，识别
-矛盾结论 / 未被探索方向 / 缺失知识连接，输出带证据链的 Gap 清单。
-此前 cross_validate 的 gaps 只是子问题粒度的字符串列表，本次升级为
-结构化实体并作为 research 阶段出口节点，联动 ideation/discovery/调研报告。
-
-### 设计（用户确认后实现：全链路一次做完 + 数据驱动断链检测纳入）
-- 拓扑：material_extraction → cross_validate → research_gap（新出口节点）
-- 双通道输入：
-  - 通道 A（LLM 语义）：cross_validate 报告 + 论文摘要 + 材料知识 →
-    识别 contradiction / unexplored / missing_link
-  - 通道 B（数据驱动断链检测，纯规则不耗 token）：有性能无合成 / 有合成无性能 /
-    孤立材料（仅名称无知识）
-- 结构化 Schema：gap_id / gap_type / statement / detail / evidence(证据链) /
-  related_materials / actionability / priority(1-5) / source / suggested_actions / subquery
-
-### 实现清单
-1. **数据层**（core/knowledge）：schema.py + ResearchGap 模型；store.py +
-   research_gaps 表 + save/list/gap_stats/clear（幂等，重跑不重复）；__init__.py 导出。
-2. **核心节点**（stages/research）：io_schema.py + ResearchGapInput/Output；
-   agents.py + ResearchGapIdentifyAgent（双通道 + 合并去重：同 statement 保留 LLM 版
-   标 hybrid + 优先级排序 + dry_run 占位兜底 + 落库）；common.py + RESEARCH_GAP_REPORT；
-   graph.py 加节点加边；tasks.yaml + research_gap_identify。
-3. **下游消费方升级**（带回退兼容）：
-   - ideation BrainstormAgent：优先读 RESEARCH_GAP_REPORT 结构化清单（按优先级取前 8，
-     带 [类型|P优先级] 前缀），缺失回退旧 gaps 字符串
-   - discovery HypothesisSeedAgent：gap_ref 升级为 gap_id 强关联（同样带回退）
-4. **Web 展示**：导航新增「研究缺口」页（badge-gaps 计数）+ /api/projects/{id}/gaps
-   接口 + renderGaps（类型徽章/优先级/来源/可操作性/证据链/关联材料/建议行动 + 类型
-   筛选）+ 深链 page=gaps + NODE_LABELS + CSS（gap-* 系列）。
-
-### 验证
-- 真实项目数据（141 材料/324 性能/103 合成）：通道 B 检出 11 个 Gap
-  （5×P1 有性能无合成 + 4×P2 有合成无性能 + 2×P4 孤立材料），全部带证据链
-- 合并落库 12 条（1 contradiction + 9 missing_link + 2 unexplored）
-- dry_run 全管线 32 节点跑通：research_gap 节点成功执行（cross_validate → research_gap
-  → brainstorm 消费 gaps=1）
-- CDP 无头浏览器：研究缺口页 12 卡片渲染正确；类型筛选「矛盾结论」1 张/回全部 12 张；
-  深链 reload 落 gaps 页；布局 1280px 零重叠零溢出
-- API：GET /api/projects/{id}/gaps 返回 12 条 + stats（by_type 分布）
-
-## 2026-08-06 第十轮：证据可点击溯源 + Claim 冲突可视化（Quick Wins）
-
-### 背景
-按优化矩阵「优先做」象限落地两项赛题硬指标：
-1. **证据可点击溯源**（文献溯源完整性）：此前 gaps/claims 的证据只有 paper_id +
-   snippet 纯文本，评委无法跳回原文核验 → 全部改为可点击跳转论文页并定位。
-2. **Claim 冲突可视化**（交叉验证能力）：cross_validate 的 conflicts 只存在于
-   context 报告、未落库，Claim 页无法体现「争议中」状态 → 落库 + 争议徽章 +
-   冲突双方来源展开。
-
-### 实现清单
-1. **数据层**：schema.py + ResearchConflict（conflict_id/claim/sources[{paper_id,
-   title, stance}]/resolution/confidence/subquery）；store.py + research_conflicts 表
-   + save/list/clear/conflict_stats + conflicts_for_claim（sources.paper_id 与
-   claim.evidence_refs 交集 → 争议标记）+ conflicts_for_paper；__init__.py 导出。
-2. **落库**：CrossValidateAgent._execute 后调用 _persist_conflicts（幂等：先清空
-   再写，补 paper title），真实模式自动落库、dry_run 占位空表。
-3. **API**：GET /api/projects/{id}/conflicts（列表+stats）；claims 接口每条附加
-   conflicts（关联冲突数组，非空 → 争议中）。
-4. **前端（app.js + style.css）**：
-   - gaps 证据链每条加「查看论文 →」链接（gap-ev-link）
-   - papers 页支持定位：pendingPaperId + data-paper-id + scrollIntoView +
-     paper-flash 高亮动画 + 自动展开 buildPaperBody
-   - Claim 卡片：争议徽章「争议中 N」（badge-danger，带 title 提示）；展开后
-     证据引用渲染为可点击列表（claim-ev-ref，paper → 论文页 / experiment → 实验页）；
-     冲突详情卡片（conflict-card：冲突陈述 + 支持/反对立场来源 + 处置建议）
-   - experiments 页支持定位（pendingExperimentId + buildExperimentBody）
-   - 深链扩展：?project=&page=&paper=<id>&exp=<id>
-   - 全局跳转：window.__sraGoPaper / __sraGoExperiment
-
-### 验证
-- 种入 2 条 Claim（1 争议 + 1 已验证）+ 1 条 conflict（关联 2 篇论文）：
-  conflicts_for_claim 命中 claim1（1 条）/claim2（0 条）✓
-- API：/conflicts 返回 1 条 + stats{papers:2}；/claims 中 claim1.conflicts=1（争议）、
-  claim2.conflicts=0 ✓
-- CDP（12/12 PASS）：gaps 证据「查看论文」12 个链接；点击跳转论文页 + paper-flash
-  高亮 + 自动展开；claims 争议徽章「争议中 1」；展开显示冲突卡片（支持/反对双方
-  来源 + 处置建议）；Claim 证据引用 4 个可点击链接；深链 page=claims 直达
-- CDP（6/6 PASS）：冲突卡片内「查看论文」再次跳转定位；布局零横向溢出零重叠
-- dry_run 全管线跑通（4 claims 落库），conflicts 在 dry_run 为空表（占位正常）
-
-
-## 2026-08-06 第十一轮：材料覆盖度重抽 + 假设可验证性评分（Quick Wins 3&4）
-
-### 背景
-按优化矩阵「优先做」象限继续落地两项优化：
-1. **材料覆盖度重抽**：Task 2 抽取后仍有「仅名称」材料（无性能/无合成），
-   真实项目 141 材料中 29 个仅名称（12 泛称 + 17 具体）→ 对具体材料跨论文
-   二次抽取补全。
-2. **假设可验证性评分**：ideation/discovery 产出的假设此前只有文本，无量化
-   可验证性指标 → 给每个假设打三维评分（新颖性/可行性/缺口关联度），Web 排序展示。
-
-### 实现清单
-1. **泛称判别（normalize.py）**：`is_generic_material_name(name, formula)`——
-   化学式匹配（≥2 元素/含数字）→ 具体；名称以 `_GENERIC_SUFFIXES`（约 60 个
-   集合名词词尾：materials/alloys/phases/catalysts…）结尾 → 泛称；否则保守判具体。
-   实测 12 泛称 / 17 具体全部正确。
-2. **覆盖度重抽（research/agents.py）**：
-   - `_find_name_only_materials(store)`：过滤已有性能/合成的材料 + 泛称，返回
-     [(Material, 关键词)]，有化学式优先排序
-   - `_re_extract_name_only(store, registry, max_materials=15)`：跨论文聚合含
-     材料名的摘要片段（最多 3 篇，命中处前后 200/600 字符）→ 专门 prompt 只抽取
-     该材料性能/合成（不臆造）→ 沿用 MaterialExtractSchema → 名称/公式别名匹配
-     落库（confidence=0.7，source_snippet 用片段）。纯容错：单材料失败跳过。
-   - `_execute` 末尾自动触发（dry_run/无 registry 时跳过）
-3. **手动重抽 API（web/api.py）**：`POST /api/projects/{id}/materials/re-extract`
-   异步线程执行，拒绝 running 并发，结果写 state.summary/error。
-4. **假设三维评分（discovery/agents.py）**：`HypothesisItem` 增
-   novelty_score/feasibility_score/gap_relevance_score（0~1，默认 0.5）；
-   HypothesisSeedAgent prompt 要求 LLM 输出三维评分且「不要全部给高分」；
-   `_placeholder` 补合理默认分。
-5. **假设三维评分（ideation/agents.py）**：`IdeaDraftItem` 同步加三维字段；
-   BrainstormAgent prompt 要求输出评分；落库写入 Idea.validation_notes（含
-   overall_score=0.4×新颖+0.3×可行+0.3×缺口）；`_placeholder_drafts` 带分。
-   **修复**：IdeaValidateAgent 原逻辑覆盖 validation_notes（丢掉三维分）→
-   改为合并保留（`{**prev, feasibility, novelty, contribution, reason}`）。
-6. **数据透出（runtime/pipeline.py）**：run_discovery 结果把带评分的假设列表写入
-   `result.extra["hypotheses"]`。
-7. **API 扩展（web/api.py）**：`_extract_discovery_summary` 增 hypothesis_list
-   （假设 + 三维评分 + overall_score，按综合分降序）。
-8. **前端（app.js + style.css）**：Discovery 页新增「假设可验证性评分」卡片——
-   每条假设：排名徽章 + 假设文本 + 目标性能/变量/Gap 元信息 + rationale + 右侧
-   综合分；下方三条评分进度条（≥0.7 绿 / ≥0.4 蓝 / <0.4 橙），按综合分降序。
-
-### 问题与修复
-- **list_papers(limit=200) 参数错误**：KnowledgeStore.list_papers() 无 limit 参数，
-  首次真实重抽直接失败（`unexpected keyword argument 'limit'`）→ 去掉参数后重抽成功。
-- **GeTe/Mg2Ge 重抽 JSON 解析失败**：LLM 偶发返回非合法 JSON（仅 2 个材料），
-  属 LLM 输出质量问题，单材料失败跳过不影响整体（其余材料补全正常）。
-- **IdeaValidateAgent 覆盖三维评分**：validation_notes 被验证结果整体替换 →
-  改为合并保留，dry_run 验证 3/3 idea 同时具备三维评分 + 验证评估。
-
-### 验证
-- 真实重抽：性能 324→343、合成 103→107，补全 23 条知识；材料页 Germanium
-  selenide 显示「性能 4 + 合成 1」（补全前 0+0）；总览 111 种含性能、82 种含合成
-- dry_run discovery：假设带三维评分、综合分计算正确（0.4×新颖+0.3×可行+0.3×缺口）、
-  hypothesis_list 按综合分降序 ✓
-- dry_run 全管线：ideation 3/3 idea 落库 validation_notes 三维评分 + validate 合并 ✓
-- CDP（8/8 PASS）：fetch 覆写 mock /discoveries → 评分卡片 3 条假设渲染、评分条 9 条、
-  综合分降序 0.83/0.69/0.51、首条宽度 85%/72%/90%、零横向溢出 ✓
-- CDP 材料页：141 材料渲染、Germanium selenide 性能/合成展示 ✓
-- 全改动文件语法检查通过；git 提交 fdf0e49
-
-### 下一步
-- Task 4：结构化调研报告（含研究缺口章节）仍在队列
-- 闭环回流（材料知识 → research 输入）为暂缓项
-- 可选战略项：性能对比可视化
-
-

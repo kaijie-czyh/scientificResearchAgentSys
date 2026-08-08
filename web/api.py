@@ -2184,15 +2184,54 @@ async def upload_paper(
     paper_id = f"paper_{uuid.uuid4().hex[:12]}"
     abstract = ""
     pdf_path = None
+    parse_mode = "none"
+    sections_count = 0
+    figures_count = 0
 
     if ext == ".pdf":
-        # PDF：保存到项目目录，元信息入库
+        # PDF：保存到项目目录，调用 MinerU 解析结构化内容（赛题三·方向三推荐工具）
         upload_dir = _CONFIG.paths.project_dir(project_id) / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = upload_dir / filename
         pdf_path.write_bytes(raw)
-        abstract = f"(PDF 文件已上传: {filename}，需手动提取文本)"
+
+        # MinerU 解析（无 API key 时降级到 pypdf fallback）
+        from core.tools import parse_pdf_with_mineru, mineru_is_available
+        if mineru_is_available():
+            try:
+                mineru_doc = parse_pdf_with_mineru(pdf_path)
+                parse_mode = mineru_doc.mode
+                sections_count = len(mineru_doc.sections)
+                figures_count = len(mineru_doc.figures)
+                # 优先使用 MinerU 抽取的 title
+                extracted_title = mineru_doc.title if mineru_doc.title else None
+                # 拼接前 2000 字作为 abstract
+                abstract = mineru_doc.full_text[:2000] if mineru_doc.full_text else f"(MinerU {parse_mode} 解析: {filename})"
+                # 把 MinerU 解析的结构化数据存入 KV（前端可视化与 discovery 阶段使用）
+                store.save_kv(f"mineru_{paper_id}", {
+                    "title": mineru_doc.title,
+                    "sections_count": sections_count,
+                    "figures_count": figures_count,
+                    "tables_count": len(mineru_doc.tables),
+                    "equations_count": len(mineru_doc.equations),
+                    "references_count": len(mineru_doc.references),
+                    "mode": parse_mode,
+                    "sections": [
+                        {"heading": s.heading, "level": s.level, "page": s.page}
+                        for s in mineru_doc.sections[:30]
+                    ],
+                })
+                if extracted_title and not title:
+                    title = extracted_title
+            except Exception as e:
+                parse_mode = "error"
+                abstract = f"(MinerU 解析失败: {e}，需手动提取文本)"
+        else:
+            parse_mode = "fallback"
+            abstract = f"(PDF 文件已上传: {filename}，未启用 MinerU 解析，需手动提取文本)"
+
     elif ext in (".txt", ".md"):
+        parse_mode = "text"
         abstract = raw.decode("utf-8", errors="replace")[:5000]
     else:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
@@ -2209,7 +2248,7 @@ async def upload_paper(
     )
     store.save_paper(paper)
 
-    # txt/md 内容切分为 chunk
+    # txt/md 内容切分为 chunk（PDF 由 MinerU 解析后也会按 section 切分）
     chunk_count = 0
     if ext in (".txt", ".md") and abstract:
         from core.tools import split_into_chunks
@@ -2227,12 +2266,38 @@ async def upload_paper(
         if paper_chunks:
             store.save_paper_chunks(paper_chunks)
             chunk_count = len(paper_chunks)
+    elif ext == ".pdf" and parse_mode != "none" and parse_mode != "error":
+        # MinerU 解析后按 section 切分 chunk（结构化优于字符切分）
+        try:
+            from core.tools import parse_pdf_with_mineru
+            from core.knowledge import PaperChunk
+            mineru_doc = parse_pdf_with_mineru(pdf_path)
+            paper_chunks = []
+            for i, sec in enumerate(mineru_doc.sections):
+                if not sec.text or len(sec.text.strip()) < 20:
+                    continue
+                paper_chunks.append(PaperChunk(
+                    chunk_id=f"{paper_id}_s{i}",
+                    paper_id=paper_id,
+                    chunk_index=i,
+                    text=sec.text[:1500],
+                ))
+                if len(paper_chunks) >= 30:  # 上限 30 section chunks
+                    break
+            if paper_chunks:
+                store.save_paper_chunks(paper_chunks)
+                chunk_count = len(paper_chunks)
+        except Exception:
+            pass
 
     return {
         "paper_id": paper_id,
         "title": paper.title,
         "filename": filename,
         "chunks": chunk_count,
+        "parse_mode": parse_mode,
+        "sections_count": sections_count,
+        "figures_count": figures_count,
         "message": "文献上传成功",
     }
 

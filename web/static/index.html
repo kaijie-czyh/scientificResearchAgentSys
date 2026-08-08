@@ -88,6 +88,17 @@
                 <span class="nav-badge" id="badge-human" style="display:none">!</span>
             </div>
         </nav>
+        <div class="sidebar-download" id="sidebar-download" style="display:none">
+            <div class="sidebar-download-head">
+                <span class="sidebar-download-title">📥 快速下载</span>
+            </div>
+            <select class="sidebar-download-fmt" id="sidebar-download-fmt">
+                <option value="md">Markdown (.md)</option>
+                <option value="docx">Word (.docx)</option>
+                <option value="pdf">PDF (.pdf)</option>
+            </select>
+            <div class="sidebar-download-list" id="sidebar-download-list"></div>
+        </div>
         <div class="sidebar-notes" id="sidebar-notes" style="display:none">
             <div class="sidebar-notes-head">
                 <span class="sidebar-notes-title">科研灵感记录</span>
@@ -107,16 +118,76 @@
     <!-- 主内容区 -->
     <div class="main">
         <header class="topbar">
-            <div class="topbar-title" id="topbar-title">科研 Agent 系统</div>
-            <div class="topbar-spacer"></div>
-            <div class="topbar-project" id="topbar-project">
-                当前项目：<strong id="current-project-id">未创建</strong>
+            <div class="topbar-breadcrumb" id="topbar-breadcrumb">
+                <span class="breadcrumb-root" id="breadcrumb-root">科研 Agent 系统</span>
+                <span class="breadcrumb-sep">›</span>
+                <span class="breadcrumb-current" id="topbar-title">总览 Dashboard</span>
             </div>
+            <div class="topbar-spacer"></div>
+            <div class="topbar-status" id="topbar-status" style="display:none">
+                <span class="topbar-status-dot"></span>
+                <span id="topbar-status-text">运行中</span>
+            </div>
+            <div class="topbar-project" id="topbar-project">
+                <span class="topbar-project-label">当前项目</span>
+                <strong id="current-project-id">未创建</strong>
+            </div>
+            <button class="topbar-help" id="topbar-help" title="查看快捷键与帮助">?</button>
         </header>
         <main class="content" id="content">
             <!-- 由 app.js 渲染 -->
             <div class="loading">加载中…</div>
         </main>
+    </div>
+</div>
+
+<!-- 全局 loading 遮罩 -->
+<div class="loading-overlay" id="loading-overlay" style="display:none">
+    <div class="loading-overlay-content">
+        <div class="loading-spinner"></div>
+        <div class="loading-overlay-text" id="loading-overlay-text">处理中…</div>
+    </div>
+</div>
+
+<!-- 快捷键与帮助面板 -->
+<div class="help-panel" id="help-panel" style="display:none">
+    <div class="help-panel-content">
+        <div class="help-panel-head">
+            <h3>快捷键与使用提示</h3>
+            <button class="help-panel-close" id="help-panel-close">×</button>
+        </div>
+        <div class="help-panel-body">
+            <div class="help-section">
+                <div class="help-section-title">键盘快捷键</div>
+                <div class="help-row"><kbd>1</kbd> - <span>总览 Dashboard</span></div>
+                <div class="help-row"><kbd>2</kbd> - <span>新建项目</span></div>
+                <div class="help-row"><kbd>3</kbd> - <span>研究进度</span></div>
+                <div class="help-row"><kbd>4</kbd> - <span>调研报告</span></div>
+                <div class="help-row"><kbd>5</kbd> - <span>论文浏览</span></div>
+                <div class="help-row"><kbd>6</kbd> - <span>发现概览</span></div>
+                <div class="help-row"><kbd>7</kbd> - <span>Claim 列表</span></div>
+                <div class="help-row"><kbd>8</kbd> - <span>实验列表</span></div>
+                <div class="help-row"><kbd>?</kbd> / <kbd>F1</kbd> - <span>打开本帮助</span></div>
+                <div class="help-row"><kbd>Esc</kbd> - <span>关闭弹窗</span></div>
+                <div class="help-row"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> - <span>提交灵感笔记/表单</span></div>
+            </div>
+            <div class="help-section">
+                <div class="help-section-title">使用流程</div>
+                <div class="help-flow">
+                    <span class="help-flow-step">1. 新建项目</span>
+                    <span class="help-flow-arrow">→</span>
+                    <span class="help-flow-step">2. 等待运行</span>
+                    <span class="help-flow-arrow">→</span>
+                    <span class="help-flow-step">3. 处理人工节点</span>
+                    <span class="help-flow-arrow">→</span>
+                    <span class="help-flow-step">4. 查看产出</span>
+                </div>
+            </div>
+            <div class="help-section">
+                <div class="help-section-title">产物下载</div>
+                <p class="help-note">每个页面顶部「下载产出」支持 Markdown / Word / PDF 三种格式。</p>
+            </div>
+        </div>
     </div>
 </div>
 

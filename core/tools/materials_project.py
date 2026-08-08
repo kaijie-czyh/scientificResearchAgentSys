@@ -114,27 +114,44 @@ class CrossValidationReport:
 
 
 def _extract_material(config: dict, relationship: str = "") -> str:
-    """从配置中提取材料体系名（用于交叉验证查询）。"""
-    if not config:
-        return ""
-    # 优先识别已知热电材料体系
-    config_str = str(config) + " " + relationship
-    # 归一化常见化学式表达
-    config_str_normalized = (
-        config_str
-        .replace("$_2$", "2").replace("$_3$", "3").replace("$_{2}$", "2").replace("$_{3}$", "3")
-        .replace("\\mathrm{Bi2Te3}", "Bi2Te3").replace("\\mathrm{SnSe}", "SnSe")
-        .replace("Bi$_2$Te$_3$", "Bi2Te3").replace("Bi_2Te_3", "Bi2Te3")
-        .replace("Sb$_2$Te$_3$", "Sb2Te3").replace("Sb_2Te_3", "Sb2Te3")
-    )
+    """从配置中提取材料体系名（用于交叉验证查询）。
+
+    提取策略（多级回退）：
+    1. config 直接包含 material/compound/system/matrix 键
+    2. config 字符串里出现已知热电材料体系（Bi2Te3、SnSe、PbTe 等）
+    3. relationship 文本里出现已知材料体系
+    """
+    # 优先：从 config 字典常见 key 中提取
+    if config:
+        for key in ("material", "compound", "system", "matrix", "base_material"):
+            if key in config and isinstance(config[key], str):
+                val = config[key].strip()
+                if val:
+                    # 归一化后查表
+                    normalized = _normalize_formula(val)
+                    if normalized in _THERMOELECTRIC_KNOWN_RANGES:
+                        return normalized
+                    return val
+    # 其次：从 config 与 relationship 字符串中扫描已知材料
+    config_str = (str(config) if config else "") + " " + relationship
+    config_str_normalized = _normalize_formula(config_str)
     for material in _THERMOELECTRIC_KNOWN_RANGES:
         if material in config_str_normalized:
             return material
-    # 兜底：尝试从 config 字典常见 key 中提取
-    for key in ("material", "compound", "system", "matrix"):
-        if key in config and isinstance(config[key], str):
-            return config[key]
     return ""
+
+
+def _normalize_formula(text: str) -> str:
+    """归一化化学式表达（去掉下标/LaTeX 包壳）。"""
+    return (
+        text
+        .replace("$_2$", "2").replace("$_3$", "3").replace("$_4$", "4")
+        .replace("$_{2}$", "2").replace("$_{3}$", "3").replace("$_{4}$", "4")
+        .replace("\\mathrm{Bi2Te3}", "Bi2Te3").replace("\\mathrm{SnSe}", "SnSe")
+        .replace("Bi$_2$Te$_3$", "Bi2Te3").replace("Bi_2Te_3", "Bi2Te3")
+        .replace("Sb$_2$Te$_3$", "Sb2Te3").replace("Sb_2Te_3", "Sb2Te3")
+        .replace("SnSe", "SnSe").replace("Bi2Te3", "Bi2Te3")
+    )
 
 
 def _rule_check(

@@ -186,6 +186,13 @@ class Pipeline:
 
         session 只持久化 stage_states，不持久化 ctx 域数据（paper_ids、
         cross_validation_report 等）。discovery 子图依赖这些产出，需手动恢复。
+
+        关键改动（赛题「Research Gap 识别质量」支持）：
+        - KV cross_validation_report 恢复时做 schema 兼容：
+          · gaps 元素若是 dict（结构化版）→ 完整保留 cited_paper_ids/chunks/type/actionability
+          · gaps 元素若是 str（旧版字符串）→ 转结构化 dict（type=underexplored, actionability=medium）
+          · 同理把旧的 str 共识/冲突转成结构化 dict（含 source_paper_ids）
+        这样无论旧 KV 是字符串数组还是结构化对象，恢复后都能被下游前端正确渲染。
         """
         store: KnowledgeStore = ctx.get(KNOWLEDGE_STORE)  # type: ignore[assignment]
         if store is None:
@@ -211,23 +218,26 @@ class Pipeline:
             ctx.set(RESEARCH_PAPER_IDS, paper_ids)
             ctx.set(RESEARCH_PAPER_METAS, paper_metas)
             ctx.set(RESEARCH_FILTERED_PAPER_METAS, paper_metas)
-            # 优先从 KV 表恢复完整 cross_validation_report（含 Research Gaps）
+            # 优先从 KV 表恢复完整 cross_validation_report（含结构化 Research Gaps）
             cv_report = store.get_kv("cross_validation_report")
             if cv_report and (cv_report.get("gaps") or cv_report.get("consensus")):
-                ctx.set(RESEARCH_CROSS_VALIDATION_REPORT, cv_report)
+                # schema 兼容：将旧版 str 数组统一转为结构化 dict，便于前端渲染
+                normalized = self._normalize_cross_validation_report(cv_report)
+                ctx.set(RESEARCH_CROSS_VALIDATION_REPORT, normalized)
                 logger.info(
-                    "resume 模式：从 KV 恢复完整 cross_validation_report（gaps=%d, consensus=%d）",
-                    len(cv_report.get("gaps", [])),
-                    len(cv_report.get("consensus", [])),
+                    "resume 模式：从 KV 恢复完整 cross_validation_report（gaps=%d, consensus=%d, conflicts=%d）",
+                    len(normalized.get("gaps", [])),
+                    len(normalized.get("consensus", [])),
+                    len(normalized.get("conflicts", [])),
                 )
             else:
-                # KV 无记录时设为简化版（兼容旧项目）
+                # KV 无记录时设为简化版（兼容旧项目）—— 用结构化空集
                 ctx.set(
                     RESEARCH_CROSS_VALIDATION_REPORT,
                     {
                         "gaps": [],
                         "conflicts": [],
-                        "consensus": ["(resume 模式，跳过交叉验证)"],
+                        "consensus": [],
                         "overall_confidence": 0.5,
                     },
                 )
@@ -236,6 +246,110 @@ class Pipeline:
             )
         except Exception as e:
             logger.warning("resume 模式恢复 research 产出失败: %s", e)
+
+    @staticmethod
+    def _normalize_cross_validation_report(report: dict) -> dict:
+        """将 cross_validation_report 各列表标准化为结构化 dict 数组（向前兼容旧版字符串数组）。
+
+        - gaps: 字符串 → {gap: text, type:'underexplored', importance:0.6, actionability:'medium',
+                          cited_paper_ids:[], cited_chunk_ids:[], rationale:'', subquery:''}
+        - conflicts: 字符串 → {claim: text, sources:[], resolution:'', confidence:0.0,
+                              source_paper_ids:[], subquery:''}
+        - consensus: 字符串 → {statement: text, source_paper_ids:[], confidence:0.0, subquery:''}
+
+        已结构化的条目（含 'gap'/'claim'/'statement' 键）原样保留，缺的字段补充默认值。
+        """
+        if not isinstance(report, dict):
+            return {
+                "gaps": [],
+                "conflicts": [],
+                "consensus": [],
+                "overall_confidence": 0.5,
+            }
+
+        # ===== gaps =====
+        raw_gaps = report.get("gaps") or []
+        norm_gaps: list[dict] = []
+        for g in raw_gaps:
+            if isinstance(g, dict):
+                # 已结构化，至少补齐缺失字段
+                norm_gaps.append({
+                    "gap": g.get("gap", ""),
+                    "type": g.get("type", "underexplored"),
+                    "importance": float(g.get("importance", 0.6) or 0.6),
+                    "actionability": g.get("actionability", "medium"),
+                    "cited_paper_ids": list(g.get("cited_paper_ids") or []),
+                    "cited_chunk_ids": list(g.get("cited_chunk_ids") or []),
+                    "rationale": g.get("rationale", ""),
+                    "subquery": g.get("subquery", ""),
+                })
+            elif isinstance(g, str):
+                norm_gaps.append({
+                    "gap": g,
+                    "type": "underexplored",
+                    "importance": 0.6,
+                    "actionability": "medium",
+                    "cited_paper_ids": [],
+                    "cited_chunk_ids": [],
+                    "rationale": "(从旧版字符串 Gap 自动升级，无证据链)",
+                    "subquery": "",
+                })
+
+        # ===== conflicts =====
+        raw_conflicts = report.get("conflicts") or []
+        norm_conflicts: list[dict] = []
+        for c in raw_conflicts:
+            if isinstance(c, dict):
+                norm_conflicts.append({
+                    "claim": c.get("claim") or c.get("topic") or c.get("description") or "",
+                    "sources": list(c.get("sources") or []),
+                    "resolution": c.get("resolution", ""),
+                    "confidence": float(c.get("confidence", 0.5) or 0.5),
+                    "source_paper_ids": list(c.get("source_paper_ids") or []),
+                    "subquery": c.get("subquery", ""),
+                })
+            elif isinstance(c, str):
+                norm_conflicts.append({
+                    "claim": c,
+                    "sources": [],
+                    "resolution": "",
+                    "confidence": 0.5,
+                    "source_paper_ids": [],
+                    "subquery": "",
+                })
+
+        # ===== consensus =====
+        raw_consensus = report.get("consensus") or []
+        norm_consensus: list[dict] = []
+        for cn in raw_consensus:
+            if isinstance(cn, dict):
+                norm_consensus.append({
+                    "statement": cn.get("statement") or cn.get("text") or "",
+                    "source_paper_ids": list(cn.get("source_paper_ids") or []),
+                    "confidence": float(cn.get("confidence", 0.5) or 0.5),
+                    "subquery": cn.get("subquery", ""),
+                })
+            elif isinstance(cn, str):
+                norm_consensus.append({
+                    "statement": cn,
+                    "source_paper_ids": [],
+                    "confidence": 0.5,
+                    "subquery": "",
+                })
+
+        # overall_confidence：保持原值，若缺失给 0.5
+        overall = report.get("overall_confidence", 0.5)
+        try:
+            overall = float(overall)
+        except (TypeError, ValueError):
+            overall = 0.5
+
+        return {
+            "gaps": norm_gaps,
+            "conflicts": norm_conflicts,
+            "consensus": norm_consensus,
+            "overall_confidence": overall,
+        }
 
     # ===== 阶段图构建 =====
 

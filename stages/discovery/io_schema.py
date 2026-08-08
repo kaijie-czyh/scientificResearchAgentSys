@@ -26,12 +26,14 @@ class HypothesisSeedInput(NodeInput):
 
     从 research 阶段的 Research Gap + 共识/冲突 + 入库论文出发，
     LLM 生成候选构效关系假设作为搜索种子。
+
+    注：gaps/consensus 兼容两种格式：list[str]（旧版字符串）与 list[dict]（结构化 Gap）
     """
 
     topic: str
-    gaps: list[str] = []
+    gaps: list = []  # type: ignore[valid-type]
     conflicts: list[dict] = []
-    consensus: list[str] = []
+    consensus: list = []  # type: ignore[valid-type]
     paper_ids: list[str] = []
 
 
@@ -146,6 +148,7 @@ class DiscoveryReportInput(NodeInput):
     relationships: list[dict[str, Any]] = []
     hypotheses: list[dict[str, Any]] = []
     search_space: dict[str, Any] = {}
+    topic: str = ""
 
 
 class DiscoveryReportOutput(NodeOutput):

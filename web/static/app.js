@@ -73,6 +73,71 @@
             .replace(/'/g, "&#39;");
     }
 
+    // ===== 骨架屏 =====
+    function renderSkeleton(type) {
+        const wrap = el("div", { class: "skeleton-wrap" });
+        if (type === "card") {
+            wrap.appendChild(el("div", { class: "skeleton skeleton-line lg" }));
+            wrap.appendChild(el("div", { class: "skeleton skeleton-line" }));
+            wrap.appendChild(el("div", { class: "skeleton skeleton-line sm" }));
+        } else if (type === "list") {
+            for (let i = 0; i < 4; i++) {
+                wrap.appendChild(el("div", { class: "skeleton skeleton-block" }));
+            }
+        } else if (type === "cards") {
+            for (let i = 0; i < 3; i++) {
+                wrap.appendChild(el("div", { class: "skeleton skeleton-card" }));
+            }
+        } else {
+            wrap.appendChild(el("div", { class: "skeleton skeleton-line lg" }));
+            wrap.appendChild(el("div", { class: "skeleton skeleton-line" }));
+        }
+        return wrap;
+    }
+
+    // ===== 空状态 =====
+    function renderEmptyState(opts) {
+        return el("div", { class: "empty-state" }, [
+            el("div", { class: "empty-state-icon", html: opts.icon || "📭" }),
+            el("div", { class: "empty-state-title", text: opts.title || "暂无数据" }),
+            el("div", { class: "empty-state-desc", text: opts.desc || "" }),
+            opts.actions ? el("div", { class: "empty-state-actions" }, opts.actions) : null,
+        ].filter(Boolean));
+    }
+
+    // ===== 错误状态 =====
+    function renderErrorState(opts) {
+        return el("div", { class: "error-state" }, [
+            el("div", { class: "error-state-icon", text: "⚠" }),
+            el("div", { class: "error-state-title", text: opts.title || "出错了" }),
+            el("div", { class: "error-state-desc", text: opts.desc || opts.message || "" }),
+            opts.actions ? el("div", { class: "error-state-actions" }, opts.actions) : null,
+        ].filter(Boolean));
+    }
+
+    // ===== 全局 Loading 遮罩 =====
+    function showLoadingOverlay(text) {
+        const overlay = document.getElementById("loading-overlay");
+        const txt = document.getElementById("loading-overlay-text");
+        if (overlay) {
+            if (text && txt) txt.textContent = text;
+            overlay.style.display = "flex";
+        }
+    }
+
+    function hideLoadingOverlay() {
+        const overlay = document.getElementById("loading-overlay");
+        if (overlay) overlay.style.display = "none";
+    }
+
+    // ===== 进度指示器 =====
+    function renderProgressIndicator(text) {
+        return el("span", { class: "progress-indicator", "data-tooltip": "系统正在后台运行" }, [
+            el("span", { class: "progress-dot" }),
+            el("span", { text: text || "运行中" }),
+        ]);
+    }
+
     function formatTime(iso) {
         if (!iso) return "—";
         try {
@@ -152,6 +217,48 @@
             }));
         });
         return bar;
+    }
+
+    // ===== 侧边栏全局下载入口（解决下载仅在 Dashboard 可见的问题） =====
+
+    // 项目 ID 切换/创建后刷新侧边栏下载列表
+    function renderSidebarDownload() {
+        const wrap = document.getElementById("sidebar-download");
+        const list = document.getElementById("sidebar-download-list");
+        if (!wrap || !list) return;
+        clear(list);
+        if (!state.currentProjectId) {
+            wrap.style.display = "none";
+            return;
+        }
+        wrap.style.display = "block";
+        // 与 Dashboard 一致的 9 类产物
+        const items = [
+            { type: "full-report", label: "全流程报告", icon: "📋" },
+            { type: "research-report", label: "调研报告", icon: "📚" },
+            { type: "ideas-summary", label: "思路汇总", icon: "💡" },
+            { type: "method-doc", label: "方法文档", icon: "🔬" },
+            { type: "experiment-code", label: "实验代码", icon: "💻" },
+            { type: "experiment-results", label: "实验结果", icon: "📊" },
+            { type: "claims-summary", label: "Claim 汇总", icon: "📝" },
+            { type: "discovery-report", label: "发现报告", icon: "🔍" },
+            { type: "paper-draft", label: "论文稿", icon: "📄" },
+        ];
+        items.forEach(it => {
+            const btn = el("button", {
+                class: "sidebar-download-item",
+                "data-tooltip": `下载 ${it.label}`,
+                onclick: () => {
+                    const fmt = document.getElementById("sidebar-download-fmt")?.value || "md";
+                    const filename = it.type + (fmt === "docx" ? ".docx" : fmt === "pdf" ? ".pdf" : ".md");
+                    downloadFile(it.type, filename, fmt);
+                },
+            }, [
+                el("span", { class: "sidebar-download-icon", text: it.icon }),
+                el("span", { text: it.label }),
+            ]);
+            list.appendChild(btn);
+        });
     }
 
     async function api(method, path, body) {
@@ -303,7 +410,9 @@
             notes: "灵感笔记",
             human: "人工节点交互",
         };
-        document.getElementById("topbar-title").textContent = titles[page] || "科研 Agent 系统";
+        const title = titles[page] || "科研 Agent 系统";
+        const topbarTitle = document.getElementById("topbar-title");
+        if (topbarTitle) topbarTitle.textContent = title;
         renderPage();
     }
 
@@ -318,6 +427,69 @@
         setActivePage("experiments");
         return false;
     };
+
+    // ===== 顶部状态徽章更新 =====
+    function updateTopbarStatus(status) {
+        const node = document.getElementById("topbar-status");
+        const txt = document.getElementById("topbar-status-text");
+        if (!node || !txt) return;
+        if (!status || status === "idle") {
+            node.style.display = "none";
+            return;
+        }
+        node.style.display = "flex";
+        node.className = "topbar-status";
+        let cls = "", text = "";
+        if (status === "running" || status === "in_progress") { cls = "running"; text = "运行中"; }
+        else if (status === "completed") { cls = "completed"; text = "已完成"; }
+        else if (status === "failed" || status === "blocked") { cls = "failed"; text = "失败"; }
+        else if (status === "pending_human" || status === "pending_review") { cls = "pending"; text = "等待人工"; }
+        else if (status === "experiment_failed") { cls = "failed"; text = "实验失败"; }
+        else { cls = ""; text = status; }
+        node.classList.add(cls);
+        txt.textContent = text;
+    }
+
+    // ===== 快捷键 =====
+    function setupKeyboardShortcuts() {
+        document.addEventListener("keydown", (e) => {
+            // 帮助面板：? 或 F1
+            if (e.key === "?" || e.key === "F1") {
+                e.preventDefault();
+                toggleHelpPanel();
+                return;
+            }
+            // Esc：关闭帮助面板
+            if (e.key === "Escape") {
+                closeHelpPanel();
+                return;
+            }
+            // 数字键 1-8：导航（仅在非输入元素聚焦时）
+            const tag = (e.target.tagName || "").toLowerCase();
+            if (["input", "textarea"].includes(tag) || e.target.isContentEditable) return;
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            const map = {
+                "1": "dashboard", "2": "create", "3": "progress",
+                "4": "research-report", "5": "papers", "6": "discovery",
+                "7": "claims", "8": "experiments",
+            };
+            const target = map[e.key];
+            if (target) {
+                e.preventDefault();
+                setActivePage(target);
+            }
+        });
+    }
+
+    function toggleHelpPanel() {
+        const panel = document.getElementById("help-panel");
+        if (panel) panel.style.display = panel.style.display === "none" ? "flex" : "none";
+    }
+
+    function closeHelpPanel() {
+        const panel = document.getElementById("help-panel");
+        if (panel) panel.style.display = "none";
+    }
 
     function updateProjectIdDisplay() {
         document.getElementById("current-project-id").textContent =
@@ -361,6 +533,7 @@
             const prevPending = state.statusCache && state.statusCache.pending_human;
             state.statusCache = data;
             updateBadges(data);
+            updateTopbarStatus(data.status);
             const curPending = data.pending_human;
             // 人工节点出现时弹出 toast 提醒（仅状态从无→有时）
             if (!prevPending && curPending) {
@@ -368,8 +541,16 @@
             }
             // 仅在 pending 状态变化时重渲染 human 页，避免 textarea 被清空
             const pendingChanged = !!prevPending !== !!curPending;
+            // 仅在 status / counts / stages 等关键字段变化时刷新 progress 页，避免 2s 整页重建导致抖动
             if (state.currentPage === "progress") {
-                renderPage();
+                const statusChanged = !state.statusCachePrevious
+                    || state.statusCachePrevious.status !== data.status
+                    || JSON.stringify(state.statusCachePrevious.completed_stages || [])
+                       !== JSON.stringify(data.completed_stages || [])
+                    || JSON.stringify(state.statusCachePrevious.counts || {})
+                       !== JSON.stringify(data.counts || {});
+                if (statusChanged) renderPage();
+                state.statusCachePrevious = data;
             } else if (state.currentPage === "human" && pendingChanged) {
                 renderPage();
             }
@@ -462,7 +643,8 @@
             return;
         }
 
-        content.appendChild(el("div", { class: "loading" }, "加载 Dashboard 数据…"));
+        // 骨架屏占位
+        content.appendChild(renderSkeleton("cards"));
         try {
             const data = await api("GET", `/api/projects/${state.currentProjectId}/dashboard`);
             state.dashboardCache = data;
@@ -491,8 +673,16 @@
             content.appendChild(renderDashboardActions(data));
         } catch (e) {
             clear(content);
-            content.appendChild(el("div", { class: "status-banner danger" },
-                `加载失败：${escapeHtml(e.message)}`));
+            content.appendChild(renderErrorState({
+                title: "Dashboard 加载失败",
+                desc: e.message || "请检查网络或项目状态",
+                actions: [
+                    el("button", {
+                        class: "btn",
+                        onclick: () => setActivePage("dashboard"),
+                    }, "重试"),
+                ],
+            }));
         }
     }
 
@@ -951,6 +1141,7 @@
             const btn = document.getElementById("create-btn");
             btn.disabled = true;
             btn.textContent = "创建中…";
+            showLoadingOverlay("正在创建项目…");
             try {
                 const data = await api("POST", "/api/projects", { topic });
                 state.currentProjectId = data.project_id;
@@ -958,6 +1149,7 @@
                 updateProjectIdDisplay();
                 startPolling();
                 renderSidebarNotes();
+                renderSidebarDownload();
                 renderCreateResult(resultArea, data);
                 showToast("项目已创建", "success");
             } catch (e) {
@@ -965,6 +1157,7 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = "启动科研";
+                hideLoadingOverlay();
             }
         });
 
@@ -1034,6 +1227,7 @@
                         saveProjectToStorage(p.project_id);
                         updateProjectIdDisplay();
                         startPolling();
+                        renderSidebarDownload();
                         showToast(`已切换到项目：${p.topic.slice(0, 30)}`, "success");
                         setActivePage("dashboard");
                     },
@@ -1436,7 +1630,21 @@
             state.discoveryCache = data;
             if (data.run_mode) state.runMode = data.run_mode;
             setBadge("badge-discovery", (data.relationships || []).length || null);
-            if (state.currentPage === "discovery") renderPage();
+            // 仅在数据真有变化时增量更新（避免每 2s 整页重建导致抖动）
+            if (state.currentPage === "discovery") {
+                const rels = data.relationships || [];
+                const prevRels = state.discoveryCachePrevious?.relationships || [];
+                const summary = data.discovery_summary || {};
+                const prevSummary = state.discoveryCachePrevious?.discovery_summary || {};
+                const relsChanged = JSON.stringify(rels) !== JSON.stringify(prevRels);
+                const summaryChanged = JSON.stringify(summary) !== JSON.stringify(prevSummary);
+                if (relsChanged || summaryChanged) {
+                    // 仅关系或汇总变化时整页重建（用户感知有意义的变化）
+                    renderPage();
+                }
+                // 否则不重渲染，避免滚动位置丢失、勾选状态丢失、闪屏
+                state.discoveryCachePrevious = data;
+            }
         } catch (e) {
             // 静默
         }
@@ -3012,7 +3220,7 @@
     // ===== 5b. 构效关系发现页（路线 A）=====
 
     async function renderDiscovery(content) {
-        content.appendChild(el("div", { class: "loading" }, "加载中…"));
+        content.appendChild(renderSkeleton("cards"));
         try {
             const data = await api("GET", `/api/projects/${state.currentProjectId}/discoveries`);
             state.discoveryCache = data;
@@ -3055,8 +3263,18 @@
                 content.insertAdjacentHTML("beforeend",
                     `<div class="status-banner info"><span class="status-dot"></span><strong>discovery 模式</strong><span>当前项目已启用构效关系发现工作流，结果随轮询自动刷新。</span></div>`);
             } else if (!data.run_mode) {
-                content.insertAdjacentHTML("beforeend",
-                    `<div class="status-banner warning"><span class="status-dot"></span><strong>未启动</strong><span>尚未运行构效关系发现，点击下方按钮启动。</span></div>`);
+                // 空状态：未启动时引导用户启动
+                content.appendChild(renderEmptyState({
+                    icon: "🔬",
+                    title: "尚未运行构效关系发现",
+                    desc: "点击下方按钮启动发现工作流。系统将从调研文献中自动提取构效关系假设，用 MCTS + LLM 融合搜索验证，产出新颖的科学发现。",
+                    actions: [
+                        el("button", {
+                            class: "btn btn-accent",
+                            onclick: () => startDiscovery(),
+                        }, "启动构效关系发现"),
+                    ],
+                }));
             }
 
             // 操作区
@@ -3065,6 +3283,7 @@
                 el("div", { class: "btn-row" }, [
                     el("button", {
                         class: "btn btn-accent",
+                        "data-tooltip": "启动 5 步发现流程：假设 → 搜索空间 → MCTS → 验证 → 报告",
                         onclick: () => startDiscovery(),
                     }, "启动构效关系发现"),
                     el("button", {
@@ -3094,11 +3313,29 @@
             }
 
             // relationships 列表
-            content.appendChild(renderRelationships(data.relationships || []));
+            const rels = data.relationships || [];
+            if (rels.length > 0) {
+                content.appendChild(renderRelationships(rels));
+            } else if (data.run_mode === "discovery") {
+                // 运行中但暂无结果
+                content.appendChild(renderEmptyState({
+                    icon: "🧪",
+                    title: "发现流程进行中中",
+                    desc: "MCTS + LLM 引导搜索正在执行。完成后将显示构效关系发现列表。",
+                }));
+            }
         } catch (e) {
             clear(content);
-            content.appendChild(el("div", { class: "status-banner danger" },
-                `加载失败：${escapeHtml(e.message)}`));
+            content.appendChild(renderErrorState({
+                title: "发现数据加载失败",
+                desc: e.message || "请稍后重试",
+                actions: [
+                    el("button", {
+                        class: "btn",
+                        onclick: () => setActivePage("discovery"),
+                    }, "重试"),
+                ],
+            }));
         }
     }
 
@@ -3472,17 +3709,120 @@
             } else {
                 const list = el("div", { class: "list" });
                 gaps.forEach((g, i) => {
-                    const gapText = typeof g === "string" ? g : (g.gap || g.description || JSON.stringify(g));
-                    const evidence = typeof g === "object" ? (g.evidence || g.source_papers || []) : [];
+                    // ===== 结构化 Gap 字段解析（兼容旧版字符串）=====
+                    const isStructured = g && typeof g === "object";
+                    const gapText = isStructured
+                        ? (g.gap || g.description || JSON.stringify(g))
+                        : (g || "");
+                    const gapType = (isStructured && g.type) ? g.type : "underexplored";
+                    const importance = (isStructured && typeof g.importance === "number")
+                        ? g.importance : null;
+                    const actionability = (isStructured && g.actionability)
+                        ? g.actionability : "medium";
+                    const citedPids = (isStructured && Array.isArray(g.cited_paper_ids))
+                        ? g.cited_paper_ids : [];
+                    const citedChunks = (isStructured && Array.isArray(g.cited_chunk_ids))
+                        ? g.cited_chunk_ids : [];
+                    const rationale = (isStructured && g.rationale) ? g.rationale : "";
+
                     const item = el("div", { class: "list-item gap-item" });
-                    item.appendChild(el("div", { class: "list-item-head" }, [
+
+                    // 头部：序号 + 标题 + type 彩色徽章
+                    const headChildren = [
                         el("span", { class: "gap-number", text: `#${i + 1}` }),
                         el("span", { class: "list-item-title", text: gapText }),
-                    ]));
-                    if (evidence.length) {
-                        item.appendChild(el("div", { class: "gap-evidence" },
-                            `证据来源：${evidence.slice(0, 3).join("、")}${evidence.length > 3 ? ` 等 ${evidence.length} 篇` : ""}`));
+                    ];
+                    // type 徽章
+                    headChildren.push(el("span", {
+                        class: `gap-type-badge gap-type-${gapType}`,
+                        text: gapType,
+                        title: `Research Gap 类型：${gapType}`,
+                    }));
+                    // actionability 徽章
+                    headChildren.push(el("span", {
+                        class: `gap-actionability gap-action-${actionability}`,
+                        text: `可操作 ${actionability}`,
+                        title: `可操作性：${actionability}（高/中/低）`,
+                    }));
+                    // importance 显示
+                    if (importance !== null) {
+                        headChildren.push(el("span", {
+                            class: "gap-importance mono small muted",
+                            text: `重要性 ${importance.toFixed(2)}`,
+                            title: "重要性 0~1",
+                        }));
                     }
+                    item.appendChild(el("div", { class: "list-item-head" }, headChildren));
+
+                    // rationale
+                    if (rationale) {
+                        item.appendChild(el("div", { class: "gap-rationale small" },
+                            `依据：${rationale}`));
+                    }
+
+                    // evidence（结构化：可点击 paper_id）
+                    if (citedPids.length) {
+                        const evBox = el("div", { class: "gap-evidence mt-8" });
+                        evBox.appendChild(el("span", { class: "gap-evidence-label small muted", text: "证据链 paper_id：" }));
+                        citedPids.slice(0, 5).forEach(pid => {
+                            const link = el("span", {
+                                class: "gap-paper-badge badge badge-info",
+                                text: String(pid).length > 16 ? String(pid).slice(0, 14) + "…" : String(pid),
+                                title: `点击跳转到论文浏览页：${pid}\n${citedChunks.length ? `含 chunk: ${citedChunks.length}` : ""}`,
+                                onclick: (ev) => {
+                                    ev.stopPropagation();
+                                    state.pendingPaperId = pid;
+                                    setActivePage("papers");
+                                },
+                            });
+                            link.style.cursor = "pointer";
+                            evBox.appendChild(link);
+                        });
+                        if (citedPids.length > 5) {
+                            evBox.appendChild(el("span", {
+                                class: "small muted",
+                                text: ` 等 ${citedPids.length} 篇`,
+                            }));
+                        }
+                        item.appendChild(evBox);
+                    } else {
+                        // 旧版兼容：从 evidence/source_papers 字段提取
+                        const legacy = isStructured
+                            ? (g.evidence || g.source_papers || [])
+                            : [];
+                        if (legacy.length) {
+                            const evBox = el("div", { class: "gap-evidence mt-8" });
+                            evBox.appendChild(el("span", {
+                                class: "small muted",
+                                text: `证据来源（旧版）：${legacy.slice(0, 3).join("、")}${legacy.length > 3 ? ` 等 ${legacy.length} 篇` : ""}`,
+                            }));
+                            item.appendChild(evBox);
+                        }
+                    }
+
+                    // 可展开：展示完整字段
+                    item.addEventListener("click", () => {
+                        if (item.classList.contains("expanded")) {
+                            item.classList.remove("expanded");
+                            const body = item.querySelector(".list-item-body");
+                            if (body) body.remove();
+                            return;
+                        }
+                        item.classList.add("expanded");
+                        const body = el("div", { class: "list-item-body" });
+                        body.innerHTML = `
+                            <dl>
+                                <dt>Gap</dt><dd>${escapeHtml(gapText)}</dd>
+                                <dt>类型</dt><dd><span class="gap-type-badge gap-type-${gapType}">${escapeHtml(gapType)}</span></dd>
+                                <dt>重要性</dt><dd>${importance !== null ? importance.toFixed(2) : "—"}</dd>
+                                <dt>可操作性</dt><dd><span class="gap-actionability gap-action-${actionability}">${escapeHtml(actionability)}</span></dd>
+                                <dt>关联 paper_id</dt><dd class="mono">${citedPids.length ? escapeHtml(citedPids.join(", ")) : "—"}</dd>
+                                <dt>关联 chunk_id</dt><dd class="mono">${citedChunks.length ? escapeHtml(citedChunks.join(", ")) : "—"}</dd>
+                                <dt>依据</dt><dd>${rationale ? escapeHtml(rationale) : "—"}</dd>
+                            </dl>
+                        `;
+                        item.appendChild(body);
+                    });
                     list.appendChild(item);
                 });
                 gapsCard.appendChild(list);
@@ -3555,6 +3895,28 @@
                     if (sources && sources.length) {
                         item.appendChild(el("div", { class: "gap-evidence" },
                             `涉及文献：${sources.slice(0, 3).join("、")}`));
+                    }
+                    // 结构化 source_paper_ids（赛题证据链增强）
+                    const confPids = (typeof c === "object" && Array.isArray(c.source_paper_ids))
+                        ? c.source_paper_ids : [];
+                    if (confPids.length) {
+                        const evBox = el("div", { class: "gap-evidence mt-8" });
+                        evBox.appendChild(el("span", { class: "small muted", text: "证据 paper_id： " }));
+                        confPids.slice(0, 5).forEach(pid => {
+                            const link = el("span", {
+                                class: "gap-paper-badge badge badge-info",
+                                text: String(pid).length > 16 ? String(pid).slice(0, 14) + "…" : String(pid),
+                                title: `点击跳转到论文浏览页：${pid}`,
+                                onclick: (ev) => {
+                                    ev.stopPropagation();
+                                    state.pendingPaperId = pid;
+                                    setActivePage("papers");
+                                },
+                            });
+                            link.style.cursor = "pointer";
+                            evBox.appendChild(link);
+                        });
+                        item.appendChild(evBox);
                     }
                     list.appendChild(item);
                 });
@@ -4608,6 +4970,23 @@
                 if (page) setActivePage(page);
             });
         });
+
+        // 顶部帮助按钮 + 帮助面板关闭
+        const helpBtn = document.getElementById("topbar-help");
+        if (helpBtn) helpBtn.addEventListener("click", toggleHelpPanel);
+        const helpClose = document.getElementById("help-panel-close");
+        if (helpClose) helpClose.addEventListener("click", closeHelpPanel);
+        // 点击帮助面板背景关闭
+        const helpPanel = document.getElementById("help-panel");
+        if (helpPanel) {
+            helpPanel.addEventListener("click", (e) => {
+                if (e.target === helpPanel) closeHelpPanel();
+            });
+        }
+
+        // 键盘快捷键
+        setupKeyboardShortcuts();
+
         // 侧边栏灵感笔记小组件
         const snSave = document.getElementById("sidebar-note-save");
         if (snSave) snSave.addEventListener("click", saveSidebarNote);
@@ -4656,6 +5035,7 @@
                     updateBadges(data);
                     startPolling();
                     renderSidebarNotes();
+                    renderSidebarDownload();
                 }
             } catch (e) {
                 // 项目已不存在（服务器重启等），清除存储

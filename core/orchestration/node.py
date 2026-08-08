@@ -136,10 +136,12 @@ class Node(abc.ABC):
                 summary=f"节点 {self.node_id} 失败: {e}",
             )
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
             return NodeResult(
                 status=NodeStatus.FAILED,
-                error=f"{type(e).__name__}: {e}",
-                summary=f"节点 {self.node_id} 异常: {type(e).__name__}",
+                error=f"{type(e).__name__}: {e}\n{tb[-1500:]}",
+                summary=f"节点 {self.node_id} 异常: {type(e).__name__}: {str(e)[:200]}",
             )
 
     @abc.abstractmethod

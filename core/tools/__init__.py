@@ -28,6 +28,15 @@ from core.tools.materials_project import (
     query_material_by_formula as mp_query_material,
     report_to_dict as mp_report_to_dict,
 )
+from core.tools.mineru_parse import (
+    MinerUClient,
+    MinerUDocument,
+    MinerUFigure,
+    MinerUSection,
+    MinerUTable,
+    mineru_is_available,
+    parse_pdf_with_mineru,
+)
 from core.tools.materials_search import (
     LiteraturePoint,
     MCTSSearcher,
@@ -37,6 +46,11 @@ from core.tools.materials_search import (
     build_literature_points,
     build_search_variables,
     perturb_config,
+)
+from core.tools.oqmd_nomad import (
+    OQMDClient,
+    oqmd_is_available,
+    query_oqmd_by_formula,
 )
 from core.tools.sciverse_search import (
     SciverseEvidence,
@@ -81,5 +95,15 @@ __all__ = [
     "mp_is_available",
     "mp_query_material",
     "mp_report_to_dict",
+    "MinerUClient",
+    "MinerUDocument",
+    "MinerUFigure",
+    "MinerUSection",
+    "MinerUTable",
+    "mineru_is_available",
+    "parse_pdf_with_mineru",
+    "OQMDClient",
+    "oqmd_is_available",
+    "query_oqmd_by_formula",
 ]
 
