@@ -74,11 +74,48 @@ def _extract_year(published: Optional[str]) -> Optional[int]:
         return None
 
 
+def _normalize_query_years(q: str, year_from: Optional[int], year_to: Optional[int]) -> str:
+    """把年份范围合并进 arxiv 查询串（yr: 前缀语法）。
+
+    arxiv API 原生支持 [YYYY TO YYYY] 区间检索。
+    - 只给 from：yr:YYYY-  （当年及以后）
+    - 只给 to：yr:-YYYY   （当年及以前）
+    - 都给：yr:YYYY-YYYY（闭区间）
+    年份非法时静默忽略该段。
+    """
+    q = (q or "").strip()
+    if not q:
+        return q
+    try:
+        f = int(year_from) if year_from is not None else None
+        t = int(year_to) if year_to is not None else None
+    except (TypeError, ValueError):
+        return q
+    if f is not None and (f < 1000 or f > 2100):
+        f = None
+    if t is not None and (t < 1000 or t > 2100):
+        t = None
+    if f is None and t is None:
+        return q
+    if t is not None and f is not None and t < f:
+        f, t = t, f  # 兜底防倒挂
+    if f is not None and t is not None:
+        yr = f"[{f} TO {t}]"
+    elif f is not None:
+        yr = f"[{f} TO 2100]"
+    else:
+        yr = f"[1000 TO {t}]"
+    # arxiv 查询语法：标题/摘要/全文全字段上做年份约束
+    return f"({q}) AND submittedDate:{yr}"
+
+
 def search_arxiv(
     query: str,
     max_results: int = 10,
     source_subquery: str = "",
     sort_by: str = "relevance",
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
     timeout: int = 30,
 ) -> list[ArxivPaper]:
     """arxiv API 检索。
@@ -88,6 +125,8 @@ def search_arxiv(
         max_results: 最多返回结果数
         source_subquery: 标记来源子问题（用于交叉验证溯源）
         sort_by: relevance / submittedDate / lastUpdatedDate
+        year_from: 起始年份（含，None 不限）
+        year_to: 结束年份（含，None 不限）
         timeout: 请求超时秒
 
     Returns:
@@ -96,8 +135,9 @@ def search_arxiv(
     if not query.strip():
         return []
 
+    search_query = _normalize_query_years(query, year_from, year_to)
     params = {
-        "search_query": f"all:{query}",
+        "search_query": search_query,
         "start": 0,
         "max_results": max_results,
         "sortBy": sort_by,
@@ -114,7 +154,15 @@ def search_arxiv(
     # arxiv 建议每秒不超过 1 个请求
     time.sleep(0.5)
 
-    return _parse_arxiv_response(resp.text, source_subquery=source_subquery)
+    papers = _parse_arxiv_response(resp.text, source_subquery=source_subquery)
+    # 客户端兜底：API 过滤偶尔不可靠（如部分镜像），再按年份硬过滤一遍
+    if (year_from is not None or year_to is not None) and papers:
+        papers = [
+            p for p in papers
+            if (year_from is None or (p.year or 0) >= year_from)
+            and (year_to is None or (p.year or 9999) <= year_to)
+        ]
+    return papers
 
 
 def _parse_arxiv_response(xml_text: str, source_subquery: str = "") -> list[ArxivPaper]:

@@ -39,6 +39,7 @@ from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
     AgentNode,
     HumanNode,
+    HumanRequest,
     HumanResponse,
     NodeInput,
     NodeOutput,
@@ -52,6 +53,7 @@ from core.tools import (
     search_semantic_scholar,
     split_into_chunks,
 )
+from core.tools.journal_quality import enrich_paper_quality, build_pdf_url
 from core.tools.url_resolve import resolve_paper_url
 
 from stages.common import (
@@ -67,6 +69,7 @@ from stages.common import (
     RESEARCH_PAPER_IDS,
     RESEARCH_PAPER_METAS,
     RESEARCH_QUERY_STRATEGY,
+    RESEARCH_SEARCH_PREFS,
     RESEARCH_SUBQUERIES,
     RESEARCH_TOPIC,
     RESEARCH_TOPIC_CONFIRMED,
@@ -403,6 +406,38 @@ class TopicConfirmHuman(HumanNode):
     def _build_input(self, ctx: ExecutionContext) -> NodeInput:
         return NodeInput()
 
+    def _build_human_context(self, ctx: ExecutionContext) -> dict[str, Any]:
+        """构造人工请求附加上下文：把检索偏好传给前端渲染配置表单。"""
+        prefs = ctx.get(RESEARCH_SEARCH_PREFS) or {}
+        return {
+            # 检索范围配置表单（前端识别到这些键后渲染输入框）
+            "search_prefs": {
+                "year_min": prefs.get("year_min"),
+                "year_max": prefs.get("year_max"),
+                "venue_hint": prefs.get("venue_hint", ""),
+            },
+            # 兼容旧 Context 展示
+            "keywords": ctx.get(RESEARCH_KEYWORDS, []),
+        }
+
+    def _execute(
+        self, input_obj: NodeInput, ctx: ExecutionContext
+    ) -> NodeResult:
+        """覆盖基类：把 search_prefs 并入 context，供前端渲染检索范围配置表单。"""
+        rendered = self._render_prompt(ctx)
+        context = {"node_id": self.node_id}
+        context.update(self._build_human_context(ctx))
+        return NodeResult(
+            status=NodeStatus.PENDING_HUMAN,
+            summary=f"等待人工输入: {rendered[:80]}",
+            human_request=HumanRequest(
+                prompt=rendered,
+                options=self._options,
+                allow_free_text=self._allow_free_text,
+                context=context,
+            ),
+        )
+
     def _render_prompt(self, ctx: ExecutionContext) -> str:
         keywords = ctx.get(RESEARCH_KEYWORDS, [])
         strategy = ctx.get(RESEARCH_QUERY_STRATEGY, "")
@@ -417,13 +452,27 @@ class TopicConfirmHuman(HumanNode):
             "请确认检索方向：\n"
             "  - 输入 'ok' 确认全部\n"
             "  - 或输入修正后的主题（关键词与子问题将保留）\n"
-            "  - 或输入 'subq: <新子问题1> | <新子问题2> | ...' 替换子问题列表"
+            "  - 或输入 'subq: <新子问题1> | <新子问题2> | ...' 替换子问题列表\n"
+            "  - 检索范围已在下方配置（年份区间 / 期刊限定），确认后按此范围抓取"
         )
 
     def _build_output_from_response(
         self, response: HumanResponse, ctx: ExecutionContext
     ) -> Optional[NodeOutput]:
         text = (response.text or "").strip()
+
+        # 检索偏好（年份/期刊）写入 context，供 PaperFetchAgent 抓取时生效
+        prefs = (response.context or {}).get("search_prefs") or {}
+        if prefs:
+            ctx.set(
+                RESEARCH_SEARCH_PREFS,
+                {
+                    "year_min": prefs.get("year_min") or None,
+                    "year_max": prefs.get("year_max") or None,
+                    "venue_hint": (prefs.get("venue_hint") or "").strip(),
+                },
+            )
+
         if not text or text.lower() in ("ok", "确认", "y", "yes"):
             confirmed = True
             refined_topic = ctx.get(RESEARCH_TOPIC, "")
@@ -445,6 +494,17 @@ class TopicConfirmHuman(HumanNode):
 
 
 # ===== PaperFetchAgent =====
+
+def _safe_year(v) -> Optional[int]:
+    """把任意输入安全转为合法年份 int；非法返回 None。"""
+    if v is None:
+        return None
+    try:
+        y = int(v)
+    except (TypeError, ValueError):
+        return None
+    return y if 1000 <= y <= 2100 else None
+
 
 class PaperFetchAgent(AgentNode):
     """论文抓取 Agent。
@@ -483,6 +543,12 @@ class PaperFetchAgent(AgentNode):
     def _execute(self, input_obj: PaperFetchInput, ctx: ExecutionContext) -> NodeResult:
         dry_run: bool = ctx.get(DRY_RUN, True)
 
+        # 用户配置的检索偏好（年份区间/期刊关键词），抓取阶段透传到数据源
+        prefs = ctx.get(RESEARCH_SEARCH_PREFS) or {}
+        self._year_min = _safe_year(prefs.get("year_min"))
+        self._year_max = _safe_year(prefs.get("year_max"))
+        self._venue_hint = (prefs.get("venue_hint") or "").strip()
+
         if dry_run:
             paper_metas = self._placeholder(input_obj)
             evidence_chain: list[dict] = []
@@ -491,6 +557,9 @@ class PaperFetchAgent(AgentNode):
 
         # 去重（按 arxiv_id 优先，其次 title）
         paper_metas = self._dedup(paper_metas)
+
+        # 期刊质量增强：补充影响因子/中科院分区/PDF 下载链接
+        self._enrich_quality(paper_metas)
 
         if not dry_run and not paper_metas:
             # 空结果：明确失败，避免下游 filter/ingest/cross_validate 静默空跑
@@ -532,6 +601,9 @@ class PaperFetchAgent(AgentNode):
 
         def fetch_one(sq: str) -> list[dict]:
             metas: list[dict] = []
+            ym = getattr(self, "_year_min", None)
+            yx = getattr(self, "_year_max", None)
+            vh = (getattr(self, "_venue_hint", "") or "").lower()
 
             # ===== 1. arxiv 检索（核心，含 abstract 全文）=====
             try:
@@ -539,8 +611,13 @@ class PaperFetchAgent(AgentNode):
                     query=sq,
                     max_results=self.DEFAULT_PER_SUBQUERY,
                     source_subquery=sq,
+                    year_from=ym,
+                    year_to=yx,
                 )
                 for p in arxiv_papers:
+                    # 期刊关键词过滤（arxiv 的 venue 是类目，按类目名匹配）
+                    if vh and vh not in (p.primary_category or "").lower():
+                        continue
                     m = p.to_meta_dict()
                     m["source_subquery"] = sq
                     m["source"] = "arxiv"
@@ -564,8 +641,13 @@ class PaperFetchAgent(AgentNode):
                     query=sq,
                     max_results=self.S2_PER_SUBQUERY,
                     source_subquery=sq,
+                    year_from=ym,
+                    year_to=yx,
                 )
                 for p in s2_papers:
+                    # 期刊关键词过滤（S2 有真实 venue 字段）
+                    if vh and vh not in (p.venue or "").lower():
+                        continue
                     m = p.to_meta_dict()
                     m["source_subquery"] = sq
                     m["source"] = "s2"
@@ -592,6 +674,10 @@ class PaperFetchAgent(AgentNode):
                         source_subquery=sq,
                     )
                     for ev in evidences:
+                        ev_venue = (getattr(ev, "venue", "") or "").lower()
+                        # 期刊关键词过滤（仅当 Sciverse 返回 venue 元数据时）
+                        if vh and ev_venue and vh not in ev_venue:
+                            continue
                         m = ev.to_meta_dict()
                         m["source_subquery"] = sq
                         metas.append(m)
@@ -649,6 +735,39 @@ class PaperFetchAgent(AgentNode):
             seen.add(key)
             out.append(m)
         return out
+
+    @staticmethod
+    def _enrich_quality(paper_metas: list[dict]) -> None:
+        """给每篇论文补充期刊质量指标 + PDF 下载链接（原地修改）。
+
+        补充字段：
+        - impact_factor: float（JCR 影响因子，0.0 = 未收录/预印本）
+        - cas_zone: str（中科院分区 "1"/"2"/"3"/"4" 或 ""）
+        - cas_subcategory: str（如 "材料科学1区Top"）
+        - is_top_journal: bool
+        - pdf_url: str（可下载 PDF 链接，空 = 无法下载）
+
+        注意：PDF 链接解析（Crossref 反查 DOI + Unpaywall 找 OA PDF）会发起
+        网络请求，串行执行并按请求限流；仅对没有 pdf_url/arxiv_id 的论文触发，
+        避免重复抓取。
+        """
+        for m in paper_metas:
+            try:
+                enrich_paper_quality(m)
+                # 已有直链或 arxiv_id 的论文直接构造，无需联网
+                if not (m.get("pdf_url") or "").strip() and not (m.get("arxiv_id") or "").strip():
+                    try:
+                        # Crossref 反查 DOI + Unpaywall 找 OA PDF（联网，失败则静默跳过）
+                        from core.tools.doi_resolve import resolve_pdf_link
+                        resolve_pdf_link(m)
+                    except Exception:  # noqa: BLE001
+                        # 网络失败时退化为本地构造（doi.org 兜底）
+                        if not (m.get("pdf_url") or "").strip():
+                            m["pdf_url"] = build_pdf_url(m)
+                if not (m.get("pdf_url") or "").strip():
+                    m["pdf_url"] = build_pdf_url(m)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("期刊质量增强失败（%r）: %s", m.get("title"), e)
 
 
 # ===== PaperRelevanceFilterAgent（借鉴 PaperQA filter）=====
@@ -991,6 +1110,12 @@ class PaperIngestAgent(AgentNode):
                         "relevance_score": meta.get("relevance_score", 0.0),
                         "relevance_reason": meta.get("relevance_reason", ""),
                         "citation_count": meta.get("citation_count", 0),
+                        # 期刊质量指标（journal_quality 模块填充）
+                        "impact_factor": meta.get("impact_factor", 0.0),
+                        "cas_zone": meta.get("cas_zone", ""),
+                        "cas_subcategory": meta.get("cas_subcategory", ""),
+                        "is_top_journal": meta.get("is_top_journal", False),
+                        "pdf_url": meta.get("pdf_url", ""),
                     },
                 )
                 store.save_paper(paper)
@@ -2160,9 +2285,29 @@ class ResearchGapIdentifyAgent(AgentNode):
         # 持久化 Gap 评分（前端可视化直接读取）
         if store is not None and gap_scores:
             try:
+                # 把 Gap 的可读信息（statement + 关联论文标题）合并进评分，
+                # 前端展示用（避免只显示 gap_id 字母串用户看不懂）
+                gap_meta = {
+                    g.get("gap_id", ""): g
+                    for g in gaps
+                }
+                enriched = []
+                for s in gap_scores:
+                    s2 = dict(s)
+                    g = gap_meta.get(s.get("gap_id", ""), {})
+                    s2["statement"] = g.get("statement", "") or g.get("gap", "") or ""
+                    evs = g.get("evidence") or []
+                    s2["evidence"] = evs
+                    s2["paper_titles"] = [
+                        e.get("title", "") for e in evs if e.get("title")
+                    ][:5]
+                    s2["paper_ids"] = [
+                        e.get("paper_id", "") for e in evs if e.get("paper_id")
+                    ][:5]
+                    enriched.append(s2)
                 store.save_kv("research_gap_scores", {
                     "version": "v1.0",
-                    "scores": gap_scores,
+                    "scores": enriched,
                     "weights": gap_scores[0]["weights"] if gap_scores else {},
                     "summary": {
                         "total": len(gap_scores),

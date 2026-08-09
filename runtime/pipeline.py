@@ -151,6 +151,11 @@ class Pipeline:
 
         # 设置研究主题
         ctx.set(RESEARCH_TOPIC, topic)
+        # 持久化主题到 KV：服务重启后 _scan_existing_projects 可恢复
+        try:
+            store.save_kv("research.topic", topic)
+        except Exception:  # noqa: BLE001
+            logger.warning("保存主题到 KV 失败（project=%s）: 忽略", project_id)
 
         return session, ctx
 
@@ -177,6 +182,12 @@ class Pipeline:
         ctx.set(PROJECT_DIR, self.paths.project_dir(project_id))
         # 补：恢复研究主题（否则下游 research 阶段拿到空主题）
         ctx.set(RESEARCH_TOPIC, topic)
+        # 持久化主题到 KV（resume 时用户可能重新输入主题，同步更新）
+        if topic:
+            try:
+                store.save_kv("research.topic", topic)
+            except Exception:  # noqa: BLE001
+                logger.warning("保存主题到 KV 失败（project=%s）: 忽略", project_id)
         return session, ctx
 
     def _restore_research_outputs(
@@ -482,6 +493,7 @@ class Pipeline:
         force_writing: bool = False,
         on_progress: Optional[Callable[[list[dict]], None]] = None,
         on_node_started: Optional[Callable[[str, list[str]], None]] = None,
+        initial_ctx: Optional[dict] = None,
     ) -> PipelineResult:
         """运行全流程：research → ideation → design → experiment → writing(可选)。
 
@@ -505,6 +517,7 @@ class Pipeline:
                          参数为当前节点历史快照）。用于 UI 实时进度同步。
             on_node_started: 节点级开始回调（每开始一个节点触发，参数为
                          当前节点 ID + 下一步候选节点列表）。
+            initial_ctx: 启动时预置进 ctx 的键值（如用户检索偏好 search_prefs）。
 
         Returns:
             PipelineResult
@@ -521,6 +534,12 @@ class Pipeline:
                 self._restore_research_outputs(ctx, project_id, topic)
         else:
             session, ctx = self.start_project(project_id, topic)
+
+        # 预置用户检索偏好等初始上下文（如有）
+        if initial_ctx:
+            for k, v in initial_ctx.items():
+                if v is not None:
+                    ctx.set(k, v)
 
         result = PipelineResult(project_id=project_id, status="running")
         stages = LifecycleStage.ordered()

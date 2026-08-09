@@ -39,6 +39,9 @@ RESEARCH_QUERY_STRATEGY = ContextKey[str]("research.query_strategy")
 RESEARCH_TOPIC_CONFIRMED = ContextKey[bool]("research.topic_confirmed")
 # 子问题分解（借鉴 GPT-Researcher）：把主题拆为 5-10 个子问题用于并行检索
 RESEARCH_SUBQUERIES = ContextKey[list[str]]("research.subqueries")
+# 用户检索偏好（在确认检索方向人工节点设置，提前过滤抓取范围）：
+# year_min / year_max（年份区间，None 不限）与 venue_hint（期刊/venue 关键词，空不限）
+RESEARCH_SEARCH_PREFS = ContextKey[dict]("research.search_prefs")
 RESEARCH_PAPER_METAS = ContextKey[list[dict]]("research.paper_metas")
 # 相关性筛选后（借鉴 PaperQA filter）：保留高相关性候选
 RESEARCH_FILTERED_PAPER_METAS = ContextKey[list[dict]]("research.filtered_paper_metas")
