@@ -2468,6 +2468,59 @@ mark.mat-hl {
     color: var(--color-text-muted);
 }
 
+/* ===== 关联材料（牵线搭桥） ===== */
+.mat-rel-section {
+    padding-top: 2px;
+}
+
+.mat-rel-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 2px 14px 4px;
+}
+
+.mat-rel-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border: 1px solid var(--color-border, #d0d7de);
+    border-radius: 14px;
+    font-size: 12px;
+    background: var(--color-bg-soft, #f6f8fa);
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    user-select: none;
+}
+
+.mat-rel-chip:hover {
+    border-color: var(--color-accent, #4a9eff);
+    box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.18);
+}
+
+.mat-rel-tag {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 0 5px;
+    border-radius: 8px;
+    white-space: nowrap;
+}
+
+.mat-rel-tag.mat-rel-system { background: #e3f2fd; color: #1565c0; }
+.mat-rel-tag.mat-rel-property { background: #e8f5e9; color: #2e7d32; }
+.mat-rel-tag.mat-rel-method { background: #fff3e0; color: #e65100; }
+.mat-rel-tag.mat-rel-paper { background: #f3e5f5; color: #6a1b9a; }
+.mat-rel-tag.mat-rel-other { background: #eceff1; color: #546e7a; }
+
+.mat-rel-name {
+    color: var(--color-text, #1f2328);
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* 搜索命中高亮闪烁（滚动定位） */
 @keyframes mat-flash {
     0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0); }
@@ -2775,6 +2828,129 @@ mark.mat-hl {
 .conflict-positions li {
     margin-bottom: 3px;
     color: var(--color-text-muted);
+}
+
+/* ===== 文献冲突裁决区块 ===== */
+.conflict-adjudication .list-item {
+    padding: 12px 14px;
+}
+
+.conflict-sides {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 10px 0 8px;
+}
+
+.conflict-side {
+    border: 1px solid var(--color-border, #d0d7de);
+    border-radius: 6px;
+    padding: 8px 10px;
+    background: var(--color-bg-soft, #f6f8fa);
+}
+
+.conflict-side.support {
+    border-left: 3px solid #2e7d32;
+}
+
+.conflict-side.refute {
+    border-left: 3px solid #c62828;
+}
+
+.conflict-side.stronger {
+    box-shadow: 0 0 0 1px rgba(46, 125, 50, 0.35);
+}
+
+.conflict-side-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.conflict-stance-tag {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.conflict-stance-tag.support {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.conflict-stance-tag.refute {
+    background: #ffebee;
+    color: #c62828;
+}
+
+.conflict-side-score {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--color-text, #1f2328);
+}
+
+.conflict-src-list {
+    margin: 4px 0 0;
+    padding-left: 16px;
+}
+
+.conflict-src-list li {
+    margin-bottom: 2px;
+    color: var(--color-text-muted);
+}
+
+.conflict-auto-verdict {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0 8px;
+    font-size: 13px;
+    flex-wrap: wrap;
+}
+
+.conflict-auto-label {
+    font-weight: 600;
+    color: var(--color-text, #1f2328);
+}
+
+.conflict-verdict-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.conflict-verdict-badge.verdict-support {
+    background: #e8f5e9;
+    color: #2e7d32;
+    border: 1px solid #a5d6a7;
+}
+
+.conflict-verdict-badge.verdict-refute {
+    background: #ffebee;
+    color: #c62828;
+    border: 1px solid #ef9a9a;
+}
+
+.conflict-verdict-badge.verdict-suspect {
+    background: #fff8e1;
+    color: #b26a00;
+    border: 1px solid #ffe082;
+}
+
+.conflict-verdict-badge.verdict-unknown {
+    background: #eceff1;
+    color: #546e7a;
+    border: 1px solid #cfd8dc;
+}
+
+.conflict-adjudicate-btns {
+    gap: 6px;
+    margin-top: 4px;
 }
 
 .human-actions {

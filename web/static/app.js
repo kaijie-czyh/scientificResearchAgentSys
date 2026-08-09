@@ -3168,7 +3168,7 @@
     }
 
     function buildMaterialCard(m, idx, q) {
-        const item = el("div", { class: "mat-card" });
+        const item = el("div", { class: "mat-card", "data-mat-id": m.material_id || "" });
         const head = el("div", { class: "mat-card-head" }, [
             el("span", { class: "mat-idx", text: String(idx + 1) }),
             el("span", { class: "mat-name", html: highlightMatch(m.name || "未命名材料", q) }),
@@ -3247,8 +3247,48 @@
                 `<div class="mat-empty">暂无合成记录（论文未提供工艺条件）</div>`);
         }
 
+        // 关联材料（会议纪要：给材料"牵线搭桥"——同体系/共性能/共用方法/同论文）
+        const rels = m.related_materials || [];
+        if (rels.length) {
+            const relMeta = {
+                same_system: { label: "同体系", cls: "mat-rel-system" },
+                same_property: { label: "共性能", cls: "mat-rel-property" },
+                same_method: { label: "同方法", cls: "mat-rel-method" },
+                same_paper: { label: "同论文", cls: "mat-rel-paper" },
+            };
+            const relHtml = rels.map(r => {
+                const meta = relMeta[r.relation] || { label: r.relation, cls: "mat-rel-other" };
+                return `
+                    <span class="mat-rel-chip" data-mat-rel-id="${escapeHtml(r.material_id)}" title="${escapeHtml(r.reason || "")}">
+                        <span class="mat-rel-tag ${meta.cls}">${meta.label}</span>
+                        <span class="mat-rel-name">${escapeHtml(r.name || r.formula || "材料")}</span>
+                    </span>`;
+            }).join("");
+            item.insertAdjacentHTML("beforeend", `
+                <div class="mat-section mat-rel-section">
+                    <div class="mat-section-title">关联材料 <span class="mat-section-sub">（${rels.length} 条 · 同体系 / 共性能指标 / 共用合成方法 / 同来源论文）</span></div>
+                    <div class="mat-rel-list">${relHtml}</div>
+                </div>`);
+        }
+
         item.insertAdjacentHTML("beforeend",
             `<div class="mat-src">来源论文：${escapeHtml(m.paper_title || "—")}</div>`);
+
+        // 关联材料 chip 点击 → 滚动定位并高亮目标材料卡片
+        item.querySelectorAll(".mat-rel-chip").forEach(chip => {
+            chip.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const targetId = chip.getAttribute("data-mat-rel-id");
+                const targetCard = document.querySelector(`.mat-card[data-mat-id="${targetId}"]`);
+                if (targetCard) {
+                    targetCard.classList.add("mat-flash");
+                    targetCard.scrollIntoView({ behavior: "smooth", block: "start" });
+                    setTimeout(() => targetCard.classList.remove("mat-flash"), 3400);
+                } else {
+                    showToast("目标材料不在当前筛选结果中，请调整筛选后查看", "info");
+                }
+            });
+        });
         return item;
     }
 
@@ -3494,6 +3534,155 @@
             list.appendChild(renderGapCard(g));
         }
         content.appendChild(list);
+
+        // 文献冲突裁决区块（会议纪要：同一结论冲突时按期刊等级/文献新旧二次验证，用户可裁决）
+        content.appendChild(await renderConflictAdjudication());
+    }
+
+    // ===== 文献冲突裁决（Task 2：冲突二次验证） =====
+    // 每条冲突：support/refute 双方证据 → 自动裁决建议（期刊等级+文献新度打分）
+    // → 用户可一键采纳 / 存疑，裁决结果写回 DB（metadata.adjudication）
+    const CONFLICT_VERDICT_META = {
+        adopt_support: { label: "采纳支持方", cls: "verdict-support" },
+        adopt_refute: { label: "采纳反对方", cls: "verdict-refute" },
+        suspect: { label: "双方存疑", cls: "verdict-suspect" },
+        unknown: { label: "证据不足", cls: "verdict-unknown" },
+    };
+
+    async function renderConflictAdjudication() {
+        const card = el("div", { class: "card conflict-adjudication" });
+        let data;
+        try {
+            data = await api("GET", `/api/projects/${state.currentProjectId}/conflicts`);
+        } catch (e) {
+            return card; // 静默：冲突区块失败不影响缺口页
+        }
+        const conflicts = data.conflicts || [];
+        card.appendChild(el("div", { class: "card-title" },
+            `文献冲突裁决（${conflicts.length} 处）· 自动建议 + 人工裁决`));
+        card.appendChild(el("p", { class: "muted small mb-12" },
+            "同一结论存在冲突的文献自动按「期刊等级（IF/分区）> 文献新度」加权打分给出采纳建议，你可一键裁决覆盖（结果用于构效分析前剔除低可信来源）。"));
+        if (!conflicts.length) {
+            card.appendChild(el("div", { class: "list-empty" },
+                "暂无文献冲突（交叉验证未发现矛盾结论）"));
+            return card;
+        }
+
+        const list = el("div", { class: "list" });
+        conflicts.forEach((c, i) => {
+            const item = el("div", { class: "list-item conflict-item" });
+            // 头部：编号 + 陈述 + 裁决状态徽章
+            const vm = CONFLICT_VERDICT_META[c.auto_verdict] || CONFLICT_VERDICT_META.suspect;
+            const head = el("div", { class: "list-item-head" }, [
+                el("span", { class: "conflict-number", text: `#${i + 1}` }),
+                el("span", { class: "list-item-title", text: c.claim || "(无陈述)" }),
+            ]);
+            if (c.adjudicated) {
+                head.appendChild(el("span", {
+                    class: `conflict-verdict-badge ${vm.cls}`,
+                    title: "已人工裁决（可重新裁决覆盖）",
+                    text: `已裁决：${vm.label}`,
+                }));
+            }
+            item.appendChild(head);
+
+            // 双方证据质量条
+            const sides = el("div", { class: "conflict-sides" });
+            const mkSide = (label, stance, score, info, sources) => {
+                const side = el("div", {
+                    class: `conflict-side ${stance}${score >= 0.3 ? " stronger" : ""}`,
+                });
+                side.appendChild(el("div", { class: "conflict-side-head" }, [
+                    el("span", { class: `conflict-stance-tag ${stance}`, text: label }),
+                    el("span", { class: "conflict-side-score", text: `质量 ${(score * 100).toFixed(0)}` }),
+                    el("span", { class: "muted small", text: info || "" }),
+                ]));
+                const srcs = sources || [];
+                if (srcs.length) {
+                    const ul = el("ul", { class: "conflict-src-list" });
+                    srcs.slice(0, 3).forEach(s => {
+                        const li = el("li", { class: "small" });
+                        const pid = s.paper_id || "";
+                        li.appendChild(el("span", { text: `[${pid.slice(-8)}] ${s.title || "来源论文"}` }));
+                        if (pid) {
+                            li.appendChild(el("a", {
+                                class: "gap-ev-link",
+                                text: "查看 →",
+                                href: "#",
+                                onclick: (e) => {
+                                    e.preventDefault(); e.stopPropagation();
+                                    state.pendingPaperId = pid;
+                                    setActivePage("papers");
+                                },
+                            }));
+                        }
+                        ul.appendChild(li);
+                    });
+                    side.appendChild(ul);
+                }
+                return side;
+            };
+            sides.appendChild(mkSide("支持方", "support", c.support_score || 0, c.support_info, c.sources.filter(s => s.stance === "support")));
+            sides.appendChild(mkSide("反对方", "refute", c.refute_score || 0, c.refute_info, c.sources.filter(s => s.stance === "refute")));
+            item.appendChild(sides);
+
+            // 自动裁决建议
+            item.appendChild(el("div", { class: "conflict-auto-verdict" }, [
+                el("span", { class: "conflict-auto-label" }, "裁决建议："),
+                el("span", { class: `conflict-verdict-badge ${vm.cls}`, text: vm.label }),
+                el("span", { class: "muted small", text: ` — ${c.auto_reason || ""}` }),
+            ]));
+
+            // 裁决按钮（人工覆盖）
+            const btnRow = el("div", { class: "btn-row conflict-adjudicate-btns" }, [
+                el("button", {
+                    class: "btn btn-sm btn-success",
+                    onclick: () => adjudicateConflict(c.conflict_id, "adopt_support", item),
+                }, "采纳支持方"),
+                el("button", {
+                    class: "btn btn-sm btn-warning",
+                    onclick: () => adjudicateConflict(c.conflict_id, "adopt_refute", item),
+                }, "采纳反对方"),
+                el("button", {
+                    class: "btn btn-sm btn-secondary",
+                    onclick: () => adjudicateConflict(c.conflict_id, "suspect", item),
+                }, "双方存疑"),
+            ]);
+            item.appendChild(btnRow);
+            list.appendChild(item);
+        });
+        card.appendChild(list);
+        return card;
+    }
+
+    // 提交冲突裁决并就地刷新该卡片
+    async function adjudicateConflict(conflictId, verdict, item) {
+        try {
+            const res = await api("POST",
+                `/api/projects/${state.currentProjectId}/conflicts/${conflictId}/adjudicate`,
+                { verdict, note: "" });
+            showToast(res.message || "裁决已保存", "success");
+            // 就地更新：重新拉冲突列表，替换当前冲突卡片
+            const data = await api("GET", `/api/projects/${state.currentProjectId}/conflicts`);
+            const conf = (data.conflicts || []).find(x => x.conflict_id === conflictId);
+            if (conf && item && item.parentNode) {
+                const vm = CONFLICT_VERDICT_META[conf.auto_verdict] || CONFLICT_VERDICT_META.suspect;
+                const badge = item.querySelector(".conflict-verdict-badge");
+                if (badge) {
+                    badge.className = `conflict-verdict-badge ${vm.cls}`;
+                    badge.textContent = `已裁决：${vm.label}`;
+                    badge.title = "已人工裁决（可重新裁决覆盖）";
+                }
+                const auto = item.querySelector(".conflict-auto-verdict");
+                if (auto) {
+                    auto.querySelector(".conflict-verdict-badge").className = `conflict-verdict-badge ${vm.cls}`;
+                    auto.querySelector(".conflict-verdict-badge").textContent = vm.label;
+                    auto.querySelector(".muted").textContent = " — 人工裁决已生效";
+                }
+            }
+        } catch (e) {
+            showToast("裁决失败：" + (e.message || e), "error");
+        }
     }
 
     function renderGapCard(g) {
@@ -5841,8 +6030,11 @@
             }
         }
 
-        // 默认页
-        setActivePage("dashboard");
+        // 默认页（仅当 URL 深链/localStorage 恢复都未设置项目时进入 dashboard，
+        // 避免覆盖上方 urlProject 深链指定的 page）
+        if (!state.currentProjectId) {
+            setActivePage("dashboard");
+        }
     }
 
     document.addEventListener("DOMContentLoaded", init);

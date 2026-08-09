@@ -1115,6 +1115,53 @@ def list_materials(project_id: str) -> dict:
                 "properties": props,
                 "synthesis": syns,
             })
+        # ===== 材料间关联（会议纪要：给材料"牵线搭桥"）=====
+        # 关联规则（任一命中即关联，附带关联类型与理由）：
+        #   1. same_system  ：材料类别相同（同体系，如同为铋碲系）
+        #   2. same_property：报告了相同的归一化性能指标（如都测热电优值）
+        #   3. same_method  ：合成方法类别相同（如都用固相法）
+        #   4. same_paper   ：出自同一篇论文
+        # 每条关联含 {material_id, name, formula, relation, reason}，
+        # 供前端材料卡片「关联材料」区块展示（点击跳转）。
+        mat_index: dict[str, dict] = {}
+        for it in items:
+            mat_index[it["material_id"]] = it
+        for it in items:
+            rels: list[dict] = []
+            seen_rel: set[str] = set()
+            it_props = {p["norm_key"] for p in it.get("properties", [])}
+            it_methods = {s["method_category"] for s in it.get("synthesis", [])}
+            it_papers = set(it.get("source_paper_ids") or [])
+            if it.get("paper_id"):
+                it_papers.add(it["paper_id"])
+            for other in items:
+                if other["material_id"] == it["material_id"]:
+                    continue
+                oid = other["material_id"]
+                relation, reason = "", ""
+                if it.get("category") and other.get("category") and it["category"] == other["category"]:
+                    relation, reason = "same_system", f"同属「{it['category']}」体系"
+                elif it_props & {p["norm_key"] for p in other.get("properties", [])}:
+                    shared = it_props & {p["norm_key"] for p in other.get("properties", [])}
+                    relation, reason = "same_property", f"共报性能指标：{next(iter(shared))}"
+                elif it_methods & {s["method_category"] for s in other.get("synthesis", [])}:
+                    shared = it_methods & {s["method_category"] for s in other.get("synthesis", [])}
+                    relation, reason = "same_method", f"共用合成方法：{next(iter(shared))}"
+                elif it_papers & set(other.get("source_paper_ids") or []):
+                    relation, reason = "same_paper", "出自同一篇论文"
+                if relation and oid not in seen_rel:
+                    seen_rel.add(oid)
+                    rels.append({
+                        "material_id": oid,
+                        "name": other.get("name", ""),
+                        "formula": other.get("formula", ""),
+                        "relation": relation,
+                        "reason": reason,
+                    })
+            # 按关联类型排序（体系 > 性能 > 方法 > 论文），最多展示 6 条
+            rel_order = {"same_system": 0, "same_property": 1, "same_method": 2, "same_paper": 3}
+            rels.sort(key=lambda r: rel_order.get(r["relation"], 9))
+            it["related_materials"] = rels[:6]
     except Exception as e:  # noqa: BLE001
         return {"materials": [], "stats": {}, "error": f"读取失败: {e}"}
     return {
@@ -1173,6 +1220,11 @@ def list_research_conflicts(project_id: str) -> dict:
 
     每条冲突：冲突陈述 + 立场证据（support/refute 双方来源，可点击跳转
     论文页溯源）+ 处置建议 + 置信度 + 来源子问题。
+
+    自动裁决建议（会议纪要要求「同一结论冲突时按期刊等级/文献新旧二次验证」）：
+    对每条冲突的 support/refute 双方按「期刊等级（IF/分区）> 文献新度」加权打分，
+    给出 auto_verdict 建议采纳方；若已有人工裁决（metadata.adjudication），
+    返回人工裁决结果供前端标记。
     """
     _require_project(project_id)
     try:
@@ -1182,21 +1234,150 @@ def list_research_conflicts(project_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"conflicts": [], "stats": {"total": 0, "papers": 0},
                 "error": f"读取失败: {e}"}
-    return {
-        "conflicts": [
-            {
-                "conflict_id": c.conflict_id,
-                "claim": c.claim,
-                "sources": c.sources,
-                "resolution": c.resolution,
-                "confidence": c.confidence,
-                "subquery": c.subquery,
-                "created_at": c.created_at.isoformat() if c.created_at else None,
+
+    # 论文质量速查表（paper_id → {if, year, zone}），用于自动裁决打分
+    quality_map: dict[str, dict] = {}
+    try:
+        for p in store.list_papers():
+            md = p.metadata or {}
+            quality_map[p.paper_id] = {
+                "if": float(md.get("impact_factor") or 0.0),
+                "year": p.year or 0,
+                "zone": md.get("cas_zone") or "",
             }
-            for c in conflicts
-        ],
-        "stats": stats,
-    }
+    except Exception:  # noqa: BLE001
+        pass
+
+    def _side_score(sources: list[dict]) -> tuple[float, str]:
+        """按「期刊等级(IF) 60% + 分区 20% + 文献新度 20%」给一方证据加权打分。"""
+        if not sources:
+            return 0.0, "无证据"
+        total_if, total_year, n = 0.0, 0, 0
+        zone_boost = 0.0
+        for s in sources:
+            pid = s.get("paper_id", "")
+            q = quality_map.get(pid, {})
+            total_if += float(q.get("if") or 0.0)
+            total_year += int(q.get("year") or 0)
+            zone = q.get("zone") or ""
+            if zone in ("1",):
+                zone_boost += 0.2
+            elif zone in ("2",):
+                zone_boost += 0.1
+            n += 1
+        if n == 0:
+            return 0.0, "无证据"
+        avg_if = total_if / n
+        avg_year = total_year / n
+        # IF 归一化（顶刊 ~30 计满分）；年份越新越加分（2025 计满分）
+        if_score = min(avg_if / 30.0, 1.0) * 0.6
+        year_score = min(max((avg_year - 2010) / 15.0, 0.0), 1.0) * 0.2
+        zone_score = min(zone_boost / n, 1.0) * 0.2
+        score = if_score + year_score + zone_score
+        return round(score, 3), f"{avg_if:.1f} / {avg_year or '?'} 年 / {n} 篇"
+
+    items = []
+    for c in conflicts:
+        sources = c.sources or []
+        support = [s for s in sources if s.get("stance") == "support"]
+        refute = [s for s in sources if s.get("stance") == "refute"]
+        sup_score, sup_info = _side_score(support)
+        ref_score, ref_info = _side_score(refute)
+        md = c.metadata or {}
+        adjudication = md.get("adjudication") or {}
+        if adjudication.get("verdict"):
+            auto_verdict = adjudication["verdict"]
+            auto_reason = adjudication.get("reason") or "人工裁决"
+            auto_by = adjudication.get("by") or "user"
+        else:
+            if sup_score > ref_score and sup_score > 0:
+                auto_verdict = "adopt_support"
+            elif ref_score > sup_score and ref_score > 0:
+                auto_verdict = "adopt_refute"
+            elif sup_score == 0 and ref_score == 0:
+                auto_verdict = "unknown"
+            else:
+                auto_verdict = "suspect"
+            auto_reason = (
+                f"自动建议：support 方证据质量 {sup_score}（{sup_info}），"
+                f"refute 方 {ref_score}（{ref_info}）"
+            )
+            auto_by = "auto"
+        items.append({
+            "conflict_id": c.conflict_id,
+            "claim": c.claim,
+            "sources": sources,
+            "resolution": c.resolution,
+            "confidence": c.confidence,
+            "subquery": c.subquery,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            # 自动/人工裁决
+            "auto_verdict": auto_verdict,
+            "auto_reason": auto_reason,
+            "adjudicated": bool(adjudication.get("verdict")),
+            "adjudication_by": auto_by,
+            # 双方证据质量详情（前端展示打分依据）
+            "support_score": sup_score,
+            "support_info": sup_info,
+            "refute_score": ref_score,
+            "refute_info": ref_info,
+        })
+    return {"conflicts": items, "stats": stats}
+
+
+class ConflictAdjudicateRequest(BaseModel):
+    """冲突裁决请求。"""
+    verdict: str = "suspect"  # adopt_support / adopt_refute / suspect
+    note: str = ""
+
+
+@app.post("/api/projects/{project_id}/conflicts/{conflict_id}/adjudicate")
+def adjudicate_conflict(project_id: str, conflict_id: str, req: ConflictAdjudicateRequest) -> dict:
+    """人工裁决文献冲突（会议纪要要求：冲突文献二选一/剔除，用户可覆盖自动建议）。
+
+    裁决结果写回 conflict.metadata.adjudication：
+    - adopt_support：采纳 support 方结论（refute 方标记低可信）
+    - adopt_refute：采纳 refute 方结论
+    - suspect：双方存疑，需进一步检索
+    """
+    _require_project(project_id)
+    verdict = (req.verdict or "suspect").strip()
+    if verdict not in ("adopt_support", "adopt_refute", "suspect"):
+        raise HTTPException(status_code=400, detail=f"无效裁决: {verdict}")
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        conf = store.get_research_conflict(conflict_id)
+        if conf is None:
+            raise HTTPException(status_code=404, detail="冲突不存在")
+        md = dict(conf.metadata or {})
+        md["adjudication"] = {
+            "verdict": verdict,
+            "reason": (req.note or "").strip() or None,
+            "by": "user",
+            "at": datetime.utcnow().isoformat(),
+        }
+        from core.knowledge.schema import ResearchConflict
+        updated = ResearchConflict(
+            conflict_id=conf.conflict_id,
+            claim=conf.claim,
+            sources=conf.sources,
+            resolution=conf.resolution,
+            confidence=conf.confidence,
+            subquery=conf.subquery,
+            metadata=md,
+            created_at=conf.created_at,
+            source_stage=conf.source_stage,
+        )
+        store.save_research_conflict(updated)
+        return {
+            "conflict_id": conflict_id,
+            "verdict": verdict,
+            "message": f"裁决已保存：{'采纳 support 方' if verdict == 'adopt_support' else '采纳 refute 方' if verdict == 'adopt_refute' else '双方存疑待进一步检索'}",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"裁决保存失败: {e}") from e
 
 
 @app.post("/api/projects/{project_id}/materials/re-extract")

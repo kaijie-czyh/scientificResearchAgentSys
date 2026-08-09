@@ -642,9 +642,12 @@ class KnowledgeStore:
                 logger.warning("保存 Research Gap 失败（id=%s）: %s", getattr(g, "gap_id", ""), e)
         return count
 
-    def list_research_gaps(self) -> list[ResearchGap]:
+    def list_research_gaps(self, limit: Optional[int] = None) -> list[ResearchGap]:
         with self._connect() as c:
-            rows = c.execute("SELECT content FROM research_gaps").fetchall()
+            sql = "SELECT content FROM research_gaps"
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            rows = c.execute(sql).fetchall()
         return [ResearchGap.model_validate_json(r[0]) for r in rows]
 
     def save_research_conflicts(self, conflicts: list[ResearchConflict]) -> int:
@@ -665,10 +668,43 @@ class KnowledgeStore:
                 (conf.conflict_id, conf.model_dump_json(), conf.created_at.isoformat()),
             )
 
-    def list_research_conflicts(self) -> list[ResearchConflict]:
+    def get_research_conflict(self, conflict_id: str) -> Optional[ResearchConflict]:
+        """按 conflict_id 查询单条文献冲突。"""
         with self._connect() as c:
-            rows = c.execute("SELECT content FROM research_conflicts").fetchall()
+            row = c.execute(
+                "SELECT content FROM research_conflicts WHERE conflict_id = ?",
+                (conflict_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ResearchConflict.model_validate_json(row[0])
+
+    def list_research_conflicts(self, limit: Optional[int] = None) -> list[ResearchConflict]:
+        """列出文献冲突（按创建时间倒序，可选 limit）。"""
+        with self._connect() as c:
+            sql = "SELECT content FROM research_conflicts ORDER BY created_at DESC"
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            rows = c.execute(sql).fetchall()
         return [ResearchConflict.model_validate_json(r[0]) for r in rows]
+
+    def conflict_stats(self) -> dict:
+        """统计文献冲突（含已裁决/未裁决计数）。"""
+        conflicts = self.list_research_conflicts()
+        adjudicated = 0
+        by_verdict: dict[str, int] = {}
+        for c in conflicts:
+            md = c.metadata or {}
+            v = md.get("adjudication", {}).get("verdict") or ""
+            if v:
+                adjudicated += 1
+                by_verdict[v] = by_verdict.get(v, 0) + 1
+        return {
+            "total": len(conflicts),
+            "papers": len({pid for c in conflicts for s in (c.sources or []) for pid in [s.get("paper_id", "")] if pid}),
+            "adjudicated": adjudicated,
+            "by_verdict": by_verdict,
+        }
 
     def material_stats(self) -> dict:
         """统计材料知识库的三元组覆盖度。
