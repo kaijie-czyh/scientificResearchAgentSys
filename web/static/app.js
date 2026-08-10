@@ -2663,23 +2663,35 @@
         const stats = (evData && evData.stats) || { total: 0, by_source: {}, linked: 0 };
         const entries = (evData && evData.entries) || [];
         const bySource = stats.by_source || {};
-        const srcBadges = Object.keys(bySource).map(src =>
-            el("span", { class: `badge ev-src-badge ev-src-${src}`, text: `${src} ${bySource[src]}` }));
+        // 区分检索 vs 手动补录：检索抓取 = total - manual；检索已入库 = linked - manual（近似，
+        // manual 条目 paper_id 均已回填）；手动补录 = manual
+        const manual = Number(stats.manual || 0);
+        const retrieved = Number(stats.retrieved || Math.max((stats.total || 0) - manual, 0));
+        const srcBadges = Object.keys(bySource)
+            .filter(src => src !== "manual")
+            .map(src =>
+                el("span", { class: `badge ev-src-badge ev-src-${src}`, text: `${src} ${bySource[src]}` }));
+        if (manual > 0) {
+            srcBadges.push(el("span", { class: "badge ev-src-badge ev-src-manual", text: `手动补录 ${manual}` }));
+        }
 
         const card = el("div", { class: "card ev-card" }, [
             el("div", { class: "ev-head" }, [
                 el("span", { class: "ev-title" }, "检索证据链 · 审计轨迹"),
-                el("span", { class: "badge badge-info", text: `抓取 ${stats.total} 条` }),
-                el("span", { class: "badge badge-success", text: `已入库 ${stats.linked} 条` }),
+                el("span", { class: "badge badge-info", text: `检索抓取 ${retrieved} 条` }),
+                el("span", { class: "badge badge-success", text: `检索已入库 ${Math.max(Number(stats.linked || 0) - manual, 0)} 条` }),
                 el("span", { class: "badge badge-warning", text: `未入库 ${stats.unlinked || 0} 条` }),
                 ...srcBadges,
             ]),
             el("div", { class: "ev-desc" },
                 "审计轨迹：子问题 → 数据源 → 证据 → 是否入库。每条子问题按固定配额抓取" +
                 "（Sciverse 10 + arXiv 3 + S2 2），因此各子问题条数相近；" +
-                "「已入库」才是该子问题真正采纳的论文数，「未入库」为相关度<0.5 被筛选或与已入库重复" +
+                "「检索已入库」才是该子问题真正采纳的论文数，「未入库」为相关度<0.5 被筛选或与已入库重复" +
                 "被去重剔除的候选（可在下方「未入库论文」中手动补录）。Sciverse 证据含 doc_id/offset，" +
-                "可回读原文核验；关联依据见各条目的 match_type。"),
+                "可回读原文核验；关联依据见各条目的 match_type。" +
+                (manual > 0
+                    ? "另有 " + manual + " 条为手动补录/上传文献（不属检索，单独计数）。"
+                    : "")),
         ]);
 
         if (!entries.length) {

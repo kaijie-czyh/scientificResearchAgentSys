@@ -9,7 +9,9 @@ Pipeline 在独立线程中异步执行，人工节点通过 HumanCallbackBridge
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 import shutil
 import sys
 import threading
@@ -232,6 +234,7 @@ class ProjectState:
 
 # ===== 全局状态 =====
 
+logger = logging.getLogger("sra.api")
 _CONFIG = get_config()
 _PROJECTS: dict[str, ProjectState] = {}
 _BRIDGE = HumanCallbackBridge()
@@ -1609,11 +1612,14 @@ def import_unlinked_paper(project_id: str, body: dict) -> dict:
     # 新建论文（用证据链中的元数据）
     paper_id = KnowledgeStore.new_id()
     snippet = body.get("snippet") or (cand.get("snippet") or "")
+    # 清理前端渲染残留的 HTML 标签（手动补录时候选标题/片段可能带 <span class=highlight>）
+    clean_title = re.sub(r"<[^>]+>", "", (cand.get("title") or title or "Untitled")).strip()
+    clean_snippet = re.sub(r"<[^>]+>", "", snippet).strip()
     from core.knowledge.schema import Paper
     paper = Paper(
         paper_id=paper_id,
-        title=cand.get("title") or title or "Untitled",
-        abstract=snippet or None,
+        title=clean_title,
+        abstract=clean_snippet or None,
         metadata={
             "source": cand.get("source", ""),
             "source_subquery": cand.get("subquery", ""),
@@ -1628,7 +1634,7 @@ def import_unlinked_paper(project_id: str, body: dict) -> dict:
     # 入库论文 + 切分 chunk
     from core.tools.text_split import split_into_chunks
     store.save_paper(paper)
-    abstract = snippet or ""
+    abstract = clean_snippet or ""
     chunks = split_into_chunks(abstract, max_tokens=500, overlap_tokens=50)
     from core.knowledge.schema import PaperChunk
     chunk_objs = [
@@ -1641,6 +1647,22 @@ def import_unlinked_paper(project_id: str, body: dict) -> dict:
         for i, c in enumerate(chunks)
     ]
     store.save_paper_chunks(chunk_objs)
+
+    # 审计轨迹：手动补录也写一条 evidence_log（source=manual），
+    # 使「审计轨迹」能覆盖所有论文来源，避免「已入库 0 条」观感矛盾。
+    try:
+        store.log_evidence({
+            "subquery": cand.get("subquery") or "手动补录",
+            "source": "manual",
+            "paper_id": paper_id,
+            "title": clean_title,
+            "external_id": cand.get("external_id") or "",
+            "evidence_score": cand.get("evidence_score", 0.0),
+            "snippet": clean_snippet[:300],
+            "match_type": "manual_import",
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("手动补录证据链落库失败: %s", e)
 
     # 回填证据链关联：该候选可能被多个子问题命中，全部关联
     linked_count = 0
@@ -2801,9 +2823,11 @@ async def upload_paper(
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
 
     from core.knowledge import Paper
+    # 清理文件名/标题中可能残留的前端 HTML 标签
+    clean_title = re.sub(r"<[^>]+>", "", (title or filename or "untitled")).strip()
     paper = Paper(
         paper_id=paper_id,
-        title=title or filename,
+        title=clean_title,
         authors=[],
         abstract=abstract,
         url=None,
@@ -2811,6 +2835,22 @@ async def upload_paper(
         source_stage="upload",
     )
     store.save_paper(paper)
+
+    # 审计轨迹：上传文献也写一条 evidence_log（source=manual），
+    # 使「审计轨迹」能覆盖所有论文来源（上传/补录/检索），避免统计口径误解。
+    try:
+        store.log_evidence({
+            "subquery": "文献上传",
+            "source": "manual",
+            "paper_id": paper_id,
+            "title": clean_title,
+            "external_id": "",
+            "evidence_score": 0.0,
+            "snippet": (abstract or "")[:300],
+            "match_type": "manual_upload",
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("上传证据链落库失败: %s", e)
 
     # txt/md 内容切分为 chunk（PDF 由 MinerU 解析后也会按 section 切分）
     chunk_count = 0

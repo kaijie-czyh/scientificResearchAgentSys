@@ -730,7 +730,7 @@ class KnowledgeStore:
         }
 
     def evidence_stats(self) -> dict:
-        """证据链统计：总量 + 按数据源分布 + 已入库占比。"""
+        """证据链统计：总量 + 按数据源分布 + 已入库占比 + 手动补录计数。"""
         with self._connect() as conn:
             total = conn.execute(
                 "SELECT COUNT(*) AS c FROM evidence_log"
@@ -744,12 +744,58 @@ class KnowledgeStore:
             linked = conn.execute(
                 "SELECT COUNT(*) AS c FROM evidence_log WHERE paper_id IS NOT NULL"
             ).fetchone()["c"]
+            manual = conn.execute(
+                "SELECT COUNT(*) AS c FROM evidence_log WHERE source = 'manual'"
+            ).fetchone()["c"]
         return {
             "total": total,
             "by_source": by_source,
             "linked": linked,
             "unlinked": max(total - linked, 0),
+            "manual": manual,
+            "retrieved": max(total - manual, 0),
         }
+
+    def log_evidence(self, e: dict) -> None:
+        """写入一条检索证据（审计轨迹）。
+
+        e 字段：subquery / source / title / external_id / offset /
+               evidence_score / snippet / paper_id / match_type（可选）。
+        source='manual' 表示手动补录/上传入库，非检索产生。
+        """
+        import uuid as _uuid
+        subquery = (e.get("subquery") or "").strip() or "手动补录"
+        source = (e.get("source") or "manual").strip()
+        title = (e.get("title") or "").strip()
+        if not title:
+            title = "(无标题)"
+        # 清理前端渲染残留的 HTML 标签（<span class='highlight'> 等），存纯文本
+        import re as _re
+        title = _re.sub(r"<[^>]+>", "", title).strip()
+        snippet = (e.get("snippet") or "")
+        if snippet:
+            snippet = _re.sub(r"<[^>]+>", "", snippet).strip()
+        created = (e.get("created_at") or datetime.utcnow().isoformat())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO evidence_log "
+                "(log_id, subquery, source, paper_id, title, external_id, offset, "
+                " evidence_score, snippet, match_type, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    e.get("log_id") or f"ev_{_uuid.uuid4().hex[:16]}",
+                    subquery,
+                    source,
+                    e.get("paper_id") or None,
+                    title,
+                    e.get("external_id") or None,
+                    int(e.get("offset") or 0),
+                    float(e.get("evidence_score") or 0.0),
+                    snippet,
+                    e.get("match_type") or "",
+                    created,
+                ),
+            )
 
     def gap_stats(self) -> dict:
         """统计研究缺口（Research Gap）识别结果。

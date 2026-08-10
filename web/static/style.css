@@ -1953,6 +1953,11 @@ pre.code-block {
     color: #1e7a4a;
     border-color: #bfe3cd;
 }
+.ev-src-manual {
+    background: #f3e5f5;
+    color: #6a1b9a;
+    border-color: #e1bee7;
+}
 /* 材料知识页（Task 2）：化学式/跨文献徽章 */
 .badge-formula {
     background: #eef3fb;
