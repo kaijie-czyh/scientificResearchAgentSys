@@ -674,6 +674,15 @@ class PaperFetchAgent(AgentNode):
                         source_subquery=sq,
                     )
                     for ev in evidences:
+                        # 年份硬过滤（Sciverse API 不支持年份参数——实测 year_from/filters
+                        # 均被忽略或返回 400，故在此按 publication_published_year 本地过滤，
+                        # 与 arxiv/S2 的二次过滤语义一致：未知年份按 0/9999 兜底剔除）。
+                        if (ym is not None or yx is not None):
+                            ev_year = ev.year or 0
+                            if ym is not None and ev_year < ym:
+                                continue
+                            if yx is not None and ev_year > yx:
+                                continue
                         ev_venue = (getattr(ev, "venue", "") or "").lower()
                         # 期刊关键词过滤（仅当 Sciverse 返回 venue 元数据时）
                         if vh and ev_venue and vh not in ev_venue:
