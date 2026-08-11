@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 # S2 字段（按需精简，避免请求体过大）
-_S2_FIELDS = "title,authors,year,abstract,venue,externalIds,citationCount,url"
+_S2_FIELDS = "title,authors,year,abstract,venue,externalIds,citationCount,url,openAccessPdf"
 
 
 @dataclass
@@ -39,6 +39,7 @@ class S2Paper:
     doi: Optional[str] = None
     citation_count: int = 0
     url: str = ""
+    pdf_url: str = ""
     source_subquery: str = ""
 
     def to_meta_dict(self) -> dict:
@@ -53,6 +54,7 @@ class S2Paper:
             "venue": self.venue,
             "citation_count": self.citation_count,
             "url": self.url,
+            "pdf_url": self.pdf_url,
             "source_subquery": self.source_subquery,
         }
 
@@ -62,6 +64,7 @@ def search_semantic_scholar(
     max_results: int = 10,
     source_subquery: str = "",
     year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
     timeout: int = 30,
 ) -> list[S2Paper]:
     """Semantic Scholar Graph API 检索。
@@ -70,7 +73,8 @@ def search_semantic_scholar(
         query: 检索语句
         max_results: 最多返回结果数
         source_subquery: 标记来源子问题
-        year_from: 仅返回此年份之后的论文（None 不限）
+        year_from: 仅返回此年份之后的论文（含，None 不限）
+        year_to: 仅返回此年份之前的论文（含，None 不限）
         timeout: 请求超时秒
 
     Returns:
@@ -84,8 +88,13 @@ def search_semantic_scholar(
         "limit": min(max_results, 100),  # S2 单次最多 100
         "fields": _S2_FIELDS,
     }
-    if year_from is not None:
+    # S2 year 参数支持 "from-to" / "from-" / "-to"
+    if year_from is not None and year_to is not None:
+        params["year"] = f"{year_from}-{year_to}"
+    elif year_from is not None:
         params["year"] = f"{year_from}-"
+    elif year_to is not None:
+        params["year"] = f"-{year_to}"
 
     try:
         resp = requests.get(_S2_API, params=params, timeout=timeout)
@@ -98,7 +107,15 @@ def search_semantic_scholar(
     time.sleep(1.0)
 
     data = resp.json()
-    return _parse_s2_response(data, source_subquery=source_subquery)
+    papers = _parse_s2_response(data, source_subquery=source_subquery)
+    # 客户端兜底：年份硬过滤（API 偶发返回边界外结果）
+    if (year_from is not None or year_to is not None) and papers:
+        papers = [
+            p for p in papers
+            if (year_from is None or (p.year or 0) >= year_from)
+            and (year_to is None or (p.year or 9999) <= year_to)
+        ]
+    return papers
 
 
 def _parse_s2_response(data: dict, source_subquery: str = "") -> list[S2Paper]:
@@ -122,6 +139,7 @@ def _parse_s2_response(data: dict, source_subquery: str = "") -> list[S2Paper]:
                 doi=external_ids.get("DOI"),
                 citation_count=item.get("citationCount", 0) or 0,
                 url=item.get("url", ""),
+                pdf_url=(item.get("openAccessPdf") or {}).get("url", "") if item.get("openAccessPdf") else "",
                 source_subquery=source_subquery,
             ))
         except Exception as e:

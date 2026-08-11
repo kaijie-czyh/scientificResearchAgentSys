@@ -16,6 +16,9 @@
         </div>
         <nav class="nav" id="nav">
             <div class="nav-section">项目</div>
+            <div class="nav-item" data-page="dashboard">
+                <span>总览 Dashboard</span>
+            </div>
             <div class="nav-item" data-page="create">
                 <span>新建项目</span>
             </div>
@@ -23,21 +26,14 @@
                 <span>方向推荐</span>
                 <span class="nav-badge muted" id="badge-topic-discovery" style="display:none">!</span>
             </div>
-            <div class="nav-item" data-page="dashboard">
-                <span>总览 Dashboard</span>
-            </div>
-            <div class="nav-item" data-page="create">
-                <span>新建项目</span>
-            </div>
             <div class="nav-item" data-page="progress">
                 <span>研究进度</span>
                 <span class="nav-badge muted" id="badge-progress" style="display:none">0</span>
             </div>
-            <div class="nav-section">产出物</div>
             <div class="nav-section">基本任务 · 文献调研</div>
             <div class="nav-item" data-page="research-report">
-                <span>调研报告</span>
-                <span class="nav-badge muted" id="badge-gaps" style="display:none">0</span>
+                <span>调研报告（含研究缺口）</span>
+                <span class="nav-badge muted" id="badge-report-gaps" style="display:none">0</span>
             </div>
             <div class="nav-item" data-page="papers">
                 <span>论文浏览</span>
@@ -46,10 +42,6 @@
             <div class="nav-item" data-page="materials">
                 <span>材料知识</span>
                 <span class="nav-badge muted" id="badge-materials" style="display:none">0</span>
-            </div>
-            <div class="nav-item" data-page="gaps">
-                <span>研究缺口</span>
-                <span class="nav-badge muted" id="badge-gaps" style="display:none">0</span>
             </div>
             <div class="nav-section">路线 A · 构效关系发现</div>
             <div class="nav-item" data-page="discovery">
@@ -62,6 +54,9 @@
             <div class="nav-item" data-page="materials-cv">
                 <span>Materials 交叉验证</span>
             </div>
+            <div class="nav-item" data-page="method-alignment">
+                <span>方法↔代码对齐</span>
+            </div>
             <div class="nav-section">产出物</div>
             <div class="nav-item" data-page="claims">
                 <span>Claim</span>
@@ -70,14 +65,6 @@
             <div class="nav-item" data-page="experiments">
                 <span>实验</span>
                 <span class="nav-badge muted" id="badge-experiments" style="display:none">0</span>
-            </div>
-            <div class="nav-section">路线 A</div>
-            <div class="nav-item" data-page="discovery">
-                <span>构效关系发现</span>
-                <span class="nav-badge muted" id="badge-discovery" style="display:none">0</span>
-            </div>
-            <div class="nav-item" data-page="method-alignment">
-                <span>方法↔代码对齐</span>
             </div>
             <div class="nav-section">协作</div>
             <div class="nav-item" data-page="notes">
@@ -135,6 +122,8 @@
             </div>
             <button class="topbar-help" id="topbar-help" title="查看快捷键与帮助">?</button>
         </header>
+        <!-- 流程导航条：独立容器，不被页面内容 clear 影响（灵感笔记页隐藏） -->
+        <div class="flow-nav-host" id="flow-nav-host"></div>
         <main class="content" id="content">
             <!-- 由 app.js 渲染 -->
             <div class="loading">加载中…</div>

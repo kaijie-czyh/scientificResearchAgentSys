@@ -642,9 +642,12 @@ class KnowledgeStore:
                 logger.warning("保存 Research Gap 失败（id=%s）: %s", getattr(g, "gap_id", ""), e)
         return count
 
-    def list_research_gaps(self) -> list[ResearchGap]:
+    def list_research_gaps(self, limit: Optional[int] = None) -> list[ResearchGap]:
         with self._connect() as c:
-            rows = c.execute("SELECT content FROM research_gaps").fetchall()
+            sql = "SELECT content FROM research_gaps"
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            rows = c.execute(sql).fetchall()
         return [ResearchGap.model_validate_json(r[0]) for r in rows]
 
     def save_research_conflicts(self, conflicts: list[ResearchConflict]) -> int:
@@ -665,10 +668,43 @@ class KnowledgeStore:
                 (conf.conflict_id, conf.model_dump_json(), conf.created_at.isoformat()),
             )
 
-    def list_research_conflicts(self) -> list[ResearchConflict]:
+    def get_research_conflict(self, conflict_id: str) -> Optional[ResearchConflict]:
+        """按 conflict_id 查询单条文献冲突。"""
         with self._connect() as c:
-            rows = c.execute("SELECT content FROM research_conflicts").fetchall()
+            row = c.execute(
+                "SELECT content FROM research_conflicts WHERE conflict_id = ?",
+                (conflict_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ResearchConflict.model_validate_json(row[0])
+
+    def list_research_conflicts(self, limit: Optional[int] = None) -> list[ResearchConflict]:
+        """列出文献冲突（按创建时间倒序，可选 limit）。"""
+        with self._connect() as c:
+            sql = "SELECT content FROM research_conflicts ORDER BY created_at DESC"
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            rows = c.execute(sql).fetchall()
         return [ResearchConflict.model_validate_json(r[0]) for r in rows]
+
+    def conflict_stats(self) -> dict:
+        """统计文献冲突（含已裁决/未裁决计数）。"""
+        conflicts = self.list_research_conflicts()
+        adjudicated = 0
+        by_verdict: dict[str, int] = {}
+        for c in conflicts:
+            md = c.metadata or {}
+            v = md.get("adjudication", {}).get("verdict") or ""
+            if v:
+                adjudicated += 1
+                by_verdict[v] = by_verdict.get(v, 0) + 1
+        return {
+            "total": len(conflicts),
+            "papers": len({pid for c in conflicts for s in (c.sources or []) for pid in [s.get("paper_id", "")] if pid}),
+            "adjudicated": adjudicated,
+            "by_verdict": by_verdict,
+        }
 
     def material_stats(self) -> dict:
         """统计材料知识库的三元组覆盖度。
@@ -692,3 +728,127 @@ class KnowledgeStore:
             "total_synthesis": len(synthesis),
             "complete_triples": len(complete),
         }
+
+    def evidence_stats(self) -> dict:
+        """证据链统计：总量 + 按数据源分布 + 已入库占比 + 手动补录计数。"""
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) AS c FROM evidence_log"
+            ).fetchone()["c"]
+            by_source = {
+                r["source"]: r["c"]
+                for r in conn.execute(
+                    "SELECT source, COUNT(*) AS c FROM evidence_log GROUP BY source"
+                ).fetchall()
+            }
+            linked = conn.execute(
+                "SELECT COUNT(*) AS c FROM evidence_log WHERE paper_id IS NOT NULL"
+            ).fetchone()["c"]
+            manual = conn.execute(
+                "SELECT COUNT(*) AS c FROM evidence_log WHERE source = 'manual'"
+            ).fetchone()["c"]
+        return {
+            "total": total,
+            "by_source": by_source,
+            "linked": linked,
+            "unlinked": max(total - linked, 0),
+            "manual": manual,
+            "retrieved": max(total - manual, 0),
+        }
+
+    def log_evidence(self, e: dict) -> None:
+        """写入一条检索证据（审计轨迹）。
+
+        e 字段：subquery / source / title / external_id / offset /
+               evidence_score / snippet / paper_id / match_type（可选）。
+        source='manual' 表示手动补录/上传入库，非检索产生。
+        """
+        import uuid as _uuid
+        subquery = (e.get("subquery") or "").strip() or "手动补录"
+        source = (e.get("source") or "manual").strip()
+        title = (e.get("title") or "").strip()
+        if not title:
+            title = "(无标题)"
+        # 清理前端渲染残留的 HTML 标签（<span class='highlight'> 等），存纯文本
+        import re as _re
+        title = _re.sub(r"<[^>]+>", "", title).strip()
+        snippet = (e.get("snippet") or "")
+        if snippet:
+            snippet = _re.sub(r"<[^>]+>", "", snippet).strip()
+        created = (e.get("created_at") or datetime.utcnow().isoformat())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO evidence_log "
+                "(log_id, subquery, source, paper_id, title, external_id, offset, "
+                " evidence_score, snippet, match_type, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    e.get("log_id") or f"ev_{_uuid.uuid4().hex[:16]}",
+                    subquery,
+                    source,
+                    e.get("paper_id") or None,
+                    title,
+                    e.get("external_id") or None,
+                    int(e.get("offset") or 0),
+                    float(e.get("evidence_score") or 0.0),
+                    snippet,
+                    e.get("match_type") or "",
+                    created,
+                ),
+            )
+
+    def gap_stats(self) -> dict:
+        """统计研究缺口（Research Gap）识别结果。
+
+        Returns:
+            dict 含 total（缺口总数）/ conflicts（文献冲突数）
+        """
+        total = len(self.list_research_gaps())
+        conflicts = len(self.list_research_conflicts())
+        return {"total": total, "conflicts": conflicts}
+
+    def list_evidence(
+        self,
+        paper_id: Optional[EntityId] = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """按论文过滤（或全部）列出证据链条目，最新的在前。"""
+        with self._connect() as conn:
+            if paper_id:
+                rows = conn.execute(
+                    "SELECT * FROM evidence_log WHERE paper_id = ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (paper_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM evidence_log ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def list_unlinked_evidence(self, limit: int = 200) -> list[dict]:
+        """列出未关联论文的证据链条目（检索命中但被筛选/去重剔除的候选）。
+
+        这些条目保留完整检索元数据（title/external_id/snippet/subquery/score），
+        前端可展示为「未入库论文」候选，支持用户手动补录入库。
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM evidence_log WHERE paper_id IS NULL "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def link_evidence_to_paper(
+        self, log_id: str, paper_id: str, match_type: str = "manual import"
+    ) -> None:
+        """将某条未关联证据回填关联到指定论文（手动补录入库时调用）。"""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE evidence_log SET paper_id = ?, match_type = ? "
+                "WHERE log_id = ?",
+                (paper_id, match_type, log_id),
+            )
+

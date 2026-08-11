@@ -69,6 +69,12 @@ from core.tools.sciverse_search import (
     read_content as sciverse_read_content,
 )
 from core.tools.semantic_scholar import S2Paper, search_semantic_scholar
+from core.tools.journal_quality import JournalQuality, enrich_paper_quality, lookup_journal_quality, build_pdf_url
+from core.tools.doi_resolve import (
+    find_open_access_pdf,
+    resolve_doi_by_title,
+    resolve_pdf_link,
+)
 from core.tools.text_split import split_into_chunks
 
 __all__ = [
@@ -118,5 +124,12 @@ __all__ = [
     "OQMDClient",
     "oqmd_is_available",
     "query_oqmd_by_formula",
+    "JournalQuality",
+    "enrich_paper_quality",
+    "lookup_journal_quality",
+    "build_pdf_url",
+    "find_open_access_pdf",
+    "resolve_doi_by_title",
+    "resolve_pdf_link",
 ]
 

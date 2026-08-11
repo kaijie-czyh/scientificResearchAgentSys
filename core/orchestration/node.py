@@ -95,6 +95,8 @@ class HumanResponse:
     selected_option: Optional[str] = None
     # 用户可能选择"中止"或"回滚"
     action: str = "continue"  # continue / abort / rollback
+    # 附加结构化数据（如检索偏好配置），由 UI 层注入
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 # ===== 节点基类 =====

@@ -9,7 +9,9 @@ Pipeline 在独立线程中异步执行，人工节点通过 HumanCallbackBridge
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 import shutil
 import sys
 import threading
@@ -82,7 +84,17 @@ from core.knowledge import KnowledgeStore  # noqa: E402
 from core.orchestration.node import HumanRequest, HumanResponse  # noqa: E402
 from core.state.lifecycle import LifecycleStage  # noqa: E402
 from core.state.session import ProjectSession  # noqa: E402
+from core.tools.journal_quality import enrich_paper_quality, build_pdf_url  # noqa: E402
+from core.tools.doi_resolve import find_open_access_pdf, resolve_doi_by_title  # noqa: E402
+
+
+# PDF 解析结果内存缓存（key = doi 或 title 前 120 字符 → pdf_url）
+# 避免 list_papers 每刷新一次页面就重复发起 Crossref/Unpaywall 网络请求
+_pdf_resolve_cache: dict[str, str] = {}
+_pdf_resolve_lock = threading.Lock()
+from core.tools.doi_resolve import find_open_access_pdf, resolve_doi_by_title  # noqa: E402
 from runtime.pipeline import Pipeline, PipelineResult  # noqa: E402
+from stages.common import RESEARCH_SEARCH_PREFS  # noqa: E402
 
 
 # ===== 请求/响应模型 =====
@@ -107,6 +119,8 @@ class HumanResponseRequest(BaseModel):
     action: str = "continue"  # continue / abort / rollback
     text: Optional[str] = None
     selected_option: Optional[str] = None
+    # 检索偏好（可选）：年份区间 + 期刊关键词，在确认检索方向节点提交
+    search_prefs: Optional[dict] = None
 
 
 # ===== 人工节点桥接 =====
@@ -214,14 +228,44 @@ class ProjectState:
     # 当前运行模式：pipeline / discovery / topic_discovery
     # 当前运行模式：pipeline / discovery
     run_mode: str = ""
+    # 用户检索偏好（论文抓取范围）：{year_min, year_max, venue_hint}
+    search_prefs: dict = field(default_factory=dict)
 
 
 # ===== 全局状态 =====
 
+logger = logging.getLogger("sra.api")
 _CONFIG = get_config()
 _PROJECTS: dict[str, ProjectState] = {}
 _BRIDGE = HumanCallbackBridge()
 _LOCK = threading.Lock()
+
+
+def _recover_project_topic(pid: str) -> str:
+    """服务重启后从磁盘恢复项目主题。
+
+    优先级：
+    1. KV `research.topic`（pipeline start/resume 时持久化，最准确）
+    2. 调研报告 cross_validation_report 里的子问题（subquery 字段，带语义）
+    3. 兜底空字符串（前端提示重新确认主题）
+    """
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(pid))
+        topic = store.get_kv("research.topic", "")
+        if topic:
+            return str(topic)
+        # 兜底：从交叉验证报告提取信息最丰富的子问题（去掉疑问后缀，保留主干）
+        report = store.get_kv("cross_validation_report", {}) or {}
+        for key in ("gaps", "consensus", "conflicts"):
+            items = report.get(key) or []
+            for it in items:
+                sq = (it or {}).get("subquery") if isinstance(it, dict) else None
+                if sq and str(sq).strip():
+                    # 子问题语义最接近主题，直接作为恢复主题（保留完整可读）
+                    return str(sq).strip()[:60]
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def _scan_existing_projects() -> None:
@@ -265,7 +309,7 @@ def _scan_existing_projects() -> None:
             status, summary = "created", "服务重启后自动恢复"
         _PROJECTS[pid] = ProjectState(
             project_id=pid,
-            topic="",
+            topic=_recover_project_topic(pid),
             created_at=created_at,
             status=status,
             summary=summary,
@@ -347,6 +391,7 @@ def _run_pipeline_thread(project_id: str, topic: str, resume: bool, force_writin
             on_progress=_progress_cbs[0],
             on_node_started=_progress_cbs[1],
             force_writing=force_writing,
+            initial_ctx={RESEARCH_SEARCH_PREFS: state.search_prefs} if state.search_prefs else None,
         )
         state.last_result = result
         state.status = result.status
@@ -669,7 +714,6 @@ def get_status(project_id: str) -> dict:
     # 产出物计数
     counts = {"papers": 0, "ideas": 0, "claims": 0, "experiments": 0, "evidence": 0,
               "materials": 0, "properties": 0, "synthesis": 0, "gaps": 0}
-    counts = {"papers": 0, "ideas": 0, "claims": 0, "experiments": 0}
     try:
         store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
         counts["papers"] = len(store.list_papers())
@@ -678,9 +722,9 @@ def get_status(project_id: str) -> dict:
         counts["experiments"] = len(store.list_experiments())
         counts["evidence"] = store.evidence_stats()["total"]
         mstats = store.material_stats()
-        counts["materials"] = mstats["materials"]
-        counts["properties"] = mstats["properties"]
-        counts["synthesis"] = mstats["synthesis"]
+        counts["materials"] = mstats["total_materials"]
+        counts["properties"] = mstats["total_properties"]
+        counts["synthesis"] = mstats["total_synthesis"]
         counts["gaps"] = store.gap_stats()["total"]
     except Exception:  # noqa: BLE001
         pass
@@ -702,6 +746,7 @@ def get_status(project_id: str) -> dict:
         "next_nodes": state.next_nodes,
         "counts": counts,
         "pending_human": pending,
+        "search_prefs": state.search_prefs,
         "topic_discovery": state.topic_discovery,
         "counts": counts,
         "pending_human": pending,
@@ -816,6 +861,35 @@ def get_discoveries(project_id: str) -> dict:
         gap_kv = store.get_kv("research_gap_scores") or {}
         gap_scores = gap_kv.get("scores", []) if isinstance(gap_kv, dict) else []
         gap_summary = gap_kv.get("summary", {}) if isinstance(gap_kv, dict) else {}
+        # 兼容旧数据：评分里没有 statement/paper_titles 时，用 research_gaps 表回填
+        # （gap_id → statement + evidence 论文标题），保证前端始终可读
+        if gap_scores:
+            try:
+                gaps_in_store = store.list_research_gaps()
+                gap_meta = {
+                    g.gap_id: g for g in gaps_in_store
+                }
+                enriched = []
+                for s in gap_scores:
+                    if s.get("statement") or s.get("paper_titles"):
+                        enriched.append(s)
+                        continue
+                    s2 = dict(s)
+                    g = gap_meta.get(s.get("gap_id", ""))
+                    if g:
+                        s2["statement"] = g.statement or ""
+                        evs = g.evidence or []
+                        s2["evidence"] = evs
+                        s2["paper_titles"] = [
+                            e.get("title", "") for e in evs if e.get("title")
+                        ][:5]
+                        s2["paper_ids"] = [
+                            e.get("paper_id", "") for e in evs if e.get("paper_id")
+                        ][:5]
+                    enriched.append(s2)
+                gap_scores = enriched
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as e:  # noqa: BLE001
         pass
     return {
@@ -882,38 +956,72 @@ def list_papers(project_id: str) -> dict:
         papers = store.list_papers()
     except Exception as e:  # noqa: BLE001
         return {"papers": [], "error": f"读取失败: {e}"}
-    return {
-        "papers": [
-            {
-                "paper_id": p.paper_id,
-                "title": p.title,
-                "authors": p.authors,
+
+    result = []
+    for p in papers:
+        # 即时补充期刊质量字段（对旧数据兜底：入库时未填充的在此补上）
+        # 注意：这里只做本地构造（arxiv_id → pdf、已有 doi → doi.org），
+        # 不发起 OpenAlex/Crossref 网络请求（避免接口阻塞超时）。
+        # DOI 反查 + OA PDF 查找由后台补全脚本（_backfill_pdf_quality.py）持久化写回 DB。
+        meta = p.metadata or {}
+        if "impact_factor" not in meta:
+            # 旧论文 metadata 里没有质量字段，即时补充
+            tmp = {
+                "title": p.title or "",
+                "authors": p.authors or [],
                 "year": p.year,
-                "venue": p.venue,
-                "arxiv_id": p.arxiv_id,
-                "abstract": p.abstract,
-                "url": p.url,
-                "created_at": p.created_at.isoformat() if p.created_at else None,
-                "source_stage": p.source_stage,
-                # 检索证据链字段（审计溯源：来源 / doc_id / 证据分 / 命中子问题）
-                "source": p.metadata.get("source", ""),
-                "source_subquery": p.metadata.get("source_subquery", ""),
-                "doc_id": p.metadata.get("doc_id", ""),
-                "offset": p.metadata.get("offset", 0),
-                "evidence_score": p.metadata.get("evidence_score", 0.0),
-                "relevance_score": p.metadata.get("relevance_score", 0.0),
-                "relevance_reason": p.metadata.get("relevance_reason", ""),
-                "doi": p.doi,
-                "abstract": p.abstract,
-                "url": p.url or (f"https://arxiv.org/abs/{p.arxiv_id}" if p.arxiv_id else None),
-                "doi_url": (f"https://doi.org/{p.doi}" if p.doi else None),
-                "pdf_path": p.pdf_path,
-                "created_at": p.created_at.isoformat() if p.created_at else None,
-                "source_stage": p.source_stage,
+                "venue": p.venue or "",
+                "arxiv_id": p.arxiv_id or "",
+                "doi": p.doi or meta.get("doi", ""),
+                "pdf_url": meta.get("pdf_url", ""),
             }
-            for p in papers
-        ]
-    }
+            try:
+                enrich_paper_quality(tmp)
+                # PDF 链接：已有直链 / arxiv_id 直接构造；有 DOI 用 doi.org 兜底
+                # （读进程内缓存，命中则直接使用；未命中只做本地构造，不联网）
+                if not (tmp.get("pdf_url") or "").strip():
+                    tmp["pdf_url"] = build_pdf_url(tmp)
+                    if not tmp["pdf_url"] and (tmp.get("doi") or "").strip():
+                        tmp["pdf_url"] = f"https://doi.org/{tmp['doi']}"
+            except Exception:  # noqa: BLE001
+                pass
+            meta = {**meta, "impact_factor": tmp.get("impact_factor", 0.0),
+                    "cas_zone": tmp.get("cas_zone", ""),
+                    "cas_subcategory": tmp.get("cas_subcategory", ""),
+                    "is_top_journal": tmp.get("is_top_journal", False),
+                    "pdf_url": tmp.get("pdf_url", ""),
+                    "doi": tmp.get("doi", p.doi or "")}
+
+        result.append({
+            "paper_id": p.paper_id,
+            "title": p.title,
+            "authors": p.authors,
+            "year": p.year,
+            "venue": p.venue,
+            "arxiv_id": p.arxiv_id,
+            "abstract": p.abstract,
+            "url": p.url or (f"https://arxiv.org/abs/{p.arxiv_id}" if p.arxiv_id else None),
+            "doi": p.doi or meta.get("doi", ""),
+            "doi_url": (f"https://doi.org/{p.doi or meta.get('doi', '')}" if (p.doi or meta.get("doi", "")) else None),
+            "pdf_path": p.pdf_path,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "source_stage": p.source_stage,
+            # 检索证据链字段（审计溯源：来源 / doc_id / 证据分 / 命中子问题）
+            "source": meta.get("source", ""),
+            "source_subquery": meta.get("source_subquery", ""),
+            "doc_id": meta.get("doc_id", ""),
+            "offset": meta.get("offset", 0),
+            "evidence_score": meta.get("evidence_score", 0.0),
+            "relevance_score": meta.get("relevance_score", 0.0),
+            "relevance_reason": meta.get("relevance_reason", ""),
+            # 期刊质量指标（journal_quality 模块填充）
+            "impact_factor": meta.get("impact_factor", 0.0),
+            "cas_zone": meta.get("cas_zone", ""),
+            "cas_subcategory": meta.get("cas_subcategory", ""),
+            "is_top_journal": meta.get("is_top_journal", False),
+            "pdf_url": meta.get("pdf_url", ""),
+        })
+    return {"papers": result}
 
 
 @app.get("/api/projects/{project_id}/materials")
@@ -1010,6 +1118,53 @@ def list_materials(project_id: str) -> dict:
                 "properties": props,
                 "synthesis": syns,
             })
+        # ===== 材料间关联（会议纪要：给材料"牵线搭桥"）=====
+        # 关联规则（任一命中即关联，附带关联类型与理由）：
+        #   1. same_system  ：材料类别相同（同体系，如同为铋碲系）
+        #   2. same_property：报告了相同的归一化性能指标（如都测热电优值）
+        #   3. same_method  ：合成方法类别相同（如都用固相法）
+        #   4. same_paper   ：出自同一篇论文
+        # 每条关联含 {material_id, name, formula, relation, reason}，
+        # 供前端材料卡片「关联材料」区块展示（点击跳转）。
+        mat_index: dict[str, dict] = {}
+        for it in items:
+            mat_index[it["material_id"]] = it
+        for it in items:
+            rels: list[dict] = []
+            seen_rel: set[str] = set()
+            it_props = {p["norm_key"] for p in it.get("properties", [])}
+            it_methods = {s["method_category"] for s in it.get("synthesis", [])}
+            it_papers = set(it.get("source_paper_ids") or [])
+            if it.get("paper_id"):
+                it_papers.add(it["paper_id"])
+            for other in items:
+                if other["material_id"] == it["material_id"]:
+                    continue
+                oid = other["material_id"]
+                relation, reason = "", ""
+                if it.get("category") and other.get("category") and it["category"] == other["category"]:
+                    relation, reason = "same_system", f"同属「{it['category']}」体系"
+                elif it_props & {p["norm_key"] for p in other.get("properties", [])}:
+                    shared = it_props & {p["norm_key"] for p in other.get("properties", [])}
+                    relation, reason = "same_property", f"共报性能指标：{next(iter(shared))}"
+                elif it_methods & {s["method_category"] for s in other.get("synthesis", [])}:
+                    shared = it_methods & {s["method_category"] for s in other.get("synthesis", [])}
+                    relation, reason = "same_method", f"共用合成方法：{next(iter(shared))}"
+                elif it_papers & set(other.get("source_paper_ids") or []):
+                    relation, reason = "same_paper", "出自同一篇论文"
+                if relation and oid not in seen_rel:
+                    seen_rel.add(oid)
+                    rels.append({
+                        "material_id": oid,
+                        "name": other.get("name", ""),
+                        "formula": other.get("formula", ""),
+                        "relation": relation,
+                        "reason": reason,
+                    })
+            # 按关联类型排序（体系 > 性能 > 方法 > 论文），最多展示 6 条
+            rel_order = {"same_system": 0, "same_property": 1, "same_method": 2, "same_paper": 3}
+            rels.sort(key=lambda r: rel_order.get(r["relation"], 9))
+            it["related_materials"] = rels[:6]
     except Exception as e:  # noqa: BLE001
         return {"materials": [], "stats": {}, "error": f"读取失败: {e}"}
     return {
@@ -1068,6 +1223,11 @@ def list_research_conflicts(project_id: str) -> dict:
 
     每条冲突：冲突陈述 + 立场证据（support/refute 双方来源，可点击跳转
     论文页溯源）+ 处置建议 + 置信度 + 来源子问题。
+
+    自动裁决建议（会议纪要要求「同一结论冲突时按期刊等级/文献新旧二次验证」）：
+    对每条冲突的 support/refute 双方按「期刊等级（IF/分区）> 文献新度」加权打分，
+    给出 auto_verdict 建议采纳方；若已有人工裁决（metadata.adjudication），
+    返回人工裁决结果供前端标记。
     """
     _require_project(project_id)
     try:
@@ -1077,21 +1237,150 @@ def list_research_conflicts(project_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"conflicts": [], "stats": {"total": 0, "papers": 0},
                 "error": f"读取失败: {e}"}
-    return {
-        "conflicts": [
-            {
-                "conflict_id": c.conflict_id,
-                "claim": c.claim,
-                "sources": c.sources,
-                "resolution": c.resolution,
-                "confidence": c.confidence,
-                "subquery": c.subquery,
-                "created_at": c.created_at.isoformat() if c.created_at else None,
+
+    # 论文质量速查表（paper_id → {if, year, zone}），用于自动裁决打分
+    quality_map: dict[str, dict] = {}
+    try:
+        for p in store.list_papers():
+            md = p.metadata or {}
+            quality_map[p.paper_id] = {
+                "if": float(md.get("impact_factor") or 0.0),
+                "year": p.year or 0,
+                "zone": md.get("cas_zone") or "",
             }
-            for c in conflicts
-        ],
-        "stats": stats,
-    }
+    except Exception:  # noqa: BLE001
+        pass
+
+    def _side_score(sources: list[dict]) -> tuple[float, str]:
+        """按「期刊等级(IF) 60% + 分区 20% + 文献新度 20%」给一方证据加权打分。"""
+        if not sources:
+            return 0.0, "无证据"
+        total_if, total_year, n = 0.0, 0, 0
+        zone_boost = 0.0
+        for s in sources:
+            pid = s.get("paper_id", "")
+            q = quality_map.get(pid, {})
+            total_if += float(q.get("if") or 0.0)
+            total_year += int(q.get("year") or 0)
+            zone = q.get("zone") or ""
+            if zone in ("1",):
+                zone_boost += 0.2
+            elif zone in ("2",):
+                zone_boost += 0.1
+            n += 1
+        if n == 0:
+            return 0.0, "无证据"
+        avg_if = total_if / n
+        avg_year = total_year / n
+        # IF 归一化（顶刊 ~30 计满分）；年份越新越加分（2025 计满分）
+        if_score = min(avg_if / 30.0, 1.0) * 0.6
+        year_score = min(max((avg_year - 2010) / 15.0, 0.0), 1.0) * 0.2
+        zone_score = min(zone_boost / n, 1.0) * 0.2
+        score = if_score + year_score + zone_score
+        return round(score, 3), f"{avg_if:.1f} / {avg_year or '?'} 年 / {n} 篇"
+
+    items = []
+    for c in conflicts:
+        sources = c.sources or []
+        support = [s for s in sources if s.get("stance") == "support"]
+        refute = [s for s in sources if s.get("stance") == "refute"]
+        sup_score, sup_info = _side_score(support)
+        ref_score, ref_info = _side_score(refute)
+        md = c.metadata or {}
+        adjudication = md.get("adjudication") or {}
+        if adjudication.get("verdict"):
+            auto_verdict = adjudication["verdict"]
+            auto_reason = adjudication.get("reason") or "人工裁决"
+            auto_by = adjudication.get("by") or "user"
+        else:
+            if sup_score > ref_score and sup_score > 0:
+                auto_verdict = "adopt_support"
+            elif ref_score > sup_score and ref_score > 0:
+                auto_verdict = "adopt_refute"
+            elif sup_score == 0 and ref_score == 0:
+                auto_verdict = "unknown"
+            else:
+                auto_verdict = "suspect"
+            auto_reason = (
+                f"自动建议：support 方证据质量 {sup_score}（{sup_info}），"
+                f"refute 方 {ref_score}（{ref_info}）"
+            )
+            auto_by = "auto"
+        items.append({
+            "conflict_id": c.conflict_id,
+            "claim": c.claim,
+            "sources": sources,
+            "resolution": c.resolution,
+            "confidence": c.confidence,
+            "subquery": c.subquery,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            # 自动/人工裁决
+            "auto_verdict": auto_verdict,
+            "auto_reason": auto_reason,
+            "adjudicated": bool(adjudication.get("verdict")),
+            "adjudication_by": auto_by,
+            # 双方证据质量详情（前端展示打分依据）
+            "support_score": sup_score,
+            "support_info": sup_info,
+            "refute_score": ref_score,
+            "refute_info": ref_info,
+        })
+    return {"conflicts": items, "stats": stats}
+
+
+class ConflictAdjudicateRequest(BaseModel):
+    """冲突裁决请求。"""
+    verdict: str = "suspect"  # adopt_support / adopt_refute / suspect
+    note: str = ""
+
+
+@app.post("/api/projects/{project_id}/conflicts/{conflict_id}/adjudicate")
+def adjudicate_conflict(project_id: str, conflict_id: str, req: ConflictAdjudicateRequest) -> dict:
+    """人工裁决文献冲突（会议纪要要求：冲突文献二选一/剔除，用户可覆盖自动建议）。
+
+    裁决结果写回 conflict.metadata.adjudication：
+    - adopt_support：采纳 support 方结论（refute 方标记低可信）
+    - adopt_refute：采纳 refute 方结论
+    - suspect：双方存疑，需进一步检索
+    """
+    _require_project(project_id)
+    verdict = (req.verdict or "suspect").strip()
+    if verdict not in ("adopt_support", "adopt_refute", "suspect"):
+        raise HTTPException(status_code=400, detail=f"无效裁决: {verdict}")
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        conf = store.get_research_conflict(conflict_id)
+        if conf is None:
+            raise HTTPException(status_code=404, detail="冲突不存在")
+        md = dict(conf.metadata or {})
+        md["adjudication"] = {
+            "verdict": verdict,
+            "reason": (req.note or "").strip() or None,
+            "by": "user",
+            "at": datetime.utcnow().isoformat(),
+        }
+        from core.knowledge.schema import ResearchConflict
+        updated = ResearchConflict(
+            conflict_id=conf.conflict_id,
+            claim=conf.claim,
+            sources=conf.sources,
+            resolution=conf.resolution,
+            confidence=conf.confidence,
+            subquery=conf.subquery,
+            metadata=md,
+            created_at=conf.created_at,
+            source_stage=conf.source_stage,
+        )
+        store.save_research_conflict(updated)
+        return {
+            "conflict_id": conflict_id,
+            "verdict": verdict,
+            "message": f"裁决已保存：{'采纳 support 方' if verdict == 'adopt_support' else '采纳 refute 方' if verdict == 'adopt_refute' else '双方存疑待进一步检索'}",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"裁决保存失败: {e}") from e
 
 
 @app.post("/api/projects/{project_id}/materials/re-extract")
@@ -1323,11 +1612,14 @@ def import_unlinked_paper(project_id: str, body: dict) -> dict:
     # 新建论文（用证据链中的元数据）
     paper_id = KnowledgeStore.new_id()
     snippet = body.get("snippet") or (cand.get("snippet") or "")
+    # 清理前端渲染残留的 HTML 标签（手动补录时候选标题/片段可能带 <span class=highlight>）
+    clean_title = re.sub(r"<[^>]+>", "", (cand.get("title") or title or "Untitled")).strip()
+    clean_snippet = re.sub(r"<[^>]+>", "", snippet).strip()
     from core.knowledge.schema import Paper
     paper = Paper(
         paper_id=paper_id,
-        title=cand.get("title") or title or "Untitled",
-        abstract=snippet or None,
+        title=clean_title,
+        abstract=clean_snippet or None,
         metadata={
             "source": cand.get("source", ""),
             "source_subquery": cand.get("subquery", ""),
@@ -1342,7 +1634,7 @@ def import_unlinked_paper(project_id: str, body: dict) -> dict:
     # 入库论文 + 切分 chunk
     from core.tools.text_split import split_into_chunks
     store.save_paper(paper)
-    abstract = snippet or ""
+    abstract = clean_snippet or ""
     chunks = split_into_chunks(abstract, max_tokens=500, overlap_tokens=50)
     from core.knowledge.schema import PaperChunk
     chunk_objs = [
@@ -1355,6 +1647,22 @@ def import_unlinked_paper(project_id: str, body: dict) -> dict:
         for i, c in enumerate(chunks)
     ]
     store.save_paper_chunks(chunk_objs)
+
+    # 审计轨迹：手动补录也写一条 evidence_log（source=manual），
+    # 使「审计轨迹」能覆盖所有论文来源，避免「已入库 0 条」观感矛盾。
+    try:
+        store.log_evidence({
+            "subquery": cand.get("subquery") or "手动补录",
+            "source": "manual",
+            "paper_id": paper_id,
+            "title": clean_title,
+            "external_id": cand.get("external_id") or "",
+            "evidence_score": cand.get("evidence_score", 0.0),
+            "snippet": clean_snippet[:300],
+            "match_type": "manual_import",
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("手动补录证据链落库失败: %s", e)
 
     # 回填证据链关联：该候选可能被多个子问题命中，全部关联
     linked_count = 0
@@ -1372,6 +1680,234 @@ def import_unlinked_paper(project_id: str, body: dict) -> dict:
         "created": True,
         "message": f"论文已入库：{paper.title}（关联 {linked_count} 条证据）",
     }
+
+
+@app.get("/api/projects/{project_id}/papers/{paper_id}/pdf")
+def download_paper_pdf(project_id: str, paper_id: str):
+    """代理下载论文 PDF：后端拉取 PDF 存到本地，前端真正一键下载。
+
+    流程：
+    1. 读论文的 pdf_url（无则按 arxiv_id/doi 解析）
+    2. 若 pdf_url 是 doi.org 兜底链接（会跳到 HTML 文章页），
+       先尝试 Unpaywall/OpenAlex 找 OA PDF 直链，再解析落地页
+       <meta name="citation_pdf_url"> 提取真实 PDF 地址
+    3. 后端请求 PDF 内容，保存到 <project>/papers/<paper_id>.pdf
+    4. 返回文件流（attachment 下载）
+    """
+    _require_project(project_id)
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        try:
+            paper = store.get_paper(paper_id)
+        except Exception:  # noqa: BLE001
+            paper = None
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取论文失败: {e}") from e
+    if paper is None:
+        raise HTTPException(status_code=404, detail="论文不存在")
+
+    # 1. 已有本地文件 → 直接返回
+    if paper.pdf_path and os.path.exists(paper.pdf_path):
+        return FileResponse(
+            paper.pdf_path,
+            media_type="application/pdf",
+            filename=f"{paper.paper_id}.pdf",
+        )
+
+    # 2. 解析目标 PDF URL
+    meta = paper.metadata or {}
+    pdf_url = (meta.get("pdf_url") or "").strip()
+    if not pdf_url and paper.arxiv_id:
+        pdf_url = f"https://arxiv.org/pdf/{paper.arxiv_id}.pdf"
+    if not pdf_url and paper.doi:
+        pdf_url = f"https://doi.org/{paper.doi}"
+    if not pdf_url:
+        # 最后手段：OpenAlex 按标题反查 DOI + OA PDF（仅在用户主动点击下载时联网）
+        try:
+            from core.tools.doi_resolve import resolve_pdf_link
+            meta_tmp = {
+                "title": paper.title or "",
+                "authors": paper.authors or [],
+                "year": paper.year,
+                "arxiv_id": paper.arxiv_id or "",
+                "doi": paper.doi or "",
+                "pdf_url": "",
+            }
+            pdf_url = resolve_pdf_link(meta_tmp)
+            if pdf_url and meta_tmp.get("doi"):
+                try:
+                    from core.knowledge.schema import Paper as _Paper
+                    store.save_paper(_Paper(
+                        paper_id=paper.paper_id,
+                        title=paper.title, authors=paper.authors, year=paper.year,
+                        venue=paper.venue, arxiv_id=paper.arxiv_id,
+                        abstract=paper.abstract, doi=meta_tmp["doi"], url=paper.url,
+                        pdf_path=paper.pdf_path,
+                        metadata={**meta, "pdf_url": pdf_url, "doi": meta_tmp["doi"]},
+                        source_stage=paper.source_stage, created_at=paper.created_at,
+                    ))
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pdf_url = ""
+    if not pdf_url:
+        raise HTTPException(status_code=404, detail="该论文暂无可下载的 PDF 链接")
+
+    # 3. 后端下载 PDF（带 HTML 落地页解析，处理 doi.org 兜底链接）
+    import re
+    import requests as _req
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "application/pdf,*/*;q=0.8,text/html;q=0.5",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    def _is_pdf(content: bytes) -> bool:
+        return bool(content) and len(content) >= 1000 and b"%PDF" in content[:2000]
+
+    def _download(url: str, timeout: int = 30) -> bytes:
+        resp = _req.get(url, headers=headers, timeout=timeout, stream=True)
+        resp.raise_for_status()
+        return resp.content
+
+    def _extract_pdf_from_html(html: bytes, base_url: str) -> str:
+        """从出版商标注页解析真实 PDF 地址（citation_pdf_url / og:url 等）。"""
+        text = html.decode("utf-8", errors="ignore")
+        # 1. <meta name="citation_pdf_url" content="...">
+        m = re.search(
+            r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)["\']',
+            text,
+            re.I,
+        )
+        if not m:
+            m = re.search(
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_pdf_url["\']',
+                text,
+                re.I,
+            )
+        if m:
+            url = m.group(1).strip()
+            if url.startswith("//"):
+                url = "https:" + url
+            return url
+        # 2. <link rel="citation_pdf_url" href="...">
+        m = re.search(
+            r'<link[^>]+rel=["\']citation_pdf_url["\'][^>]+href=["\']([^"\']+)["\']',
+            text,
+            re.I,
+        )
+        if m:
+            url = m.group(1).strip()
+            if url.startswith("//"):
+                url = "https:" + url
+            return url
+        # 3. og:url（兜底，通常是文章页本身）
+        return ""
+
+    content = b""
+    tried = []
+    # 候选 URL 列表：优先真实 PDF 直链，其次 OA 解析，再次落地页
+    candidates: list[str] = []
+    candidates.append(pdf_url)
+    # 若当前是 doi.org 兜底，先尝试 Unpaywall/OpenAlex 找 OA PDF 直链（force 绕过缓存）
+    if "doi.org" in pdf_url and paper.doi:
+        try:
+            oa = find_open_access_pdf(paper.doi, title=paper.title or "", force=True)
+            if oa and oa not in candidates:
+                candidates.append(oa)
+        except Exception:  # noqa: BLE001
+            pass
+
+    for url in candidates:
+        try:
+            content = _download(url)
+            if _is_pdf(content):
+                break
+            # 不是 PDF → 可能返回了 HTML 落地页，尝试解析 citation_pdf_url
+            tried.append(url)
+            pdf_href = _extract_pdf_from_html(content, url)
+            if pdf_href:
+                try:
+                    content = _download(pdf_href)
+                    if _is_pdf(content):
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as e:  # noqa: BLE001
+            tried.append(f"{url} ({e})")
+            content = b""
+
+    if not _is_pdf(content):
+        # 最后兜底：用标题再解析一次（OpenAlex 标题反查 DOI + OA PDF）
+        try:
+            from core.tools.doi_resolve import resolve_pdf_link
+            meta_tmp = {
+                "title": paper.title or "",
+                "authors": paper.authors or [],
+                "year": paper.year,
+                "arxiv_id": paper.arxiv_id or "",
+                "doi": paper.doi or "",
+                "pdf_url": "",
+            }
+            final_url = resolve_pdf_link(meta_tmp)
+            if final_url and final_url not in tried:
+                content = _download(final_url)
+                if not _is_pdf(content):
+                    pdf_href = _extract_pdf_from_html(content, final_url)
+                    if pdf_href:
+                        content = _download(pdf_href)
+        except Exception:  # noqa: BLE001
+            content = b""
+
+    if not _is_pdf(content):
+        detail = (
+            "该论文没有可直链下载的 PDF（doi.org 跳转的是 HTML 文章页，"
+            "且 OpenAlex/Unpaywall 未找到开放获取版本）。"
+            "通常意味着论文在付费墙内，请前往原文链接查看。"
+        )
+        raise HTTPException(status_code=502, detail=detail)
+
+    # 4. 保存本地并返回
+    try:
+        proj_dir = _CONFIG.paths.project_dir(project_id)
+        pdf_dir = os.path.join(proj_dir, "papers")
+        os.makedirs(pdf_dir, exist_ok=True)
+        local_path = os.path.join(pdf_dir, f"{paper_id}.pdf")
+        with open(local_path, "wb") as f:
+            f.write(content)
+        # 回写 pdf_path（存 DB）
+        try:
+            from core.knowledge.schema import Paper as _Paper
+            _paper = _Paper(
+                paper_id=paper.paper_id,
+                title=paper.title,
+                authors=paper.authors,
+                year=paper.year,
+                venue=paper.venue,
+                arxiv_id=paper.arxiv_id,
+                abstract=paper.abstract,
+                doi=paper.doi,
+                url=paper.url,
+                pdf_path=local_path,
+                metadata=paper.metadata,
+                source_stage=paper.source_stage,
+                created_at=paper.created_at,
+            )
+            store.save_paper(_paper)
+        except Exception:  # noqa: BLE001
+            pass  # 回写失败不影响本次下载
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"保存 PDF 失败: {e}") from e
+
+    return FileResponse(
+        local_path,
+        media_type="application/pdf",
+        filename=f"{paper.paper_id}.pdf",
+    )
 
 
 @app.get("/api/projects/{project_id}/claims")
@@ -1479,6 +2015,10 @@ def submit_human_response(project_id: str, req: HumanResponseRequest) -> dict:
         selected_option=req.selected_option,
         action=action,
     )
+    # 检索偏好（年份/期刊）随人工响应透传给节点，并记录到项目状态
+    if req.search_prefs:
+        resp.context = {"search_prefs": req.search_prefs}
+        state.search_prefs = dict(req.search_prefs)
     ok = _BRIDGE.submit(project_id, resp)
     if not ok:
         # 没有等待中的人工请求：可能已提交、已超时、被清除，或多实例分裂
@@ -2380,9 +2920,11 @@ async def upload_paper(
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
 
     from core.knowledge import Paper
+    # 清理文件名/标题中可能残留的前端 HTML 标签
+    clean_title = re.sub(r"<[^>]+>", "", (title or filename or "untitled")).strip()
     paper = Paper(
         paper_id=paper_id,
-        title=title or filename,
+        title=clean_title,
         authors=[],
         abstract=abstract,
         url=None,
@@ -2390,6 +2932,22 @@ async def upload_paper(
         source_stage="upload",
     )
     store.save_paper(paper)
+
+    # 审计轨迹：上传文献也写一条 evidence_log（source=manual），
+    # 使「审计轨迹」能覆盖所有论文来源（上传/补录/检索），避免统计口径误解。
+    try:
+        store.log_evidence({
+            "subquery": "文献上传",
+            "source": "manual",
+            "paper_id": paper_id,
+            "title": clean_title,
+            "external_id": "",
+            "evidence_score": 0.0,
+            "snippet": (abstract or "")[:300],
+            "match_type": "manual_upload",
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("上传证据链落库失败: %s", e)
 
     # txt/md 内容切分为 chunk（PDF 由 MinerU 解析后也会按 section 切分）
     chunk_count = 0
