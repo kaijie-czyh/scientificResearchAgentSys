@@ -668,6 +668,9 @@
             // 调研报告摘要 + 发现摘要 + 交叉验证摘要（三栏）
             content.appendChild(renderDashboardSummaries(data));
 
+            // 数据源合规性卡片（赛题 §5.3 支撑）
+            renderDashboardDataSources(content);
+
             // 快速操作
             content.appendChild(renderDashboardActions(data));
         } catch (e) {
@@ -1015,6 +1018,91 @@
         ]));
 
         return wrap;
+    }
+
+    // ===== 数据源合规性卡片（赛题 §5.3 支撑） =====
+    function renderDashboardDataSources(container) {
+        const card = el("div", { class: "card" }, [
+            el("div", { class: "card-title" }, [
+                "数据源合规性（赛题 §5.3）",
+            ]),
+            el("div", { class: "card-sub muted" }, [
+                "系统使用的外部数据源 / API 与许可证，集中登记见 ",
+                el("a", {
+                    href: "/api/data-sources",
+                    target: "_blank",
+                    class: "link",
+                }, "/api/data-sources"),
+                " 与源码 ",
+                el("code", {}, "core/tools/data_provenance.py"),
+                "。",
+            ]),
+            el("div", { id: "data-sources-summary" }, [el("div", { class: "muted small" }, "加载中...")]),
+            el("div", { id: "data-sources-list" }, []),
+        ]);
+        container.appendChild(card);
+        // 异步拉取 + 渲染（失败不阻塞 dashboard）
+        fetch("/api/data-sources")
+            .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+            .then(payload => {
+                const list = (payload.sources || []);
+                const sum = payload.summary || {};
+                // 顶部统计
+                const summary = document.getElementById("data-sources-summary");
+                if (summary) {
+                    clear(summary);
+                    summary.appendChild(el("div", { class: "summary-stats" }, [
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(sum.total || 0) }),
+                            el("div", { class: "summary-stat-label" }, "数据源"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(sum.required_count || 0) }),
+                            el("div", { class: "summary-stat-label" }, "必需"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(sum.token_required_count || 0) }),
+                            el("div", { class: "summary-stat-label" }, "需 Token"),
+                        ]),
+                    ]));
+                }
+                // 列表
+                const listEl = document.getElementById("data-sources-list");
+                if (!listEl) return;
+                clear(listEl);
+                const table = el("table", { class: "data-sources-table" }, [
+                    el("thead", {}, el("tr", {}, [
+                        el("th", {}, "名称"),
+                        el("th", {}, "类别"),
+                        el("th", {}, "许可证"),
+                        el("th", {}, "接入"),
+                        el("th", {}, "必选"),
+                    ])),
+                ]);
+                const tbody = el("tbody");
+                list.forEach(src => {
+                    tbody.appendChild(el("tr", {}, [
+                        el("td", {}, [
+                            el("strong", {}, src.name),
+                            el("div", { class: "small muted" }, src.usage || ""),
+                        ]),
+                        el("td", {}, src.category || ""),
+                        el("td", {}, src.license || ""),
+                        el("td", {}, src.access || ""),
+                        el("td", {}, src.required ? "必选" : "可选"),
+                    ]));
+                });
+                table.appendChild(tbody);
+                listEl.appendChild(table);
+            })
+            .catch(e => {
+                const summary = document.getElementById("data-sources-summary");
+                if (summary) {
+                    clear(summary);
+                    summary.appendChild(el("div", { class: "error small" },
+                        "数据源列表加载失败：" + (e.message || e)));
+                }
+            });
     }
 
     function renderDashboardActions(data) {
@@ -4698,6 +4786,22 @@
                 ]));
                 return;
             }
+
+            // ===== 顶部状态徽章（MP 已连接 / 规则降级 / 混合）=====
+            const src = report.source || "";
+            const badgeInfo = {
+                mp: { cls: "badge badge-success", text: "✓ 已连接 Materials Project API" },
+                rule: { cls: "badge badge-warn", text: "⚠ 规则降级（未配置 MP API key）" },
+                hybrid: { cls: "badge badge-success", text: "✓ MP API + 规则 双路" },
+            }[src] || { cls: "badge badge-muted", text: "未知来源" };
+            content.appendChild(el("div", { class: "badge-row mt-8" }, [
+                el("span", { class: badgeInfo.cls }, badgeInfo.text),
+                el("a", {
+                    href: `/api/projects/${state.currentProjectId}/download/cross-validation`,
+                    class: "btn btn-secondary btn-sm",
+                    style: "margin-left:auto",
+                }, "下载报告 (.md)"),
+            ]));
 
             // 顶部统计
             content.appendChild(el("div", { class: "counts-grid" }, [

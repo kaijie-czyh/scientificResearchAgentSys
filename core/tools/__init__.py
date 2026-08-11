@@ -8,6 +8,7 @@
 - code_runner: 沙盒代码运行（experiment 阶段执行 LLM 生成的代码）
 - materials_search: 构效关系搜索（路线 A：MCTS + 文献代理模型 + LLM 融合）
 - materials_project: Materials Project API 交叉验证（赛题路线 A 公开数据库交叉验证要求）
+- data_provenance: 外部数据源 / API 的元信息登记（赛题 §5.3 合规披露支撑）
 """
 from __future__ import annotations
 
@@ -19,6 +20,13 @@ from core.tools.code_runner import (
     is_remote_mode,
     run_python_code,
     run_python_code_remote,
+)
+from core.tools.data_provenance import (
+    DATA_SOURCES,
+    get_source,
+    list_sources,
+    summarize as data_sources_summary,
+    to_markdown_table as data_sources_to_markdown,
 )
 from core.tools.materials_project import (
     CrossValidationReport,
@@ -95,6 +103,11 @@ __all__ = [
     "mp_is_available",
     "mp_query_material",
     "mp_report_to_dict",
+    "DATA_SOURCES",
+    "list_sources",
+    "get_source",
+    "data_sources_summary",
+    "data_sources_to_markdown",
     "MinerUClient",
     "MinerUDocument",
     "MinerUFigure",
