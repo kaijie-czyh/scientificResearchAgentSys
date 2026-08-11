@@ -50,7 +50,7 @@ def _guard_single_instance() -> None:
         return
     import socket
 
-    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    port = int(os.environ.get("SRA_WEB_PORT") or os.environ.get("PORT") or "8001")
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         probe.bind(("0.0.0.0", port))
@@ -3080,6 +3080,6 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    # 优先取 SRA_WEB_PORT；Render/Fly 等 PaaS 注入 $PORT 时兼容使用
+    port = int(os.environ.get("SRA_WEB_PORT") or os.environ.get("PORT") or "8001")
     uvicorn.run("web.api:app", host="0.0.0.0", port=port, reload=False)
-    uvicorn.run("web.api:app", host="0.0.0.0", port=8000, reload=False)

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>科研 Agent 系统</title>
+    <link rel="stylesheet" href="static/style.css" />
+</head>
+<body>
+<script>
+    // 静态托管部署配置：后端 API 地址（Render 部署后填写实际 URL）
+    // 例如后端在 https://xxx.onrender.com，则 window.SRA_API_BASE = "https://xxx.onrender.com";
+    window.SRA_API_BASE = "";
+</script>
+<div class="app">
+    <!-- 左侧导航 -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1 class="sidebar-title">科研 Agent 系统</h1>
+            <div class="sidebar-subtitle">Scientific Research Assistant</div>
+        </div>
+        <nav class="nav" id="nav">
+            <div class="nav-section">项目</div>
+            <div class="nav-item" data-page="dashboard">
+                <span>总览 Dashboard</span>
+            </div>
+            <div class="nav-item" data-page="create">
+                <span>新建项目</span>
+            </div>
+            <div class="nav-item" data-page="topic-discovery">
+                <span>方向推荐</span>
+                <span class="nav-badge muted" id="badge-topic-discovery" style="display:none">!</span>
+            </div>
+            <div class="nav-item" data-page="progress">
+                <span>研究进度</span>
+                <span class="nav-badge muted" id="badge-progress" style="display:none">0</span>
+            </div>
+            <div class="nav-section">基本任务 · 文献调研</div>
+            <div class="nav-item" data-page="research-report">
+                <span>调研报告（含研究缺口）</span>
+                <span class="nav-badge muted" id="badge-report-gaps" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="papers">
+                <span>论文浏览</span>
+                <span class="nav-badge muted" id="badge-papers" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="materials">
+                <span>材料知识</span>
+                <span class="nav-badge muted" id="badge-materials" style="display:none">0</span>
+            </div>
+            <div class="nav-section">路线 A · 构效关系发现</div>
+            <div class="nav-item" data-page="discovery">
+                <span>发现概览</span>
+                <span class="nav-badge muted" id="badge-discovery" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="discovery-detail">
+                <span>发现详情与可视化</span>
+            </div>
+            <div class="nav-item" data-page="materials-cv">
+                <span>Materials 交叉验证</span>
+            </div>
+            <div class="nav-item" data-page="method-alignment">
+                <span>方法↔代码对齐</span>
+            </div>
+            <div class="nav-section">产出物</div>
+            <div class="nav-item" data-page="claims">
+                <span>Claim</span>
+                <span class="nav-badge muted" id="badge-claims" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="experiments">
+                <span>实验</span>
+                <span class="nav-badge muted" id="badge-experiments" style="display:none">0</span>
+            </div>
+            <div class="nav-section">协作</div>
+            <div class="nav-item" data-page="notes">
+                <span>灵感笔记</span>
+                <span class="nav-badge muted" id="badge-notes" style="display:none">0</span>
+            </div>
+            <div class="nav-item" data-page="human">
+                <span>人工节点</span>
+                <span class="nav-badge" id="badge-human" style="display:none">!</span>
+            </div>
+        </nav>
+        <div class="sidebar-download" id="sidebar-download" style="display:none">
+            <div class="sidebar-download-head">
+                <span class="sidebar-download-title">📥 快速下载</span>
+            </div>
+            <select class="sidebar-download-fmt" id="sidebar-download-fmt">
+                <option value="md">Markdown (.md)</option>
+                <option value="docx">Word (.docx)</option>
+                <option value="pdf">PDF (.pdf)</option>
+            </select>
+            <div class="sidebar-download-list" id="sidebar-download-list"></div>
+        </div>
+        <div class="sidebar-notes" id="sidebar-notes" style="display:none">
+            <div class="sidebar-notes-head">
+                <span class="sidebar-notes-title">科研灵感记录</span>
+                <span class="sidebar-notes-link" id="sidebar-note-link">全部 →</span>
+            </div>
+            <textarea class="sidebar-notes-input" id="sidebar-note-input"
+                placeholder="随时记录灵感、质疑或下一步方向…（Ctrl+Enter 提交）" rows="3"></textarea>
+            <button class="sidebar-notes-btn" id="sidebar-note-save">记录灵感</button>
+            <div class="sidebar-notes-list" id="sidebar-notes-list"></div>
+        </div>
+        <div class="sidebar-footer">
+            v0.1.0 · Dry-Run Demo
+            v0.2.0 · GOAI 赛道三·方向三
+        </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <div class="main">
+        <header class="topbar">
+            <div class="topbar-breadcrumb" id="topbar-breadcrumb">
+                <span class="breadcrumb-root" id="breadcrumb-root">科研 Agent 系统</span>
+                <span class="breadcrumb-sep">›</span>
+                <span class="breadcrumb-current" id="topbar-title">总览 Dashboard</span>
+            </div>
+            <div class="topbar-spacer"></div>
+            <div class="topbar-status" id="topbar-status" style="display:none">
+                <span class="topbar-status-dot"></span>
+                <span id="topbar-status-text">运行中</span>
+            </div>
+            <div class="topbar-project" id="topbar-project">
+                <span class="topbar-project-label">当前项目</span>
+                <strong id="current-project-id">未创建</strong>
+            </div>
+            <button class="topbar-help" id="topbar-help" title="查看快捷键与帮助">?</button>
+        </header>
+        <!-- 流程导航条：独立容器，不被页面内容 clear 影响（灵感笔记页隐藏） -->
+        <div class="flow-nav-host" id="flow-nav-host"></div>
+        <main class="content" id="content">
+            <!-- 由 app.js 渲染 -->
+            <div class="loading">加载中…</div>
+        </main>
+    </div>
+</div>
+
+<!-- 全局 loading 遮罩 -->
+<div class="loading-overlay" id="loading-overlay" style="display:none">
+    <div class="loading-overlay-content">
+        <div class="loading-spinner"></div>
+        <div class="loading-overlay-text" id="loading-overlay-text">处理中…</div>
+    </div>
+</div>
+
+<!-- 快捷键与帮助面板 -->
+<div class="help-panel" id="help-panel" style="display:none">
+    <div class="help-panel-content">
+        <div class="help-panel-head">
+            <h3>快捷键与使用提示</h3>
+            <button class="help-panel-close" id="help-panel-close">×</button>
+        </div>
+        <div class="help-panel-body">
+            <div class="help-section">
+                <div class="help-section-title">键盘快捷键</div>
+                <div class="help-row"><kbd>1</kbd> - <span>总览 Dashboard</span></div>
+                <div class="help-row"><kbd>2</kbd> - <span>新建项目</span></div>
+                <div class="help-row"><kbd>3</kbd> - <span>研究进度</span></div>
+                <div class="help-row"><kbd>4</kbd> - <span>调研报告</span></div>
+                <div class="help-row"><kbd>5</kbd> - <span>论文浏览</span></div>
+                <div class="help-row"><kbd>6</kbd> - <span>发现概览</span></div>
+                <div class="help-row"><kbd>7</kbd> - <span>Claim 列表</span></div>
+                <div class="help-row"><kbd>8</kbd> - <span>实验列表</span></div>
+                <div class="help-row"><kbd>?</kbd> / <kbd>F1</kbd> - <span>打开本帮助</span></div>
+                <div class="help-row"><kbd>Esc</kbd> - <span>关闭弹窗</span></div>
+                <div class="help-row"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> - <span>提交灵感笔记/表单</span></div>
+            </div>
+            <div class="help-section">
+                <div class="help-section-title">使用流程</div>
+                <div class="help-flow">
+                    <span class="help-flow-step">1. 新建项目</span>
+                    <span class="help-flow-arrow">→</span>
+                    <span class="help-flow-step">2. 等待运行</span>
+                    <span class="help-flow-arrow">→</span>
+                    <span class="help-flow-step">3. 处理人工节点</span>
+                    <span class="help-flow-arrow">→</span>
+                    <span class="help-flow-step">4. 查看产出</span>
+                </div>
+            </div>
+            <div class="help-section">
+                <div class="help-section-title">产物下载</div>
+                <p class="help-note">每个页面顶部「下载产出」支持 Markdown / Word / PDF 三种格式。</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="static/app.js"></script>
+</body>
+</html>
