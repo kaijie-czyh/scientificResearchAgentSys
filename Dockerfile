@@ -2,11 +2,9 @@
 # 基于 Python 3.10 slim（本项目要求 >= 3.10）
 FROM python:3.10-slim
 
-# 环境变量（Hugging Face Spaces 通过 Secrets 注入，
-# 不会被打进镜像；这里只给默认端口）
+# 环境变量（HF Spaces 通过 Secrets 注入；端口由平台 $PORT 或 SRA_WEB_PORT 控制）
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    SRA_WEB_PORT=7860 \
     HF_HOME=/root/.cache/huggingface
 
 WORKDIR /app
