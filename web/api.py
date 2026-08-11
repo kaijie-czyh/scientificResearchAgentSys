@@ -2132,6 +2132,103 @@ def get_materials_cross_validation(project_id: str) -> dict:
     return {"project_id": project_id, "report": report}
 
 
+@app.get("/api/projects/{project_id}/download/cross-validation")
+def download_cross_validation(project_id: str, format: str = "md") -> Response:
+    """下载 Materials Project 交叉验证报告（赛题路线 A 硬要求可提交材料）。
+
+    支持 md / docx / pdf 三种格式（与 download_artifact 一致）。
+    """
+    _require_project(project_id)
+    try:
+        store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+        report = store.get_kv("materials_cross_validation_report") or {}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"读取交叉验证报告失败: {e}")
+    md_content = _build_materials_cv_md(report, project_id)
+    base_filename = "materials_cross_validation"
+    fmt = (format or "md").lower()
+    if fmt == "docx":
+        return _md_to_docx_response(md_content, base_filename)
+    elif fmt == "pdf":
+        return _md_to_pdf_response(md_content, base_filename)
+    return _make_download(md_content, f"{base_filename}.md", "text/markdown", "md")
+
+
+def _build_materials_cv_md(report: dict, project_id: str) -> str:
+    """Materials Project 交叉验证报告 → 可提交 Markdown（直接贴 §4.2 当前结果）。"""
+    from core.tools import data_sources_to_markdown
+
+    parts: list[str] = []
+    parts.append("# Materials Project 交叉验证报告\n\n")
+    parts.append(f"**项目 ID**: `{project_id}`\n\n")
+    parts.append(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+    parts.append("---\n\n")
+
+    if not report:
+        parts.append("> 尚未生成交叉验证报告，请先运行构效关系发现。\n\n")
+        return "".join(parts)
+
+    # 顶部摘要
+    parts.append("## 摘要\n\n")
+    parts.append(f"- 验证发现总数: **{report.get('total_discoveries', 0)}**\n")
+    parts.append(f"- Materials Project API 命中: **{report.get('mp_validated', 0)}**\n")
+    parts.append(f"- 规则交叉验证通过: **{report.get('rule_validated', 0)}**\n")
+    parts.append(f"- 整体置信度: **{report.get('overall_confidence', 0):.3f}**\n")
+    src = report.get("source", "")
+    src_text = {
+        "mp": "Materials Project API + 规则双路",
+        "rule": "规则交叉验证（未配置 MP API key）",
+        "hybrid": "Materials Project API + 规则（混合）",
+    }.get(src, src or "未知")
+    parts.append(f"- 验证来源: **{src_text}**\n\n")
+
+    # 验证来源说明
+    notes = report.get("notes") or ""
+    if notes:
+        parts.append("## 验证方法说明\n\n")
+        parts.append(f"{notes}\n\n")
+        parts.append("> 配置 `MATERIALS_PROJECT_API_KEY` 环境变量可启用 Materials Project 数据库交叉验证。"
+                     "申请地址：https://next-gen.materialsproject.org/api\n\n")
+
+    # 逐条详情
+    results = report.get("results") or []
+    parts.append(f"## 逐条验证详情（{len(results)} 条）\n\n")
+    if not results:
+        parts.append("> 无验证详情。\n\n")
+    else:
+        parts.append("| # | 材料 | Novelty | MP 命中 | MP 带隙 | 规则通过 | 一致性 | 综合置信度 | 来源 |\n")
+        parts.append("|---|---|---|---|---|---|---|---|---|\n")
+        for i, r in enumerate(results, 1):
+            cells = [
+                str(i),
+                str(r.get("material") or "未识别"),
+                str(r.get("novelty") or "unknown"),
+                "✓" if r.get("mp_match") else "—",
+                f"{r.get('mp_band_gap'):.3g}" if isinstance(r.get("mp_band_gap"), (int, float)) else "—",
+                "✓" if r.get("rule_check_passed") else "—",
+                "✓" if r.get("literature_consistent") else "—",
+                f"{float(r.get('confidence', 0)):.3f}",
+                str(r.get("cross_validation_source") or "rule"),
+            ]
+            parts.append("| " + " | ".join(cells) + " |\n")
+        parts.append("\n")
+
+        # 展开每条的 rule_check_notes（评委可读性更强）
+        parts.append("### 规则检查备注（逐条）\n\n")
+        for i, r in enumerate(results, 1):
+            mat = r.get("material") or "未识别"
+            note = r.get("rule_check_notes") or "(无备注)"
+            parts.append(f"- **#{i} {mat}** — {note}\n")
+        parts.append("\n")
+
+    # 附录：合规披露引用
+    parts.append("---\n\n## 附录：外部数据源合规披露\n\n")
+    parts.append("本系统使用的所有外部数据源、许可证与降级策略详见方案文档 §5.3，"
+                 "集中登记表见 `core/tools/data_provenance.py`。摘要如下：\n\n")
+    parts.append(data_sources_to_markdown() + "\n")
+    return "".join(parts)
+
+
 @app.get("/api/projects/{project_id}/method-alignment")
 def get_method_alignment(project_id: str) -> dict:
     """方法↔代码对齐（公式 LaTeX ↔ 实验代码关键词匹配）。
@@ -2946,6 +3043,20 @@ def _require_project(project_id: str) -> ProjectState:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/api/data-sources")
+def list_data_sources() -> dict:
+    """外部数据源合规登记（赛题 §5.3 支撑）。
+
+    数据源元信息集中登记在 `core/tools/data_provenance.py`，
+    本端点暴露给前端 dashboard 的"数据源合规性"卡片。
+    """
+    from core.tools import data_sources_summary, list_sources
+    return {
+        "sources": list_sources(),
+        "summary": data_sources_summary(),
+    }
 
 
 @app.get("/static/{file_path:path}")
