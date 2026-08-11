@@ -1,0 +1,10 @@
+run = "pip install -r requirements-replit.txt && python -m web.api"
+entrypoint = "web/api.py"
+hidden = [".config", "node_modules", "projects", "*.db", "*.log", ".venv", ".pytest_cache"]
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["python", "-m", "web.api"]
+deploymentTarget = "cloudrun"
