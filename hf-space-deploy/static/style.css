@@ -485,21 +485,6 @@ body {
 .rec-compare .c-topic { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rec-compare .c-dim { text-align: center; }
 .rec-compare .c-dim-col { color: var(--color-text-muted); }
-/* 表尾“怎么看”图例行：解释文字较长，改为整行换行、不被裁切 */
-.rec-compare-legend {
-    grid-template-columns: 26px 1fr;
-    background: var(--color-surface-alt, #f5f6f8);
-}
-.rec-compare-legend .c-idx { align-self: start; line-height: 1.5; }
-.rec-compare-legend .c-topic {
-    grid-column: 2 / -1;
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
-    line-height: 1.5;
-    color: var(--color-text-muted);
-}
-.rec-compare-legend .c-dim { display: none; }
 .pop-cell { display: flex; align-items: center; gap: 6px; justify-content: center; }
 .pop-bar {
     width: 44px;
@@ -2042,37 +2027,23 @@ pre.code-block {
 }
 .ev-entry {
     display: flex;
-    flex-direction: column;      /* 两行结构：主行（标题）+ 元信息行，彻底避免挤压换行 */
-    gap: 4px;
-    padding: 7px 12px;
+    align-items: center;
+    flex-wrap: wrap;              /* 窄屏时允许自动换行，避免内容被裁掉 */
+    gap: 4px 8px;
+    padding: 6px 12px;
     font-size: 12px;
     border-bottom: 1px dashed var(--color-border);
 }
 .ev-entry:last-child {
     border-bottom: none;
 }
-/* 主行：来源徽章 + 标题 */
-.ev-entry-main {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-}
 .ev-entry-title {
-    flex: 1 1 auto;
+    flex: 1 1 180px;              /* 至少 180px，占满剩余宽度，允许换行再占新行 */
     min-width: 0;
     color: var(--color-text);
-    line-height: 1.45;
-    word-break: break-word;       /* 长标题完整换行显示，不再省略截断 */
-}
-/* 元信息行：证据分 / doc / 偏移 / 关联依据，独立一行，整齐排列 */
-.ev-entry-meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 4px 12px;
-    padding-left: 2px;
-    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .ev-entry-score {
     color: var(--color-info);
@@ -3271,26 +3242,6 @@ mark.mat-hl {
     padding-top: 2px;
 }
 
-/* 数据库证据链（Materials Project / OQMD / NOMAD，双证据链） */
-.gap-dbevidence {
-    background: #f0f6ff;
-    border: 1px solid #cfe2fb;
-    border-radius: 8px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
-}
-.gap-dbev-item {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: #1f4e79;
-    line-height: 1.5;
-    padding: 2px 0;
-    font-family: var(--font-mono, monospace);
-}
-
 .gap-actions {
     display: flex;
     flex-wrap: wrap;
@@ -3512,20 +3463,17 @@ mark.mat-hl {
 
 .evidence-item {
     display: flex;
-    align-items: flex-start;
-    flex-wrap: wrap;
+    align-items: center;
     gap: 6px;
     padding: 6px 10px;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: var(--radius);
     font-size: 13px;
-    min-width: 0;
 }
 
 .evidence-icon {
     font-size: 16px;
-    flex-shrink: 0;
 }
 
 .evidence-type {
@@ -3536,59 +3484,15 @@ mark.mat-hl {
     background: var(--color-surface-alt);
     padding: 2px 6px;
     border-radius: 3px;
-    flex-shrink: 0;
 }
 
 .evidence-link {
     font-size: 13px;
     font-family: var(--font-serif);
-    min-width: 0;
-    word-break: break-word;
-}
-
-.evidence-id {
-    flex-shrink: 0;
 }
 
 .evidence-chunk {
     margin-left: auto;
-    flex-shrink: 0;
-}
-
-.evidence-snippet {
-    flex: 1 1 100%;
-    min-width: 0;
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--color-text-muted);
-    background: var(--color-surface-alt);
-    border-left: 3px solid var(--color-border);
-    padding: 4px 8px;
-    border-radius: 2px;
-    word-break: break-word;
-}
-
-/* 新知 vs 已知：量化相似度对比 */
-.novelty-context {
-    border: 1px solid var(--color-border);
-    border-left: 3px solid var(--color-accent);
-    background: var(--color-surface-alt);
-    border-radius: var(--radius);
-    padding: 8px 10px;
-}
-.novelty-context-row {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 2px 0;
-    min-width: 0;
-}
-.novelty-context-title {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .link-external {

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -1383,7 +1383,7 @@ class CrossValidateAgent(AgentNode):
                         "    · cited_chunk_ids 若有具体段落引用则列出；\n"
                         "    · importance 0~1 表示关键度；actionability 限定 high / medium / low 表示可被新研究填补的难易度；\n"
                         "    · rationale 解释为何这是 Gap、为何对材料领域有价值。\n"
-                        "  - overall_confidence：0~1 综合可信度（共识越多、冲突越少、缺口越少 → 越高）。"
+                        "  - overall_confidence：0~1 综合可信度（共识越充分、冲突占比越低 → 越高；识别出的 gap 数本身不扣分）。"
                     ),
                     prompt=(
                         f"研究主题：{topic or sq}\n"
@@ -1503,17 +1503,24 @@ class CrossValidateAgent(AgentNode):
                     subquery=input_obj.subqueries[0] if input_obj.subqueries else "",
                 ))
 
-        # 综合可信度：冲突越少 / 共识越多 / 缺口越少 → 越高
+        # 综合可信度（平衡计分）：共识加分 + 冲突扣分 + 缺口轻微惩罚，语义与注释对齐
+        # - 共识密度：每子问题 3 条共识视为满分，共识越多越高（正面信号）
+        # - 冲突比例：冲突 /（冲突+共识），冲突占比越高越拉低（发现矛盾需复核，但发现本身说明验证有效）
+        # - 缺口惩罚：适度识别 gap 是深入调研的表现；仅当超出「每子问题 3 个」基准时才轻微扣分（封顶）
         n_sq = max(len(input_obj.subqueries), 1)
-        gap_ratio = len(all_gaps) / max(n_sq * 3, 1)
-        conflict_ratio = len(all_conflicts) / max(n_sq * 2, 1)
-        overall = max(0.0, min(1.0, 1.0 - gap_ratio * 0.4 - conflict_ratio * 0.3))
+        consensus_score = min(1.0, len(all_consensus) / max(n_sq * 3, 1))
+        total_statements = max(len(all_consensus) + len(all_conflicts), 1)
+        conflict_ratio = len(all_conflicts) / total_statements
+        gap_penalty = min(0.10, max(0.0, (len(all_gaps) - n_sq * 3) / max(n_sq * 3, 1)) * 0.10)
+
+        overall = 0.5 + 0.35 * consensus_score - 0.25 * conflict_ratio - gap_penalty
+        overall = round(max(0.0, min(1.0, overall)), 3)
 
         return {
             "conflicts": all_conflicts,
             "consensus": all_consensus,
             "gaps": all_gaps,
-            "overall_confidence": round(overall, 3),
+            "overall_confidence": overall,
         }
 
     def _persist_conflicts(
@@ -2229,11 +2236,36 @@ class ResearchGapIdentifyAgent(AgentNode):
 
         llm_gaps: list[dict] = []
         data_gaps: list[dict] = []
+        db_gaps: list[dict] = []
+        db_evidence_list: list = []
 
-        # 通道 A：LLM 语义分析（仅真实模式且 LLM 可用）
+        # 通道 C 前置：材料数据库证据查询（Materials Project / OQMD / NOMAD）
+        # 真实模式才查（dry_run 不访问外部 API），失败优雅降级不阻塞。
+        if not dry_run and store is not None:
+            try:
+                from core.tools.materials_db_gap import (
+                    collect_material_formulas,
+                    query_materials_databases,
+                )
+                formulas = collect_material_formulas(store)
+                if formulas:
+                    db_evidence_list = query_materials_databases(formulas)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("材料数据库证据查询失败（降级为无数据库证据）: %s", e)
+
+        db_block = ""
+        if db_evidence_list:
+            try:
+                from core.tools.materials_db_gap import build_db_evidence_block
+
+                db_block = build_db_evidence_block(db_evidence_list)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("构建数据库证据块失败: %s", e)
+
+        # 通道 A：LLM 语义分析（仅真实模式且 LLM 可用；注入数据库证据）
         if not dry_run and registry is not None:
             try:
-                llm_gaps = self._llm_identify(input_obj, registry, store)
+                llm_gaps = self._llm_identify(input_obj, registry, store, db_block)
             except Exception as e:
                 logger.warning("Research Gap LLM 识别失败，回退规则通道: %s", e)
 
@@ -2244,8 +2276,29 @@ class ResearchGapIdentifyAgent(AgentNode):
             except Exception as e:
                 logger.warning("Research Gap 数据驱动检测失败: %s", e)
 
+        # 通道 C：数据库驱动缺口检测（规则层，基于三库数据密度）
+        if db_evidence_list and store is not None:
+            try:
+                from core.tools.materials_db_gap import (
+                    build_material_coverage,
+                    detect_db_gaps,
+                )
+                coverage = build_material_coverage(store)
+                db_gaps = detect_db_gaps(db_evidence_list, coverage)
+                for g in db_gaps:
+                    g["gap_id"] = KnowledgeStore.new_id()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("数据库驱动缺口检测失败: %s", e)
+
         # 合并去重（同 statement 保留 LLM 版本，标注 hybrid）
-        gaps = self._merge_gaps(llm_gaps, data_gaps)
+        gaps = self._merge_gaps(llm_gaps, data_gaps + db_gaps)
+
+        # 按 related_materials 回填数据库证据（增强「每条 Gap 有清晰文献+数据库证据链」）
+        if db_evidence_list:
+            try:
+                self._attach_db_evidence(gaps, db_evidence_list)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("数据库证据回填失败: %s", e)
 
         # dry_run 且无真实数据：生成占位 Gap（验证拓扑用）
         if dry_run and not gaps:
@@ -2354,8 +2407,13 @@ class ResearchGapIdentifyAgent(AgentNode):
         input_obj: ResearchGapInput,
         registry: LLMRegistry,
         store: Optional[KnowledgeStore],
+        db_evidence_block: str = "",
     ) -> list[dict]:
-        """LLM 语义通道：基于交叉验证报告 + 论文摘要 + 材料知识识别缺口。"""
+        """LLM 语义通道：基于交叉验证报告 + 论文摘要 + 材料知识识别缺口。
+
+        新增：注入「材料数据库证据块」（Materials Project / OQMD / NOMAD 数据密度），
+        让 LLM 用数据库定量事实判断哪些方向是真正的数据缺口，而非泛泛推断。
+        """
         report = input_obj.cross_validation_report or {}
         # 基础 gaps（cross_validate 输出的子问题缺口）+ 冲突 + 共识
         base_gaps = report.get("gaps") or []
@@ -2395,6 +2453,10 @@ class ResearchGapIdentifyAgent(AgentNode):
                 "2. 宁缺毋滥：只输出真正有依据的缺口，3-10 条\n"
                 "3. 给出可操作性（能否被后续 ideation/discovery 直接消费）与优先级\n"
                 "4. 关联相关材料与建议行动\n"
+                "5. 若提示里给出了「材料数据库证据」（三库数据密度），必须据此判断：\n"
+                "   - 三库命中都极低的材料 → 明确标注为数据稀缺（unexplored 或 detail 里说明）；\n"
+                "   - 数据库有计算记录但文献无实验验证的材料 → 标注为「计算有据、实验空白」；\n"
+                "   不要编造数据库未提供的数值，只引用提示里出现的事实。\n"
             ),
             prompt=(
                 f"交叉验证报告：\n"
@@ -2402,7 +2464,8 @@ class ResearchGapIdentifyAgent(AgentNode):
                 f"  已知缺口（子问题粒度）：{base_gaps}\n"
                 f"  矛盾结论：{json.dumps(conflicts, ensure_ascii=False)[:2000]}\n"
                 f"  共识陈述：{consensus[:10]}\n\n"
-                f"代表性论文摘要：\n{abstracts_block}"
+                f"代表性论文摘要：\n{abstracts_block}\n\n"
+                f"材料数据库证据（Materials Project / OQMD / NOMAD 数据密度）：\n{db_evidence_block or '（无）'}"
             ),
         )
         gaps: list[dict] = []
@@ -2583,6 +2646,47 @@ class ResearchGapIdentifyAgent(AgentNode):
         return merged
 
     @staticmethod
+    def _attach_db_evidence(gaps: list[dict], evidence_list: list) -> None:
+        """按 Gap 的 related_materials 回填数据库证据（文献 + 数据库双证据链）。
+
+        每条 Gap 若其关联材料在数据库聚合证据中有命中，则挂载 db_evidence：
+        [{source, formula, mp:{...}, oqmd:{...}, nomad:{...}, total_entry_count}]。
+        已带 db_evidence 的 Gap（db_driven 通道产出）跳过，避免重复。
+        """
+        if not evidence_list:
+            return
+        ev_by_key: dict[str, Any] = {}
+        for ev in evidence_list:
+            formula = (getattr(ev, "formula", "") or "").strip().lower()
+            name = (getattr(ev, "name", "") or "").strip().lower()
+            if formula:
+                ev_by_key[formula] = ev
+            if name and name not in ev_by_key:
+                ev_by_key[name] = ev
+
+        for g in gaps:
+            if g.get("db_evidence"):
+                continue
+            related = g.get("related_materials") or []
+            attached: list[dict] = []
+            seen_formula: set[str] = set()
+            for r in related:
+                key = str(r).strip().lower()
+                ev = ev_by_key.get(key)
+                if ev is None:
+                    continue
+                fkey = (getattr(ev, "formula", "") or "").strip().lower()
+                if fkey in seen_formula:
+                    continue
+                seen_formula.add(fkey)
+                try:
+                    attached.append(ev.db_evidence())
+                except Exception:  # noqa: BLE001
+                    continue
+            if attached:
+                g["db_evidence"] = attached
+
+    @staticmethod
     def _placeholder_gaps(subqueries: list[str]) -> list[dict]:
         """dry_run 占位 Gap（验证拓扑用）。"""
         sq = subqueries[0] if subqueries else "研究主题"
@@ -2612,6 +2716,7 @@ class ResearchGapIdentifyAgent(AgentNode):
                     statement=g.get("statement", ""),
                     detail=g.get("detail", ""),
                     evidence=g.get("evidence") or [],
+                    db_evidence=g.get("db_evidence") or [],
                     related_materials=g.get("related_materials") or [],
                     actionability=g.get("actionability", "medium"),
                     priority=int(g.get("priority", 3)),

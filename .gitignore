@@ -74,3 +74,7 @@ _recheck_*.py
 _test_*.py
 _verify_*.py
 _cleanup_*.py
+
+# 临时对比/工作目录（仓库克隆副本，勿入库）
+_cmp_repo_kaijie/
+_cmp_work/

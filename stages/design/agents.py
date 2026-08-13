@@ -76,6 +76,9 @@ class AtomConceptSchema(BaseModel):
     formula_latex: str = Field(description="对应数学公式（LaTeX）")
     code_stub: str = Field(description="对应代码骨架（Python stub）")
     dependencies: list[str] = Field(default_factory=list, description="依赖的其他 concept_name")
+    input_spec: str = Field(default="", description="该概念的输入（数据/特征/参数）")
+    output_spec: str = Field(default="", description="该概念的输出（结果/中间量）")
+    verification: str = Field(default="", description="如何验证该概念实现正确（如单元测试/指标）")
 
 
 class FormulaCodeMapItem(BaseModel):
@@ -165,8 +168,11 @@ class AtomDecomposeAgent(AgentNode):
                     system=(
                         f"研究主题：{topic}\n"
                         "你是科研方法设计助手。借鉴 AI-Researcher 的原子概念分解思想，"
-                        "把方法拆为 3-6 个最小可独立验证的原子概念，每个概念必须同时给出"
-                        "数学公式（LaTeX）与代码实现骨架（Python stub），并标注概念间依赖。"
+                        "把方法拆为 4-8 个最小可独立验证的原子概念（材料科学/多学科课题应包含："
+                        "问题定义、表征/特征构造、核心算子、约束或正则化、评估指标，"
+                        "以及与 baseline 对比的验证原子概念），每个概念必须同时给出"
+                        "数学公式（LaTeX）、代码实现骨架（Python stub）、明确的输入输出，"
+                        "并标注概念间依赖。"
                         "确保公式与代码一一对应（status=mapped），避免「论文写一套、代码做一套」。"
                         "所有原子概念必须紧扣上述研究主题，不得偏离。"
                     ),
@@ -221,6 +227,9 @@ class AtomDecomposeAgent(AgentNode):
                 "formula_latex": r"\hat{\theta} = \arg\min_{\theta} \mathcal{L}(\theta; \mathcal{D})",
                 "code_stub": "theta = optimize(loss_fn, dataset, init_theta)",
                 "dependencies": [],
+                "input_spec": "观测样本 u ∈ U、标注 y、初始参数 θ₀",
+                "output_spec": "最优参数 θ* 与损失值",
+                "verification": "在小型合成数据上验证损失单调下降",
             },
             {
                 "concept_name": "representation_layer",
@@ -230,6 +239,9 @@ class AtomDecomposeAgent(AgentNode):
                 "formula_latex": r"\mathbf{x} = f_{\theta_e}(u),\quad u \in \mathcal{U}",
                 "code_stub": "x = encoder(input=u)",
                 "dependencies": ["problem_formulation"],
+                "input_spec": "原始输入 u ∈ U",
+                "output_spec": "表征向量 x ∈ R^d",
+                "verification": "检查输出维度与输入样例形状",
             },
             {
                 "concept_name": "core_operator",
@@ -240,6 +252,9 @@ class AtomDecomposeAgent(AgentNode):
                 "formula_latex": r"\mathbf{z} = g_{\theta_c}\!\left(\mathbf{x}_1, \dots, \mathbf{x}_N\right)",
                 "code_stub": "z = core_operator([x_1, ..., x_N])",
                 "dependencies": ["representation_layer"],
+                "input_spec": "一组表征向量 {x_1, ..., x_N}",
+                "output_spec": "聚合输出 z",
+                "verification": "与手工实现的聚合函数结果一致",
             },
             {
                 "concept_name": "objective_loss",
@@ -249,6 +264,9 @@ class AtomDecomposeAgent(AgentNode):
                 "formula_latex": r"\mathcal{L} = \ell_{\text{task}} + \lambda \, \Omega(\theta)",
                 "code_stub": "loss = task_loss(y, pred) + lam * reg(theta)",
                 "dependencies": ["core_operator"],
+                "input_spec": "预测 pred、标签 y、参数 θ、正则系数 λ",
+                "output_spec": "标量损失 L",
+                "verification": "正则系数为 0 时退化为纯任务损失",
             },
         ]
         formula_code_map = [
@@ -315,23 +333,31 @@ class MethodFormalizeAgent(AgentNode):
                     prompt=(
                         f"原始 idea：{idea_text}\n\n"
                         f"原子概念：\n{input_obj.atom_concepts}\n\n"
-                        f"公式↔代码映射：\n{input_obj.formula_code_map}"
+                        f"公式↔代码映射：\n{input_obj.formula_code_map}\n\n"
                         f"研究主题：{topic}\n"
-                        "你是科研方法形式化助手。基于已分解的原子概念与公式↔代码映射，"
-                        "整合为完整的方法文档（Markdown 格式），必须严格包含以下 5 个章节：\n"
+                        "请输出完整的方法文档（Markdown 格式），必须严格包含以下 7 个章节：\n"
                         "## 1. 问题定义与符号表\n"
                         "- 明确定义所有数学符号（如 N, K, θ, α, β 等）\n"
                         "- 用表格形式列出「符号 | 含义 | 取值范围」\n"
                         "- 形式化描述问题（输入、输出、约束）\n"
                         "## 2. 方法概述\n"
                         "- 一段话概述方法核心思想，紧扣上述研究主题\n"
-                        "## 3. 核心公式设计\n"
+                        "## 3. 与已有方法对比及选择理由\n"
+                        "- 列出 2-4 种该研究主题下的现有/经典方法（或相关工作中最接近的 baseline）\n"
+                        "- 用对比表给出：方法 | 核心思想 | 优势 | 局限 | 与本文方法的关系\n"
+                        "- 明确说明本文方案的动机：为什么它在这些已有方法之上更优或更适配\n"
+                        "## 4. 核心公式设计\n"
                         "- 逐个给出关键公式（LaTeX，用 $$ ... $$ 包裹），每个公式前有文字说明设计动机\n"
                         "- 公式之间有逻辑递进关系\n"
-                        "## 4. 算法伪代码\n"
+                        "- 关键参数给出推荐取值或取值范围\n"
+                        "## 5. 算法伪代码\n"
                         "- 用 Algorithm 风格的伪代码描述完整流程\n"
-                        "## 5. 复杂度分析\n"
+                        "- 标出输入、输出与关键超参数\n"
+                        "## 6. 复杂度分析\n"
                         "- 时间复杂度与空间复杂度分析\n"
+                        "## 7. 实验设计建议\n"
+                        "- 建议 2-4 组对比实验：baseline 对照、消融实验、参数敏感性分析各一组\n"
+                        "- 给出数据集/评估指标建议，以及每组实验的预期结果\n"
                         "保持公式与代码的对应关系，每个公式都能在原子概念中找到对应实现。\n"
                         "所有符号必须在符号表中定义后使用，不得突兀。"
                     ),
@@ -425,13 +451,23 @@ class MethodFormalizeAgent(AgentNode):
             f"将研究问题拆为若干可独立验证的算子，"
             f"在每个算子上同时给出数学公式与代码实现，"
             f"再以端到端目标函数统一优化，确保论文公式与实验代码一一对应。\n\n"
-            "## 3. 核心公式设计\n\n"
+            "## 3. 与已有方法对比及选择理由\n\n"
+            "| 方法 | 核心思想 | 优势 | 局限 | 与本文方法的关系 |\n"
+            "|---|---|---|---|---|\n"
+            "| Baseline A（经典） | 直接端到端监督学习 | 简单、易复现 | 未显式建模结构信息，泛化受限 | 本文方法在其上增加结构化算子 |\n"
+            "| Baseline B（相关工作） | 引入领域特征工程 | 特征可解释 | 手工特征难以覆盖复杂交互 | 本文方法以可学习算子替代手工特征 |\n"
+            "| 本文方法 | 基于原子概念分解 + 公式↔代码一致 | 可验证、可解释、可复现 | 实现复杂度略高 | 自身 |\n\n"
+            "选择理由：在「" + topic_label + "」场景下，"
+            "已有方法或缺乏结构化建模、或依赖大量手工设计；"
+            "本方法通过原子概念分解把方法拆为可独立验证的算子，"
+            "每个算子同时给出公式与代码，保证论文与实现一致。\n\n"
+            "## 4. 核心公式设计\n\n"
             f"{formula_section}\n\n"
             "### 原子概念与公式↔代码映射\n\n"
             f"{concept_lines}\n\n"
             + "\n".join(map_rows)
             + "\n\n"
-            "## 4. 算法伪代码\n\n"
+            "## 5. 算法伪代码\n\n"
             "```\n"
             "Algorithm: Method for " + topic_label + "\n"
             "Input:  dataset D = {(u_i, y_i)}_{i=1}^N, hyper-params alpha, lambda, K\n"
@@ -448,12 +484,17 @@ class MethodFormalizeAgent(AgentNode):
             "10: end for\n"
             "11: return theta\n"
             "```\n\n"
-            "## 5. 复杂度分析\n\n"
+            "## 6. 复杂度分析\n\n"
             "- 时间复杂度：$O(E \\cdot N \\cdot T_\\text{op})$，"
             "其中 $E$ 为训练轮数，$N$ 为样本数，$T_\\text{op}$ 为单样本核心算子耗时"
             "（与原子概念中 `core_operator` 的实现复杂度一致）。\n"
             "- 空间复杂度：$O(d + N_\\text{batch} \\cdot d_\\text{hidden})$，"
-            "其中 $d$ 为参数规模，$N_\\text{batch}$ 为批量大小，$d_\\text{hidden}$ 为表征维度。\n"
+            "其中 $d$ 为参数规模，$N_\\text{batch}$ 为批量大小，$d_\\text{hidden}$ 为表征维度。\n\n"
+            "## 7. 实验设计建议\n\n"
+            "- **baseline 对照**：在标准数据集上与 Baseline A/B 对比，指标：精度/效率。\n"
+            "- **消融实验**：移除 `core_operator` 或 `representation_layer`，量化各原子概念贡献。\n"
+            "- **参数敏感性**：对 $\\alpha$、$\\lambda$ 扫参（如 $\\alpha \\in \\{10^{-4}, 10^{-3}, 10^{-2}\\}$），"
+            "分析稳定性。\n"
         )
 
 
@@ -540,25 +581,46 @@ class ClaimEvidenceLinkAgent(AgentNode):
                     system=(
                         "你是科研方法分析助手。从形式化方法中抽取 2-4 个可验证的 Claim，"
                         "每个 Claim 用一句话陈述，可被实验或证据验证/反驳。"
-                        "为每个 Claim 关联 Paper 证据（从给定的 paper_ids 列表中选取最相关的），"
-                        "若无可关联的 Paper，evidence_paper_ids 留空。"
+                        "为每个 Claim 关联 Paper 证据（**必须**从给定的 paper_ids 列表中选取，"
+                        "不得自行编造或发明 id），若列表中无相关 Paper，evidence_paper_ids 留空。"
                         "Claim 角色：contribution（核心贡献）/ method（方法特性）/ assumption（假设）/ result（预期结果）。"
                     ),
                     prompt=(
                         f"方法内容：\n{input_obj.method_content}\n\n"
                         f"原子概念：\n{input_obj.atom_concepts}\n\n"
-                        f"可用 paper_ids: {available_paper_ids}"
+                        f"可用 paper_ids（只能从中选取，逐条给出选择依据）:\n{available_paper_ids}"
                     ),
                 )
+
+                # 论文标题缓存（回填证据，避免展示幽灵 id）
+                title_cache: dict[str, str] = {}
+                try:
+                    for p in store.list_papers() or []:
+                        title_cache[p.paper_id] = p.title or ""
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Claim 证据标题回填失败: %s", e)
 
                 claim_ids: list[str] = []
                 for c in result.claims:
                     claim_id = KnowledgeStore.new_id()
-                    # 构造 evidence_refs（非 DRAFT 状态必须有）
-                    evidence_refs = [
-                        {"type": "paper", "id": pid}
-                        for pid in c.evidence_paper_ids
-                    ]
+                    # 校验 LLM 生成的 paper_id 是否真实存在（剔除幻觉 id）
+                    evidence_refs: list[dict] = []
+                    seen_pids: set[str] = set()
+                    for pid in c.evidence_paper_ids:
+                        pid = (pid or "").strip()
+                        if not pid or pid in seen_pids:
+                            continue
+                        # 真实存在性校验
+                        if pid not in title_cache:
+                            logger.warning(
+                                "Claim 证据剔除幽灵 id（store 中不存在）: %s", pid
+                            )
+                            continue
+                        seen_pids.add(pid)
+                        ref: dict = {"type": "paper", "id": pid}
+                        if title_cache.get(pid):
+                            ref["title"] = title_cache[pid]
+                        evidence_refs.append(ref)
                     # 若无证据，则保持 DRAFT 状态（避免违反硬约束）
                     status = ClaimStatus.EVIDENCE_LINKED if evidence_refs else ClaimStatus.DRAFT
                     claim = Claim(
@@ -596,14 +658,31 @@ class ClaimEvidenceLinkAgent(AgentNode):
     def _placeholder_claims(
         store: Optional[KnowledgeStore], paper_ids: list[str]
     ) -> list[str]:
-        """占位 Claim：用 new_id 生成合法 ID；若 store 可用则真实入库。"""
+        """占位 Claim：用 new_id 生成合法 ID；若 store 可用则真实入库。
+
+        占位证据同样校验真实存在性：只在 store 中确认存在的论文才作为
+        证据引用，避免幽灵引用。
+        """
         claim_ids = []
+        # 校验候选 paper 是否真实存在（取第一个真实存在的）
+        valid_paper: Optional[dict] = None
+        if store is not None:
+            try:
+                title_by_id = {p.paper_id: p.title for p in store.list_papers() or []}
+                for pid in paper_ids:
+                    if pid in title_by_id:
+                        valid_paper = {"id": pid, "title": title_by_id[pid]}
+                        break
+            except Exception as e:  # noqa: BLE001
+                logger.warning("占位 Claim 证据校验失败: %s", e)
         for i in range(3):
             claim_id = KnowledgeStore.new_id()
-            # 用第一个 paper 作为证据（若有）
-            evidence_refs = (
-                [{"type": "paper", "id": paper_ids[0]}] if paper_ids else []
-            )
+            evidence_refs = []
+            if valid_paper:
+                ref: dict = {"type": "paper", "id": valid_paper["id"]}
+                if valid_paper.get("title"):
+                    ref["title"] = valid_paper["title"]
+                evidence_refs.append(ref)
             status = ClaimStatus.EVIDENCE_LINKED if evidence_refs else ClaimStatus.DRAFT
             claim = Claim(
                 claim_id=claim_id,

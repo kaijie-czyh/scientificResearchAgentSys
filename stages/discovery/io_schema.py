@@ -109,6 +109,7 @@ class LLMGuidedSearchOutput(NodeOutput):
     """
 
     candidates: list[dict[str, Any]]
+    symbolic_fit: dict[str, Any] = {}  # 符号回归拟合结果（第二搜索算法）
 
 
 # ===== DiscoveryValidateAgent =====

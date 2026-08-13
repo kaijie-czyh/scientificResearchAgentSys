@@ -349,6 +349,9 @@ class ResearchGap(BaseModel):
     detail: str = ""
     # 证据链：[{paper_id, title, snippet}]，可溯源
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # 数据库证据链（可选）：[{formula, mp:{...}, oqmd:{...}, nomad:{...}}]，
+    # 来自 Materials Project / OQMD / NOMAD 交叉查询，与 evidence 构成双证据链
+    db_evidence: list[dict[str, Any]] = Field(default_factory=list)
     # 关联材料（如 ["SnSe", "Mg3Sb2"]）
     related_materials: list[str] = Field(default_factory=list)
     # 可操作性：high / medium / low
