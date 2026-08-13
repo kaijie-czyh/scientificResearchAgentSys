@@ -1993,6 +1993,8 @@ pre.code-block {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;              /* 允许长 query 时换行，避免挤掉右侧徽章 */
+    gap: 4px 10px;
     padding: 7px 12px;
     background: var(--color-bg-secondary);
     border-bottom: 1px solid var(--color-border);
@@ -2001,10 +2003,12 @@ pre.code-block {
     font-size: 12px;
     font-weight: 600;
     color: var(--color-text);
+    flex: 1 1 auto;               /* 占满剩余宽度并参与压缩 */
+    min-width: 0;                 /* 允许在 flex 容器中收缩到 0 以下 */
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    margin-right: 8px;
+    margin-right: 0;
 }
 .ev-group-count {
     font-size: 11px;
@@ -2024,7 +2028,8 @@ pre.code-block {
 .ev-entry {
     display: flex;
     align-items: center;
-    gap: 8px;
+    flex-wrap: wrap;              /* 窄屏时允许自动换行，避免内容被裁掉 */
+    gap: 4px 8px;
     padding: 6px 12px;
     font-size: 12px;
     border-bottom: 1px dashed var(--color-border);
@@ -2033,7 +2038,8 @@ pre.code-block {
     border-bottom: none;
 }
 .ev-entry-title {
-    flex: 1;
+    flex: 1 1 180px;              /* 至少 180px，占满剩余宽度，允许换行再占新行 */
+    min-width: 0;
     color: var(--color-text);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2048,7 +2054,7 @@ pre.code-block {
 .ev-entry-id {
     color: var(--color-text-muted);
     font-size: 11px;
-    max-width: 160px;
+    max-width: 220px;             /* 放宽以容纳更长 hash id，仍单行省略 */
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
