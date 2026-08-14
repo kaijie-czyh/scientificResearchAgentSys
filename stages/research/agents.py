@@ -1925,6 +1925,28 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                     ),
                 )
                 for item in resp.materials:
+                    # 动态计算 confidence：基于字段完整度 + 化学式合法性
+                    fields_filled = sum([
+                        bool(item.name),
+                        bool(item.formula),
+                        bool(item.crystal_structure),
+                        bool(item.space_group),
+                        bool(item.lattice_parameters),
+                        bool(item.symmetry),
+                        bool(item.composition),
+                    ])
+                    field_score = fields_filled / 7.0  # 7 个字段
+                    # 化学式合法性（无幻觉）：用物理一致性模块判定
+                    chem_score = 0.0
+                    if item.formula:
+                        try:
+                            from core.physics_consistency import check_formula
+                            res = check_formula(item.formula)
+                            chem_score = 1.0 if res.valid else 0.3
+                        except Exception:
+                            chem_score = 0.5
+                    # 加权平均：字段 0.6 + 化学式合法性 0.4
+                    dynamic_conf = round(field_score * 0.6 + chem_score * 0.4, 2)
                     m = {
                         "name": item.name,
                         "formula": item.formula,
@@ -1935,11 +1957,38 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                         "composition": item.composition,
                         "paper_id": p.paper_id,
                         "paper_title": title,
-                        "confidence": 0.8,
+                        "confidence": dynamic_conf,
+                        "confidence_breakdown": {
+                            "field_completeness": round(field_score, 2),
+                            "formula_validity": chem_score,
+                        },
                         "source_snippet": (abstract or "")[:300],
                     }
                     materials.append(m)
                     for prop in item.properties or []:
+                        # 性能抽取 confidence：基于字段完整度 + 数值可解析性
+                        prop_fields = sum([
+                            bool(prop.get("property_name")),
+                            bool(prop.get("value")),
+                            prop.get("value_num") is not None,
+                            bool(prop.get("unit")),
+                            bool(prop.get("condition")),
+                        ])
+                        prop_field_score = prop_fields / 5.0
+                        # 性能值是否在物理可达范围内
+                        prop_value_score = 0.7  # 默认
+                        try:
+                            if prop.get("value_num") is not None:
+                                from core.physics_consistency import check_property_window
+                                pc = check_property_window(
+                                    prop.get("property_name", ""),
+                                    float(prop["value_num"]),
+                                    prop.get("unit", ""),
+                                )
+                                prop_value_score = 1.0 if pc.valid else 0.3
+                        except Exception:
+                            prop_value_score = 0.5
+                        prop_conf = round(prop_field_score * 0.5 + prop_value_score * 0.5, 2)
                         properties.append({
                             "material_name": item.name,
                             "property_name": prop.get("property_name", ""),
@@ -1950,10 +1999,23 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                             "condition": prop.get("condition", ""),
                             "paper_id": p.paper_id,
                             "paper_title": title,
-                            "confidence": 0.8,
+                            "confidence": prop_conf,
+                            "confidence_breakdown": {
+                                "field_completeness": round(prop_field_score, 2),
+                                "value_in_physical_range": prop_value_score,
+                            },
                             "source_snippet": (abstract or "")[:300],
                         })
                     for syn in item.synthesis or []:
+                        # 合成方法 confidence：字段完整度
+                        syn_fields = sum([
+                            bool(syn.get("method")),
+                            bool(syn.get("precursors")),
+                            bool(syn.get("temperature")),
+                            bool(syn.get("atmosphere")),
+                            bool(syn.get("duration")),
+                        ])
+                        syn_score = syn_fields / 5.0
                         synthesis.append({
                             "material_name": item.name,
                             "method": syn.get("method", ""),
@@ -1965,7 +2027,7 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                             "steps": syn.get("steps", ""),
                             "paper_id": p.paper_id,
                             "paper_title": title,
-                            "confidence": 0.8,
+                            "confidence": round(syn_score, 2),
                             "source_snippet": (abstract or "")[:300],
                         })
             except Exception as e:

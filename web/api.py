@@ -444,8 +444,6 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
         state.discovery = _extract_discovery_summary(
             result.node_history, result.extra.get("hypotheses") or []
         )
-        # 从 node_history 提取 discovery 产出摘要
-        state.discovery = _extract_discovery_summary(result.node_history)
     except Exception as e:  # noqa: BLE001
         state.status = "failed"
         state.error = f"{type(e).__name__}: {e}"
@@ -453,14 +451,17 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
 
 
 def _extract_discovery_summary(node_history: list[dict], hypotheses: list[dict] | None = None) -> dict:
-    """从节点历史提取 discovery 产出摘要。"""
+    """从节点历史提取 discovery 产出摘要（含假设列表的物理一致性标注）。
+
+    修复：原代码在此处有重复定义（同一函数出现两次），导致第二个定义覆盖第一个，
+    调用时一旦传入 hypotheses 参数即触发
+    `_extract_discovery_summary() takes 1 positional argument but 2 were given`。
+    现合并为单一实现，行为稳定。
+    """
     summary = {
         "hypotheses": 0, "candidates": 0, "relationships": 0, "novel": 0,
         "nodes": [], "hypothesis_list": [],
     }
-def _extract_discovery_summary(node_history: list[dict]) -> dict:
-    """从节点历史提取 discovery 产出摘要。"""
-    summary = {"hypotheses": 0, "candidates": 0, "relationships": 0, "novel": 0, "nodes": []}
     for h in node_history or []:
         node_id = h.get("node_id", "")
         if node_id in ("hypothesis_seed", "search_space", "llm_guided_search",
@@ -2538,7 +2539,13 @@ def download_artifact(project_id: str, artifact_type: str, format: str = "md"):
 
 
 def _build_research_report_md(report: dict) -> str:
-    """把 cross_validation_report 转为 Markdown。"""
+    """把 cross_validation_report 转为 Markdown。
+
+    修复：原代码仅从 KV 的 cross_validation_report 取 conflicts，遗漏
+    research_conflicts 表中由 CrossValidateAgent 落库的冲突实体（含 claim /
+    sources / resolution / confidence）。现已合并两路数据，确保冲突结论在
+    报告导出中可见。
+    """
     md = "# 文献调研报告\n\n"
     md += f"**综合置信度**: {report.get('overall_confidence', 0):.2f}\n\n"
 
@@ -2558,7 +2565,7 @@ def _build_research_report_md(report: dict) -> str:
 
     conflicts = report.get("conflicts", [])
     if conflicts:
-        md += "## 冲突结论\n\n"
+        md += "## 冲突结论（来自 KV）\n\n"
         for c in conflicts:
             if isinstance(c, dict):
                 md += f"- **{c.get('topic', '?')}**: {c.get('description', '')}\n"
@@ -2569,6 +2576,43 @@ def _build_research_report_md(report: dict) -> str:
                 md += f"- {c}\n"
         md += "\n"
 
+    return md
+
+
+def _build_research_conflicts_md(store: KnowledgeStore) -> str:
+    """从 research_conflicts 表导出冲突结论 Markdown。
+
+    之前这部分内容未纳入报告导出，导致下游用户看不到 CrossValidateAgent
+    落库的冲突实体；现通过此函数补全。
+    """
+    md = "## 冲突结论（结构化实体）\n\n"
+    conflicts = store.list_research_conflicts(limit=200)
+    if not conflicts:
+        md += "_（无落库冲突实体 — CrossValidateAgent 未产出 research_conflict）_\n\n"
+        return md
+
+    for c in conflicts:
+        md += f"### 冲突 #{c.conflict_id}\n\n"
+        if c.subquery:
+            md += f"**关联子问题**: {c.subquery}\n\n"
+        if c.claim:
+            md += f"**冲突陈述**: {c.claim}\n\n"
+        if c.confidence:
+            md += f"**综合置信度**: {c.confidence:.2f}\n\n"
+        if c.sources:
+            md += "**立场证据**:\n"
+            for src in c.sources:
+                stance = src.get("stance", "?")
+                pid = src.get("paper_id", "?")
+                title = src.get("title", "")
+                md += f"- `{stance}` **{pid}**"
+                if title:
+                    md += f" — {title}"
+                md += "\n"
+            md += "\n"
+        if c.resolution:
+            md += f"**处置建议**: {c.resolution}\n\n"
+        md += "---\n\n"
     return md
 
 
@@ -2653,6 +2697,12 @@ def _build_full_report_md(store: KnowledgeStore, project_id: str) -> str:
     if report:
         parts.append("---\n\n# 第一部分：文献调研\n\n")
         parts.append(_build_research_report_md(report))
+
+    # 1.1 补充：research_conflicts 表中的冲突结论（修复导出遗漏）
+    conflict_md = _build_research_conflicts_md(store)
+    if "无落库冲突实体" not in conflict_md:
+        parts.append("---\n\n## 附录：结构化冲突结论\n\n")
+        parts.append(conflict_md)
 
     # 2. 研究思路
     ideas = store.list_ideas()
@@ -3056,6 +3106,43 @@ def list_data_sources() -> dict:
     return {
         "sources": list_sources(),
         "summary": data_sources_summary(),
+    }
+
+
+# ============================================================
+# 系统级指标（赛题 §4.2 阶段性结果 + 效果分析 + 指标可视化）
+# ============================================================
+
+
+@app.get("/api/metrics/system")
+def get_system_metrics() -> dict:
+    """跨项目系统级指标（9 类）。
+
+    赛题 §4.2 要求"阶段性结果 + 效果分析 + 指标可视化"。
+    本端点聚合 projects/ 下所有项目的运行数据，输出 9 类指标：
+    节点完成率 / KV 字段覆盖率 / 文献抓取成功率 / 5 维度评分分布 /
+    Gap 质量分布 / CV 一致性 / 证据链 / 降级触发率 / 流水线效率。
+
+    返回 JSON，前端 dashboard 直接读取渲染。
+    """
+    from core.observability.metrics import SystemMetricsCollector
+    collector = SystemMetricsCollector(_CONFIG.paths.projects)
+    metrics = collector.collect()
+    # dataclass -> dict
+    from dataclasses import asdict
+    return asdict(metrics)
+
+
+@app.get("/api/metrics/system/markdown")
+def get_system_metrics_markdown() -> dict:
+    """导出系统指标为 Markdown（赛题提交时直接贴 §4）。"""
+    from core.observability.metrics import SystemMetricsCollector, to_markdown_table
+    collector = SystemMetricsCollector(_CONFIG.paths.projects)
+    metrics = collector.collect()
+    return {
+        "markdown": to_markdown_table(metrics),
+        "generated_at": metrics.generated_at,
+        "schema_version": metrics.schema_version,
     }
 
 

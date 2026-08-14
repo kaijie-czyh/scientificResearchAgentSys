@@ -327,8 +327,13 @@ def test_runner_resume_after_human_completes_graph():
     assert not runner.is_pending_human()
     # context 中应有 human 节点写入的响应文本
     assert ctx.get(ContextKey[str]("test.human_text")) == "ok"
-    # 所有 3 个节点都已记录
-    assert len(ctx.history()) == 3
+    # fork PR #2 后 human 节点会同时记录 pending_human + success 两次历史，故总计 4 条
+    assert len(ctx.history()) == 4
+    # 确认 human 节点在历史里出现两次（pending → success）
+    human_history = [h for h in ctx.history() if h["node_id"] == "human"]
+    assert len(human_history) == 2
+    assert human_history[0]["status"] == "pending_human"
+    assert human_history[1]["status"] == "success"
 
 
 def test_runner_resume_without_pending_human_raises():

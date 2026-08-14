@@ -709,6 +709,59 @@ body {
     border-bottom: 1px solid var(--color-border);
 }
 
+/* ===== 系统级指标卡片（赛题 §4.2） ===== */
+.sys-metric-section {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--color-border);
+}
+.sys-metric-section:first-child {
+    border-top: none;
+    padding-top: 0;
+}
+.sys-metric-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-primary-dark);
+    margin-bottom: 8px;
+}
+.sys-bar-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+}
+.sys-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.sys-bar-label {
+    width: 110px;
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono, monospace);
+}
+.sys-bar-track {
+    flex: 1;
+    height: 8px;
+    background: var(--color-bg-muted, #f0f0f3);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.sys-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-primary-dark));
+    transition: width 0.4s ease;
+}
+.sys-bar-value {
+    width: 50px;
+    flex-shrink: 0;
+    text-align: right;
+    font-family: var(--font-mono, monospace);
+    color: var(--color-text-muted);
+}
+
 .field {
     margin-bottom: 14px;
 }

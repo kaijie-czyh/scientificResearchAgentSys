@@ -688,6 +688,16 @@ class KnowledgeStore:
             rows = c.execute(sql).fetchall()
         return [ResearchConflict.model_validate_json(r[0]) for r in rows]
 
+    def clear_research_conflicts(self) -> int:
+        """清空 research_conflicts 表（重新落库前调用，避免历史残留）。
+
+        返回被删除的条目数；表为空时返回 0。
+        """
+        with self._connect() as c:
+            cur = c.execute("DELETE FROM research_conflicts")
+            c.commit()
+            return cur.rowcount
+
     def conflict_stats(self) -> dict:
         """统计文献冲突（含已裁决/未裁决计数）。"""
         conflicts = self.list_research_conflicts()

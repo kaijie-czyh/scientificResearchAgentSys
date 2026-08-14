@@ -33,6 +33,7 @@ from core.knowledge import (
     ClaimStatus,
     KnowledgeStore,
 )
+from core.physics_consistency import check_candidate as physics_check_candidate
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -752,6 +753,25 @@ class LLMGuidedSearchAgent(AgentNode):
             pred_target, conf = searcher.evaluate_with_surrogate(new_config)
 
             # 4. LLM 评估科学合理性 + 机制 + 剪枝
+            # 4.0 物理一致性硬筛（早拒绝 — 物理违规则直接剪枝，不浪费 LLM 调用）
+            physics = physics_check_candidate(
+                config=new_config,
+                target_property=target_prop,
+                predicted_value=float(pred_target) if pred_target is not None else None,
+            )
+            if not physics.valid:
+                n_pruned += 1
+                search_trace.append({
+                    "iter": it + 1,
+                    "config": new_config,
+                    "predicted_target": pred_target,
+                    "pruned": True,
+                    "prune_reason": "physics_consistency",
+                    "physics_reason": physics.reason[:200],
+                    "physics_risk": physics.risk,
+                })
+                logger.debug("MCTS 迭代 %d：候选被物理一致性检查拒绝（%s）", it, physics.reason)
+                continue
             try:
                 eval_result = registry.structured_output(
                     task_type=self.task_type,
@@ -1141,6 +1161,35 @@ class DiscoveryValidateAgent(AgentNode):
                 # 读取搜索空间 + 文献数据点
                 search_space = store.get_kv("discovery_search_space", {}) or {}
                 lit_points = store.get_kv("discovery_literature_points", []) or []
+
+                # ===== 物理一致性再筛（防御 LLMGuidedSearch 漏过的边缘 case）=====
+                target_prop_name = input_obj.search_space.get("target_property", "property")
+                rejected_count = 0
+                filtered_relationships = []
+                for rel in relationships:
+                    cfg = (rel.get("config") or {})
+                    phys = physics_check_candidate(
+                        config=cfg,
+                        target_property=target_prop_name,
+                        predicted_value=rel.get("predicted_target"),
+                    )
+                    rel["physics_check"] = {
+                        "valid": phys.valid,
+                        "risk": phys.risk,
+                        "reason": phys.reason,
+                    }
+                    if not phys.valid:
+                        rejected_count += 1
+                        logger.info(
+                            "DiscoveryValidate 物理再筛拒绝 claim=%s material=%s reason=%s",
+                            rel.get("claim_id"), cfg.get("material"), phys.reason,
+                        )
+                        continue
+                    filtered_relationships.append(rel)
+                relationships = filtered_relationships
+                logger.info(
+                    "DiscoveryValidate 物理再筛：保留 %d / 拒绝 %d", len(relationships), rejected_count,
+                )
 
                 scorer = DiscoveryReliabilityScorer(store)
                 expert = ExpertAssistanceBuilder(store)

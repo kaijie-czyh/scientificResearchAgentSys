@@ -104,12 +104,13 @@ def test_build_graph_stage_field_matches_expected(build_func):
 # ===== 单独验证各图的具体拓扑（保证不被参数化掩盖） =====
 
 
-def test_research_graph_has_5_nodes():
-    """research 图应有 5 个节点（topic_refine, cp, topic_confirm, paper_fetch, paper_ingest）。"""
+def test_research_graph_has_correct_nodes():
+    """research 图节点数（fork PR #2 新增 paper_filter / material_extraction / cross_validate / research_gap / subquery_decompose）。"""
     graph = build_research_graph()
-    assert len(graph.nodes) == 5
+    # 实际节点数 10：topic_refine/subquery_decompose/topic_confirm/paper_fetch/paper_filter/paper_ingest/material_extraction/cross_validate/research_gap/cp_before_confirm
+    assert len(graph.nodes) == 10, f"research 图应有 10 个节点，实际 {len(graph.nodes)}：{sorted(graph.nodes.keys())}"
     assert graph.entry_node == "topic_refine"
-    assert graph.exit_node == "paper_ingest"
+    assert graph.exit_node == "research_gap"
 
 
 def test_ideation_graph_has_5_nodes():
@@ -120,26 +121,26 @@ def test_ideation_graph_has_5_nodes():
     assert graph.exit_node == "claim_draft"
 
 
-def test_design_graph_has_5_nodes():
-    """design 图应有 5 个节点。"""
+def test_design_graph_has_correct_nodes():
+    """design 图节点数（fork PR #2 新增 atom_decompose / claim_evidence_link）。"""
     graph = build_design_graph()
-    assert len(graph.nodes) == 5
-    assert graph.entry_node == "method_formalize"
+    assert len(graph.nodes) == 6, f"design 图应有 6 个节点，实际 {len(graph.nodes)}：{sorted(graph.nodes.keys())}"
+    assert graph.entry_node == "atom_decompose"
     assert graph.exit_node == "method_artifact"
 
 
-def test_experiment_graph_has_5_nodes():
-    """experiment 图应有 5 个节点。"""
+def test_experiment_graph_has_correct_nodes():
+    """experiment 图节点数（fork PR #2 新增 experiment_review / experiment_outcome_assess 等）。"""
     graph = build_experiment_graph()
-    assert len(graph.nodes) == 5
+    assert len(graph.nodes) == 9, f"experiment 图应有 9 个节点，实际 {len(graph.nodes)}：{sorted(graph.nodes.keys())}"
     assert graph.entry_node == "experiment_config"
-    assert graph.exit_node == "claim_verify"
+    assert graph.exit_node == "experiment_outcome_assess"
 
 
-def test_writing_graph_has_6_nodes():
-    """writing 图应有 6 个节点。"""
+def test_writing_graph_has_correct_nodes():
+    """writing 图节点数（fork PR #2 新增 experiment_outcome_assess → outline / section_draft 等）。"""
     graph = build_writing_graph()
-    assert len(graph.nodes) == 6
+    assert len(graph.nodes) == 7, f"writing 图应有 7 个节点，实际 {len(graph.nodes)}：{sorted(graph.nodes.keys())}"
     assert graph.entry_node == "provenance_check"
     assert graph.exit_node == "revise"
 
@@ -168,11 +169,11 @@ def test_design_graph_has_checkpoint_named_cp_before_review():
     assert graph.nodes["cp_before_review"].node_type == "checkpoint"
 
 
-def test_experiment_graph_has_checkpoint_named_cp_before_anomaly():
-    """experiment 图应包含名为 cp_before_anomaly 的 checkpoint。"""
+def test_experiment_graph_has_checkpoint_named_cp_before_run():
+    """experiment 图应包含名为 cp_before_run 的 checkpoint（fork PR #2 改名）。"""
     graph = build_experiment_graph()
-    assert "cp_before_anomaly" in graph.nodes
-    assert graph.nodes["cp_before_anomaly"].node_type == "checkpoint"
+    assert "cp_before_run" in graph.nodes
+    assert graph.nodes["cp_before_run"].node_type == "checkpoint"
 
 
 def test_writing_graph_has_checkpoint_named_cp_before_draft():

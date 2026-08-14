@@ -54,14 +54,20 @@ _test_api.py
 产出辩证
 
 # 新推进材料存放暂时
+新推进材料存放暂时
 
 # 临时调试脚本 / 验证脚本 / Edge 测试 profile
 _*.py
 _cdp_*.py
-_edge_*/ 
+_edge_*/
 *.log
 diag_*.py
 verify_*.py
+
+# 指标导出报告（运行时生成，按需保留）
+reports/
+metrics_*.csv
+metrics_*.html
 analyze_*.py
 smoke_*.py
 append_*.py

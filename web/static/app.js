@@ -883,6 +883,9 @@
             // 数据源合规性卡片（赛题 §5.3 支撑）
             renderDashboardDataSources(content);
 
+            // 系统级指标卡片（赛题 §4.2 阶段性结果 + 效果分析 + 指标可视化）
+            renderDashboardSystemMetrics(content);
+
             // 快速操作
             content.appendChild(renderDashboardActions(data));
         } catch (e) {
@@ -1345,6 +1348,159 @@
                         "数据源列表加载失败：" + (e.message || e)));
                 }
             });
+    }
+
+    // ===== 系统级指标卡片（赛题 §4.2 阶段性结果 + 效果分析 + 指标可视化） =====
+    function renderDashboardSystemMetrics(container) {
+        const card = el("div", { class: "card" }, [
+            el("div", { class: "card-title" }, [
+                "系统级指标（赛题 §4.2）",
+                el("span", { class: "card-sub muted small" }, "9 类指标聚合 / 跨项目 / 可下载"),
+            ]),
+            el("div", { class: "card-sub muted" }, [
+                "数据来自 ",
+                el("a", { href: "/api/metrics/system", target: "_blank", class: "link" }, "/api/metrics/system"),
+                "；Markdown 导出见 ",
+                el("a", { href: "/api/metrics/system/markdown", target: "_blank", class: "link" }, "/api/metrics/system/markdown"),
+                "。Golden Set 8 个固定查询回归测试见 ",
+                el("code", {}, "tests/test_golden_set.py"),
+                "。",
+            ]),
+            el("div", { id: "sys-metrics-summary" }, [el("div", { class: "muted small" }, "加载中...")]),
+            el("div", { id: "sys-metrics-detail" }, []),
+        ]);
+        container.appendChild(card);
+
+        fetch("/api/metrics/system")
+            .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+            .then(payload => {
+                const sumEl = document.getElementById("sys-metrics-summary");
+                const detailEl = document.getElementById("sys-metrics-detail");
+                if (sumEl) {
+                    clear(sumEl);
+                    sumEl.appendChild(el("div", { class: "summary-stats" }, [
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.project_count || 0) }),
+                            el("div", { class: "summary-stat-label" }, "项目总数"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.completed_count || 0) }),
+                            el("div", { class: "summary-stat-label" }, "已完成"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.failed_count || 0) }),
+                            el("div", { class: "summary-stat-label" }, "失败"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.total_papers || 0) }),
+                            el("div", { class: "summary-stat-label" }, "论文"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.total_ideas || 0) }),
+                            el("div", { class: "summary-stat-label" }, "Ideas"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.total_claims || 0) }),
+                            el("div", { class: "summary-stat-label" }, "Claims"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.total_gaps || 0) }),
+                            el("div", { class: "summary-stat-label" }, "Gaps"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value", text: String(payload.total_evidence_entries || 0) }),
+                            el("div", { class: "summary-stat-label" }, "证据条目"),
+                        ]),
+                        el("div", { class: "summary-stat" }, [
+                            el("div", { class: "summary-stat-value small", text:
+                                (payload.efficiency && payload.efficiency.avg_duration_seconds != null)
+                                    ? payload.efficiency.avg_duration_seconds.toFixed(1) + "s"
+                                    : "—" }),
+                            el("div", { class: "summary-stat-label" }, "平均耗时"),
+                        ]),
+                    ]));
+                }
+                if (!detailEl) return;
+                clear(detailEl);
+
+                // 9 类指标概览
+                const sections = [];
+
+                // 1. 节点完成率（Top 5 + Bottom 5）
+                if (payload.node_completion && Object.keys(payload.node_completion).length) {
+                    const entries = Object.entries(payload.node_completion).sort((a, b) => b[1] - a[1]);
+                    const top = entries.slice(0, 5);
+                    const bottom = entries.slice(-5).reverse();
+                    sections.push(el("div", { class: "sys-metric-section" }, [
+                        el("div", { class: "sys-metric-title" }, "① 节点完成率"),
+                        el("div", { class: "small muted" }, `共 ${entries.length} 个节点参与统计`),
+                        renderBarGroup("Top 5", top),
+                        renderBarGroup("Bottom 5", bottom),
+                    ]));
+                }
+
+                // 4. 5 维度评分分布
+                if (payload.reliability_dims && Object.keys(payload.reliability_dims).length) {
+                    const dimEntries = Object.entries(payload.reliability_dims);
+                    sections.push(el("div", { class: "sys-metric-section" }, [
+                        el("div", { class: "sys-metric-title" }, "④ 5 维度可信度评分（中位数）"),
+                        renderBarGroup(
+                            "5 维度",
+                            dimEntries.map(([k, v]) => [k, v.median || 0]),
+                        ),
+                    ]));
+                }
+
+                // 7. 证据链（按阶段）
+                if (payload.evidence_chain && Object.keys(payload.evidence_chain).length) {
+                    const ev = Object.entries(payload.evidence_chain).sort((a, b) => b[1] - a[1]);
+                    sections.push(el("div", { class: "sys-metric-section" }, [
+                        el("div", { class: "sys-metric-title" }, "⑦ 证据链（按阶段落库条目数）"),
+                        renderBarGroup("阶段", ev),
+                    ]));
+                }
+
+                // 9. 效率
+                if (payload.efficiency && Object.keys(payload.efficiency).length) {
+                    const ef = Object.entries(payload.efficiency).map(([k, v]) => [k, v]);
+                    sections.push(el("div", { class: "sys-metric-section" }, [
+                        el("div", { class: "sys-metric-title" }, "⑨ 流水线效率"),
+                        el("ul", { class: "small" },
+                            ef.map(([k, v]) =>
+                                el("li", {}, k + ": " + (typeof v === "number" ? v.toFixed(1) : v))
+                            )
+                        ),
+                    ]));
+                }
+
+                sections.forEach(s => detailEl.appendChild(s));
+            })
+            .catch(e => {
+                const sumEl = document.getElementById("sys-metrics-summary");
+                if (sumEl) {
+                    clear(sumEl);
+                    sumEl.appendChild(el("div", { class: "error small" },
+                        "系统指标加载失败：" + (e.message || e)));
+                }
+            });
+    }
+
+    function renderBarGroup(title, entries) {
+        const wrap = el("div", { class: "sys-bar-group" });
+        entries.forEach(([label, value]) => {
+            const row = el("div", { class: "sys-bar-row" });
+            const v = Math.max(0, Math.min(1, Number(value) || 0));
+            row.appendChild(el("div", { class: "sys-bar-label small" }, label));
+            row.appendChild(el("div", { class: "sys-bar-track" }, [
+                el("div", {
+                    class: "sys-bar-fill",
+                    style: `width: ${(v * 100).toFixed(1)}%`,
+                }),
+            ]));
+            row.appendChild(el("div", { class: "sys-bar-value small" }, (v * 100).toFixed(1) + "%"));
+            wrap.appendChild(row);
+        });
+        return wrap;
     }
 
     function renderDashboardActions(data) {
