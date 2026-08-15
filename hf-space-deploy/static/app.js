@@ -888,9 +888,6 @@
             // 数据源合规性卡片（赛题 §5.3 支撑）
             renderDashboardDataSources(content);
 
-            // 系统级指标卡片（赛题 §4.2 阶段性结果 + 效果分析 + 指标可视化）
-            renderDashboardSystemMetrics(content);
-
             // 快速操作
             content.appendChild(renderDashboardActions(data));
         } catch (e) {
@@ -1353,159 +1350,6 @@
                         "数据源列表加载失败：" + (e.message || e)));
                 }
             });
-    }
-
-    // ===== 系统级指标卡片（赛题 §4.2 阶段性结果 + 效果分析 + 指标可视化） =====
-    function renderDashboardSystemMetrics(container) {
-        const card = el("div", { class: "card" }, [
-            el("div", { class: "card-title" }, [
-                "系统级指标（赛题 §4.2）",
-                el("span", { class: "card-sub muted small" }, "9 类指标聚合 / 跨项目 / 可下载"),
-            ]),
-            el("div", { class: "card-sub muted" }, [
-                "数据来自 ",
-                el("a", { href: "/api/metrics/system", target: "_blank", class: "link" }, "/api/metrics/system"),
-                "；Markdown 导出见 ",
-                el("a", { href: "/api/metrics/system/markdown", target: "_blank", class: "link" }, "/api/metrics/system/markdown"),
-                "。Golden Set 8 个固定查询回归测试见 ",
-                el("code", {}, "tests/test_golden_set.py"),
-                "。",
-            ]),
-            el("div", { id: "sys-metrics-summary" }, [el("div", { class: "muted small" }, "加载中...")]),
-            el("div", { id: "sys-metrics-detail" }, []),
-        ]);
-        container.appendChild(card);
-
-        fetch("/api/metrics/system")
-            .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
-            .then(payload => {
-                const sumEl = document.getElementById("sys-metrics-summary");
-                const detailEl = document.getElementById("sys-metrics-detail");
-                if (sumEl) {
-                    clear(sumEl);
-                    sumEl.appendChild(el("div", { class: "summary-stats" }, [
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.project_count || 0) }),
-                            el("div", { class: "summary-stat-label" }, "项目总数"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.completed_count || 0) }),
-                            el("div", { class: "summary-stat-label" }, "已完成"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.failed_count || 0) }),
-                            el("div", { class: "summary-stat-label" }, "失败"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.total_papers || 0) }),
-                            el("div", { class: "summary-stat-label" }, "论文"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.total_ideas || 0) }),
-                            el("div", { class: "summary-stat-label" }, "Ideas"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.total_claims || 0) }),
-                            el("div", { class: "summary-stat-label" }, "Claims"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.total_gaps || 0) }),
-                            el("div", { class: "summary-stat-label" }, "Gaps"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value", text: String(payload.total_evidence_entries || 0) }),
-                            el("div", { class: "summary-stat-label" }, "证据条目"),
-                        ]),
-                        el("div", { class: "summary-stat" }, [
-                            el("div", { class: "summary-stat-value small", text:
-                                (payload.efficiency && payload.efficiency.avg_duration_seconds != null)
-                                    ? payload.efficiency.avg_duration_seconds.toFixed(1) + "s"
-                                    : "—" }),
-                            el("div", { class: "summary-stat-label" }, "平均耗时"),
-                        ]),
-                    ]));
-                }
-                if (!detailEl) return;
-                clear(detailEl);
-
-                // 9 类指标概览
-                const sections = [];
-
-                // 1. 节点完成率（Top 5 + Bottom 5）
-                if (payload.node_completion && Object.keys(payload.node_completion).length) {
-                    const entries = Object.entries(payload.node_completion).sort((a, b) => b[1] - a[1]);
-                    const top = entries.slice(0, 5);
-                    const bottom = entries.slice(-5).reverse();
-                    sections.push(el("div", { class: "sys-metric-section" }, [
-                        el("div", { class: "sys-metric-title" }, "① 节点完成率"),
-                        el("div", { class: "small muted" }, `共 ${entries.length} 个节点参与统计`),
-                        renderBarGroup("Top 5", top),
-                        renderBarGroup("Bottom 5", bottom),
-                    ]));
-                }
-
-                // 4. 5 维度评分分布
-                if (payload.reliability_dims && Object.keys(payload.reliability_dims).length) {
-                    const dimEntries = Object.entries(payload.reliability_dims);
-                    sections.push(el("div", { class: "sys-metric-section" }, [
-                        el("div", { class: "sys-metric-title" }, "④ 5 维度可信度评分（中位数）"),
-                        renderBarGroup(
-                            "5 维度",
-                            dimEntries.map(([k, v]) => [k, v.median || 0]),
-                        ),
-                    ]));
-                }
-
-                // 7. 证据链（按阶段）
-                if (payload.evidence_chain && Object.keys(payload.evidence_chain).length) {
-                    const ev = Object.entries(payload.evidence_chain).sort((a, b) => b[1] - a[1]);
-                    sections.push(el("div", { class: "sys-metric-section" }, [
-                        el("div", { class: "sys-metric-title" }, "⑦ 证据链（按阶段落库条目数）"),
-                        renderBarGroup("阶段", ev),
-                    ]));
-                }
-
-                // 9. 效率
-                if (payload.efficiency && Object.keys(payload.efficiency).length) {
-                    const ef = Object.entries(payload.efficiency).map(([k, v]) => [k, v]);
-                    sections.push(el("div", { class: "sys-metric-section" }, [
-                        el("div", { class: "sys-metric-title" }, "⑨ 流水线效率"),
-                        el("ul", { class: "small" },
-                            ef.map(([k, v]) =>
-                                el("li", {}, k + ": " + (typeof v === "number" ? v.toFixed(1) : v))
-                            )
-                        ),
-                    ]));
-                }
-
-                sections.forEach(s => detailEl.appendChild(s));
-            })
-            .catch(e => {
-                const sumEl = document.getElementById("sys-metrics-summary");
-                if (sumEl) {
-                    clear(sumEl);
-                    sumEl.appendChild(el("div", { class: "error small" },
-                        "系统指标加载失败：" + (e.message || e)));
-                }
-            });
-    }
-
-    function renderBarGroup(title, entries) {
-        const wrap = el("div", { class: "sys-bar-group" });
-        entries.forEach(([label, value]) => {
-            const row = el("div", { class: "sys-bar-row" });
-            const v = Math.max(0, Math.min(1, Number(value) || 0));
-            row.appendChild(el("div", { class: "sys-bar-label small" }, label));
-            row.appendChild(el("div", { class: "sys-bar-track" }, [
-                el("div", {
-                    class: "sys-bar-fill",
-                    style: `width: ${(v * 100).toFixed(1)}%`,
-                }),
-            ]));
-            row.appendChild(el("div", { class: "sys-bar-value small" }, (v * 100).toFixed(1) + "%"));
-            wrap.appendChild(row);
-        });
-        return wrap;
     }
 
     function renderDashboardActions(data) {
@@ -2985,41 +2829,38 @@
 
     function renderEvidenceEntry(e) {
         const src = e.source || "?";
-        // 主行：来源徽章 + 标题（标题独立占满，允许完整换行，不再被元信息挤压/截断）
-        const main = el("div", { class: "ev-entry-main" }, [
+        const row = el("div", { class: "ev-entry" }, [
             el("span", { class: `badge ev-src-badge ev-src-${src}`, text: src }),
             el("span", { class: "ev-entry-title", text: e.title || "(无标题)" }),
         ]);
-        // 元信息行：证据分 / doc_id / 偏移 / 关联依据 整齐排一行
-        const meta = el("div", { class: "ev-entry-meta" });
         if (src === "sciverse") {
-            meta.appendChild(el("span", { class: "ev-entry-score",
+            row.appendChild(el("span", { class: "ev-entry-score",
                 text: `证据分 ${Number(e.evidence_score || 0).toFixed(2)}` }));
-            meta.appendChild(el("span", { class: "mono ev-entry-id",
+            row.appendChild(el("span", { class: "mono ev-entry-id",
                 text: `doc:${e.external_id || "-"}` }));
             if (Number(e.offset || 0) > 0) {
-                meta.appendChild(el("span", { class: "ev-entry-offset",
+                row.appendChild(el("span", { class: "ev-entry-offset",
                     text: `@偏移${e.offset}` }));
             }
         } else {
             const eid = e.external_id || "";
-            if (eid) meta.appendChild(el("span", { class: "mono ev-entry-id", text: eid }));
+            if (eid) row.appendChild(el("span", { class: "mono ev-entry-id", text: eid }));
         }
         // 关联依据（量化可审计）：match_type 说明为何关联该论文；
         // paper_id 为空 → 检索命中但未关联（被 filter 相关性筛选/去重剔除）。
         if (e.paper_id) {
             const reason = e.match_type || "证据来源关联";
-            meta.appendChild(el("span", { class: "ev-entry-linked",
+            row.appendChild(el("span", { class: "ev-entry-linked",
                 text: `已入库 · ${reason}` }));
             if (Number(e.paper_relevance || 0) > 0) {
-                meta.appendChild(el("span", { class: "ev-entry-rel",
+                row.appendChild(el("span", { class: "ev-entry-rel",
                     text: `相关度 ${Number(e.paper_relevance).toFixed(2)}` }));
             }
         } else {
-            meta.appendChild(el("span", { class: "ev-entry-unlinked",
+            row.appendChild(el("span", { class: "ev-entry-unlinked",
                 text: "未入库 · 被筛选/去重剔除" }));
         }
-        return el("div", { class: "ev-entry" }, [main, meta]);
+        return row;
     }
 
     function renderPaperItem(p) {
@@ -3226,12 +3067,10 @@
             evItem.appendChild(el("span", { class: "evidence-icon", text: typeIcon }));
             evItem.appendChild(el("span", { class: "evidence-type", text: refType }));
             if (refType === "paper") {
-                // 优先展示论文标题（可读），id 作为副信息
-                const refTitle = refObj.title || refId;
                 const link = el("a", {
                     class: "evidence-link",
-                    text: refTitle,
-                    title: `点击跳转到论文浏览页 (${refId})`,
+                    text: refId,
+                    title: "点击跳转到论文浏览页",
                     onclick: (e) => {
                         e.stopPropagation();
                         state.pendingPaperId = refId;
@@ -3242,20 +3081,6 @@
                 link.style.color = "var(--color-primary)";
                 link.style.textDecoration = "underline";
                 evItem.appendChild(link);
-                if (refObj.title && refTitle !== refId) {
-                    evItem.appendChild(el("span", {
-                        class: "evidence-id small muted mono",
-                        text: refId,
-                    }));
-                }
-                // 溯源片段（可悬停查看）
-                if (refObj.snippet) {
-                    const snip = el("span", {
-                        class: "evidence-snippet small muted",
-                        text: `「${refObj.snippet.slice(0, 120)}${refObj.snippet.length > 120 ? "…" : ""}」`,
-                    });
-                    evItem.appendChild(snip);
-                }
             } else if (refType === "experiment") {
                 const link = el("a", {
                     class: "evidence-link",
@@ -3286,9 +3111,7 @@
         item.appendChild(el("div", { class: "list-item-head" }, [
             el("span", { class: "list-item-title", text: c.statement || "(无陈述)" }),
             el("span", { class: "badge badge-info", text: c.role || "contribution" }),
-            c.evidence_count > 0
-                ? el("span", { class: "badge badge-neutral", text: `证据 ${c.evidence_count}` })
-                : el("span", { class: "badge badge-warning", text: "证据 0 · 待验证" }),
+            el("span", { class: "badge badge-neutral", text: `证据 ${c.evidence_count}` }),
         ]));
         // 状态徽章单独一行（便于颜色识别）
         item.appendChild(el("div", { class: "mt-8" }));
@@ -3297,42 +3120,10 @@
         item.addEventListener("click", () => {
             const expanded = item.classList.toggle("expanded");
             if (expanded && !item.querySelector(".list-item-body")) {
-                item.appendChild(buildClaimBody(c));
+                item.appendChild(buildPaperBody(p));
             }
         });
         return item;
-    }
-
-    // Claim 详情正文：陈述 + 角色 + 证据链 + 状态时间（可点击溯源）
-    function buildClaimBody(c) {
-        const body = el("div", { class: "list-item-body" });
-        const refs = c.evidence_refs || [];
-        // 关联冲突提示（Claim 处于争议中）
-        if (c.conflicts && c.conflicts.length) {
-            body.appendChild(el("div", { class: "status-banner warning mt-8" },
-                `该 Claim 引用文献存在 ${c.conflicts.length} 处冲突结论（争议中）`));
-        }
-        body.innerHTML = `
-            <dl>
-                <dt>Claim ID</dt><dd class="mono">${escapeHtml(c.claim_id || "—")}</dd>
-                <dt>角色</dt><dd>${escapeHtml((c.role || "contribution").replace("_", " "))}</dd>
-                <dt>状态</dt><dd>${escapeHtml((c.status || "draft").replace("_", " "))}</dd>
-                <dt>来源阶段</dt><dd>${escapeHtml(c.source_stage || "—")}</dd>
-                <dt>创建时间</dt><dd class="mono">${escapeHtml(formatTime(c.created_at) || "—")}</dd>
-                ${c.verified_at ? `<dt>验证时间</dt><dd class="mono">${escapeHtml(formatTime(c.verified_at))}</dd>` : ""}
-            </dl>
-        `;
-        // 证据链（可点击跳转论文/实验）
-        if (refs.length) {
-            const evDiv = el("div", { class: "evidence-chain mt-8" });
-            evDiv.appendChild(el("div", { class: "small evidence-title" }, "证据溯源链："));
-            evDiv.appendChild(buildEvidenceList(refs));
-            body.appendChild(evDiv);
-        } else {
-            body.appendChild(el("div", { class: "small muted mt-8" },
-                "暂无证据：该 Claim 为 draft 状态，等待实验验证后回填证据。"));
-        }
-        return body;
     }
 
     function buildPaperBody(p) {
@@ -4003,7 +3794,6 @@
         const typeMeta = GAP_TYPE_META[g.gap_type] || { label: g.gap_type || "未知", cls: "gap-tag-neutral" };
         const actMeta = GAP_ACTION_META[g.actionability] || { label: g.actionability || "中", cls: "gap-act-medium" };
         const sourceLabel = g.source === "data_driven" ? "数据驱动"
-            : g.source === "db_driven" ? "数据库驱动"
             : g.source === "hybrid" ? "LLM + 数据"
             : g.source === "placeholder" ? "占位"
             : "LLM 分析";
@@ -4071,32 +3861,6 @@
             actRow.appendChild(el("span", { class: "gap-row-label", text: "建议行动：" }));
             acts.forEach(a => actRow.appendChild(el("span", { class: "gap-act-chip", text: a })));
             card.appendChild(actRow);
-        }
-
-        // 数据库证据链（Materials Project / OQMD / NOMAD，与文献证据构成双证据链）
-        const dbEvs = g.db_evidence || [];
-        if (dbEvs.length) {
-            const dbBlock = el("div", { class: "gap-dbevidence" });
-            dbBlock.appendChild(el("div", { class: "gap-row-label", text: `数据库证据（${dbEvs.length} 条，MP/OQMD/NOMAD）：` }));
-            dbEvs.slice(0, 3).forEach(ev => {
-                const formula = ev.formula || ev.name || "?";
-                const mp = ev.mp || {};
-                const oqmd = ev.oqmd || {};
-                const nomad = ev.nomad || {};
-                const chips = [];
-                chips.push(`MP ${mp.matched ? `命中 ${mp.entry_count ?? 0} 条` : "未命中"}`);
-                if (mp.band_gap != null) chips.push(`带隙 ${mp.band_gap} eV`);
-                chips.push(`OQMD ${oqmd.matched ? `命中 ${oqmd.entry_count ?? 0} 条` : "未命中"}`);
-                if (oqmd.stability) chips.push(oqmd.stability);
-                chips.push(`NOMAD ${nomad.matched ? `命中 ${nomad.entry_count ?? 0} 条` : "未命中"}`);
-                const row = el("div", { class: "gap-dbev-item" });
-                row.appendChild(el("span", { text: `[${formula}] ${chips.join(" · ")}` }));
-                dbBlock.appendChild(row);
-            });
-            if (dbEvs.length > 3) {
-                dbBlock.appendChild(el("div", { class: "gap-ev-more", text: `…另有 ${dbEvs.length - 3} 条数据库证据` }));
-            }
-            card.appendChild(dbBlock);
         }
 
         return card;
@@ -5555,8 +5319,6 @@
             const relationships = data.discovery_relationships || [];
             const hypotheses = data.discovery_hypotheses || [];
             const searchSpace = data.discovery_search_space || {};
-            const symbolicFit = data.discovery_symbolic_regression || {};
-            const calibration = data.discovery_surrogate_calibration || {};
 
             // 1. 计数卡片
             content.appendChild(el("div", { class: "counts-grid" }, [
@@ -5585,12 +5347,6 @@
             // 2. MCTS 搜索过程可视化
             content.appendChild(renderMctsTrace(trace));
 
-            // 2b. 符号回归（第二搜索算法）
-            content.appendChild(renderSymbolicRegression(symbolicFit));
-
-            // 2c. 代理模型-数据库校准（性能评估闭环）
-            content.appendChild(renderSurrogateCalibration(calibration));
-
             // 3. 文献数据点散点图（SVG）
             content.appendChild(renderLiteratureScatter(litPoints, searchSpace));
 
@@ -5614,134 +5370,6 @@
             content.appendChild(el("div", { class: "status-banner danger" },
                 `加载失败：${escapeHtml(e.message)}`));
         }
-    }
-
-    function renderSymbolicRegression(fit) {
-        const card = el("div", { class: "card" });
-        card.appendChild(el("div", { class: "card-title" },
-            "符号回归（Symbolic Regression）· 第二搜索算法"));
-
-        if (!fit || Object.keys(fit).length === 0) {
-            card.appendChild(el("div", { class: "list-empty" },
-                "暂无符号回归数据（运行 discovery 流程后自动生成）"));
-            return card;
-        }
-
-        const fitted = fit.fitted;
-        const desc = el("div", { class: "small muted mb-8" },
-            "从文献数据点直接拟合解析表达式（如 ZT = f(组成, 温度)），" +
-            "与 MCTS 互补：MCTS 在配置空间搜索，符号回归给出可解释公式。");
-        card.appendChild(desc);
-
-        if (!fitted) {
-            card.appendChild(el("div", { class: "status-banner warning" },
-                fit.note || "符号回归未成功拟合"));
-            return card;
-        }
-
-        // 拟合结果
-        const body = el("div", { class: "list-item-body" });
-        body.innerHTML = `
-            <dl>
-                <dt>拟合表达式</dt>
-                <dd class="mono" style="font-size:14px;line-height:1.6">${escapeHtml(fit.expr_str || "—")}</dd>
-                <dt>LaTeX</dt>
-                <dd class="mono">${escapeHtml(fit.expr_latex || "—")}</dd>
-                <dt>R²（决定系数）</dt>
-                <dd><strong>${Number(fit.r2 || 0).toFixed(4)}</strong></dd>
-                <dt>MAE（平均绝对误差）</dt>
-                <dd>${Number(fit.mae || 0).toFixed(4)}</dd>
-                <dt>数据点数</dt>
-                <dd>${fit.n_points || 0}</dd>
-                <dt>变量</dt>
-                <dd>${escapeHtml((fit.variable_names || []).join(", ") || "—")}</dd>
-            </dl>
-        `;
-
-        // 质量徽章
-        const r2 = Number(fit.r2 || 0);
-        let badgeCls = "badge-warning";
-        let badgeText = "中等拟合";
-        if (r2 >= 0.9) { badgeCls = "badge-success"; badgeText = "高质量拟合"; }
-        else if (r2 < 0.5) { badgeCls = "badge-danger"; badgeText = "拟合不足"; }
-        body.insertAdjacentHTML("afterbegin",
-            `<div class="mb-8"><span class="badge ${badgeCls}">${badgeText}</span></div>`);
-
-        card.appendChild(body);
-        return card;
-    }
-
-    function renderSurrogateCalibration(cal) {
-        const card = el("div", { class: "card" });
-        card.appendChild(el("div", { class: "card-title" },
-            "代理模型-数据库校准（性能评估闭环）"));
-
-        if (!cal || Object.keys(cal).length === 0) {
-            card.appendChild(el("div", { class: "list-empty" },
-                "暂无校准数据（运行 discovery 流程后自动生成）"));
-            return card;
-        }
-
-        const desc = el("div", { class: "small muted mb-8" },
-            "将代理模型（基于文献数据点的加权 KNN）的预测值与 " +
-            "Materials Project / OQMD / NOMAD 的 DFT 计算值对比，" +
-            "量化系统偏差，使搜索空间有数据库证据支持。");
-        card.appendChild(desc);
-
-        if (!cal.calibrated) {
-            card.appendChild(el("div", { class: "status-banner warning" },
-                cal.note || "代理模型未完成校准"));
-            return card;
-        }
-
-        // 校准指标概览
-        const mae = Number(cal.mae || 0);
-        const bias = Number(cal.bias || 0);
-        let badgeCls = "badge-success";
-        let badgeText = "偏差可接受";
-        if (mae > 0.5) { badgeCls = "badge-warning"; badgeText = "偏差较大"; }
-        if (mae > 1.0) { badgeCls = "badge-danger"; badgeText = "偏差显著"; }
-
-        const body = el("div", { class: "list-item-body" });
-        body.innerHTML = `
-            <div class="mb-8">
-                <span class="badge ${badgeCls}">${badgeText}</span>
-                <span class="badge badge-neutral ml-4">数据源：${escapeHtml((cal.sources_used || []).join(" / ") || "—")}</span>
-            </div>
-            <dl>
-                <dt>校准材料数</dt>
-                <dd>${cal.n_matched || 0} / ${cal.n_checked || 0} 匹配到数据库 DFT 值</dd>
-                <dt>MAE（平均绝对误差）</dt>
-                <dd><strong>${mae.toFixed(4)}</strong></dd>
-                <dt>系统偏差（预测 - DFT）</dt>
-                <dd>${bias >= 0 ? "+" : ""}${bias.toFixed(4)} ${bias > 0 ? "（代理偏高）" : bias < 0 ? "（代理偏低）" : ""}</dd>
-            </dl>
-        `;
-
-        // 逐材料对比表
-        const perMat = cal.per_material || [];
-        if (perMat.length) {
-            const tbl = el("div", { class: "mt-8" });
-            tbl.appendChild(el("div", { class: "small evidence-title" }, "逐材料对比："));
-            const rows = el("div", { class: "list" });
-            perMat.forEach(m => {
-                const dev = Number(m.deviation || 0);
-                const devCls = Math.abs(dev) > 0.5 ? "badge-warning" : "badge-success";
-                const row = el("div", { class: "list-item ev-entry" }, [
-                    el("span", { class: "mono", text: m.formula || "?" }),
-                    el("span", { class: "small muted", text: m.db_source || "" }),
-                    el("span", { class: "small", text: `DFT: ${m.db_value}` }),
-                    el("span", { class: "small", text: `代理: ${m.surrogate_prediction}` }),
-                    el("span", { class: `badge ${devCls}`, text: `偏差 ${dev >= 0 ? "+" : ""}${dev.toFixed(3)}` }),
-                ]);
-                rows.appendChild(row);
-            });
-            tbl.appendChild(rows);
-            body.appendChild(tbl);
-        }
-
-        card.appendChild(body);
-        return card;
     }
 
     function renderMctsTrace(trace) {
@@ -5965,28 +5593,6 @@
             if (r.novelty_reason) {
                 item.appendChild(el("div", { class: "small mt-8 novelty-text" },
                     `新颖性：${r.novelty_reason}`));
-            }
-
-            // 新知 vs 已知：量化相似度 Top-N（与已入库文献对比）
-            const nctx = r.novelty_context || {};
-            if (nctx.top_similar_papers && nctx.top_similar_papers.length) {
-                const nctxDiv = el("div", { class: "novelty-context mt-8" });
-                nctxDiv.appendChild(el("div", { class: "small evidence-title" },
-                    `新知对比（最大相似度 ${nctx.max_similarity} · 判定 ${nctx.assessment || "—"}）：`));
-                nctx.top_similar_papers.forEach(sp => {
-                    const row = el("div", { class: "small novelty-context-row" });
-                    row.appendChild(el("span", {
-                        class: "mono muted",
-                        text: `sim ${sp.similarity.toFixed(2)}`,
-                    }));
-                    row.appendChild(el("span", {
-                        class: "novelty-context-title",
-                        title: `匹配词：${(sp.matched_terms || []).join(", ")}`,
-                        text: sp.title,
-                    }));
-                    nctxDiv.appendChild(row);
-                });
-                item.appendChild(nctxDiv);
             }
 
             // 交叉验证结果

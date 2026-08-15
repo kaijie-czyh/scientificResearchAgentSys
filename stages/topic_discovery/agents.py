@@ -306,12 +306,16 @@ class TopicRecommendAgent(AgentNode):
         step1_system = (
             "你是科研趋势分析专家。你的任务是【先锁定热门研究方向】：\n"
             "1. 结合用户研究兴趣与趋势数据，找出最值得投入的 5-8 个热门方向；\n"
-            "2. 为每个方向量化热门度 popularity_score（0-100）：\n"
+            "2. 描述方向时不要停留在泛泛的标签词（如“机器学习”“纳米”“优化”），\n"
+            "   要落到**具体的材料体系、科学问题或关键技术手段**上，例如\n"
+            "   “钙钛矿太阳能电池的缺陷钝化”“锂硫电池多硫化物穿梭效应的抑制”，\n"
+            "   让每个方向一听就知道它在解决什么具体问题；\n"
+            "3. 为每个方向量化热门度 popularity_score（0-100）：\n"
             "   - 增长率高且论文总量大 → 高分（80-100，热门且活跃）\n"
             "   - 增长率高但总量小 → 中高分（60-79，新兴但需注意风险）\n"
             "   - 增长率平稳 → 中分（40-59）\n"
             "   - 饱和/衰退 → 低分（<40，尽量避免）\n"
-            "3. 按热门度从高到低排序。\n"
+            "4. 按热门度从高到低排序。\n"
             "只输出方向清单，不要展开推荐主题。"
         )
         step1_prompt = (
@@ -324,6 +328,7 @@ class TopicRecommendAgent(AgentNode):
             output_schema=HotDirectionSchema,
             system=step1_system,
             prompt=step1_prompt,
+            temperature_override=0.7,
         )
 
         # ===== 第二步：基于热门方向逐条产出完整推荐 =====
@@ -331,18 +336,46 @@ class TopicRecommendAgent(AgentNode):
             f"  - {d.keyword}（popularity={d.popularity_score}，{d.trend_summary}）"
             for d in hot.directions
         )
+        # 供 LLM 参考的多样化命名单模式（体现措辞的多样性，而非固定模板）
+        _name_patterns = (
+            "主题命名的多样化参考（不要照抄其中任何一个，仅体会其措辞差异）：\n"
+            "  · “XX缺陷钝化实现钙钛矿电池效率新突破”——机制链 + 应用目标\n"
+            "  · “高熵 XX 的组分设计空间与性能边界”——材料体系 + 科学问题\n"
+            "  · “XX 中载流子-声子协同调控的多尺度建模”——机理 + 方法\n"
+            "  · “面向 XX 场景的 YY 结构工程与可扩展制备”——应用 + 工艺\n"
+            "  · “小样本数据下实现 XX 的主动学习筛选框架”——方法 + 对象\n"
+            "  · “XX 的界面/缺陷工程：从原子尺度到器件尺度”——尺度 + 视角"
+        )
         step2_system = (
             "你是材料科学研究顾问。在上一步锁定的热门方向基础上，"
-            "逐条产出 3-5 个推荐研究主题。\n"
-            "每个主题必须：\n"
-            "1. 主题名称简洁明确，直接引用对应热门方向；\n"
-            "2. rationale 引用趋势数据（增长率、论文数等）；\n"
-            "3. 给出具体创新切入点与推荐材料体系（如 Bi2Te3, CsPbBr3）；\n"
-            "4. 评估实现难度 difficulty（easy/medium/hard）与创新度 novelty（low/medium/high）；\n"
+            "产出 3-5 个推荐研究主题。\n\n"
+            "【主题命名要求（最重要）】\n"
+            "1. 每条主题的名称必须**整体语感像一位材料科学家手写的论文题目**，"
+            "用具体术语（材料名、机理、方法名）与动作性短语来组织，\n"
+            "   不要用“XX的核心动机与痛点”“未来的探索方向”“XX的机遇与挑战”这类评论性套话；\n"
+            "2. 5 条推荐之间**句式结构必须明显不同**——禁止共用同一个动宾模板；\n"
+            "   比较下面两组，前者是合格的差异化，后者是失败的雷同：\n"
+            "   合格：A. “微量 Sm 掺杂对 SnTe 热电性能的双峰调控机制”\n"
+            "        B. “基于相场模拟的钙钛矿晶粒粗化动力学与稳定性”\n"
+            "        C. “面向柔性电子的超薄 Bi2Te3 膜的晶格应变工程”\n"
+            "   失败：A. “XX的性能突破研究” / B. “XX的优化与筛选” / C. “XX的机制研究”；\n"
+            "3. 每条主题从**不同的切入视角**出发，可参考但不限于：\n"
+            "   材料体系创新（组分/掺杂/高熵）、工艺与制备方法、性能维度（热电\光学\力学\\n"
+            "   各一性能指标）、应用场景（柔性/可穿戴/高温/低温）、多尺度理解（原子-介观-宏观）、\n"
+            "   数据驱动（主动学习/生成模型/符号回归）；\n"
+            "4. 若两个主题落在同一材料体系，必须用不同的科学问题或手段加以区分，\n"
+            "   宁可刀状细分也不要选题近似；\n"
+            "5. 主题名控制在 15-30 字，信息密度高，去掉“基于”“关于”等冗余介词。\n\n"
+            "【其余字段要求】\n"
+            "1. rationale 引用趋势数据（增长率、论文数等），并说明该主题**为什么是一个值得做的空缺**；\n"
+            "2. innovation_point 给出具体可操作的切入点（具体材料/具体方法/具体指标）；\n"
+            "3. 给出推荐材料体系（如 Bi2Te3, CsPbBr3），尽量各不相同；\n"
+            "4. 评估实现难度 difficulty（easy/medium/hard）、创新度 novelty（low/medium/high）、\n"
             "5. 评估与用户研究兴趣的关联度 relevance（low/medium/high）；\n"
-            "6. popularity_score 与上一步热门度保持一致（0-100）；\n"
-            "7. growth_rate 填该方向对应关键词的年度增长率（浮点，如 0.35）。\n"
-            "避免推荐饱和方向（增长率<10%）。"
+            "5. popularity_score 与上一步热门度保持一致（0-100）；\n"
+            "6. growth_rate 填该方向对应关键词的年度增长率（浮点，如 0.35）。\n"
+            "避免推荐饱和方向（增长率<10%）。\n\n"
+            f"{_name_patterns}"
         )
         step2_prompt = (
             f"用户研究兴趣：{input_obj.interest}\n\n"
@@ -355,6 +388,7 @@ class TopicRecommendAgent(AgentNode):
             output_schema=TopicRecommendationSchema,
             system=step2_system,
             prompt=step2_prompt,
+            temperature_override=0.8,
         )
 
         recs = [item.model_dump() for item in result.recommendations]

@@ -4,9 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>科研 Agent 系统</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="static/style.css" />
 </head>
 <body>
+<script>
+    // 静态托管部署配置：后端 API 地址（Render 部署后填写实际 URL）
+    // 例如后端在 https://xxx.onrender.com，则 window.SRA_API_BASE = "https://xxx.onrender.com";
+    window.SRA_API_BASE = "";
+</script>
 <div class="app">
     <!-- 左侧导航 -->
     <aside class="sidebar">
@@ -98,8 +103,8 @@
             <div class="sidebar-notes-list" id="sidebar-notes-list"></div>
         </div>
         <div class="sidebar-footer">
-            v0.3.0 · 2026-08-13 更新
-            P0+P1：NOMAD验证 / 证据链溯源 / 符号回归 / 代理模型校准 / 置信度公式修正
+            v0.1.0 · Dry-Run Demo
+            v0.2.0 · GOAI 赛道三·方向三
         </div>
     </aside>
 
@@ -183,6 +188,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>

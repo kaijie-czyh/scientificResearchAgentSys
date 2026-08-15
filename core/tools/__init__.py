@@ -46,6 +46,7 @@ from core.tools.mineru_parse import (
     parse_pdf_with_mineru,
 )
 from core.tools.materials_search import (
+    CalibrationReport,
     LiteraturePoint,
     MCTSSearcher,
     SearchCandidate,
@@ -53,12 +54,24 @@ from core.tools.materials_search import (
     SurrogateModel,
     build_literature_points,
     build_search_variables,
+    calibrate_surrogate_with_databases,
     perturb_config,
 )
 from core.tools.oqmd_nomad import (
     OQMDClient,
     oqmd_is_available,
     query_oqmd_by_formula,
+)
+from core.tools.materials_db_gap import (
+    MaterialDBEvidence,
+    NOMADClient,
+    build_db_evidence_block,
+    build_material_coverage,
+    collect_material_formulas,
+    detect_db_gaps,
+    parse_elements,
+    query_materials_databases,
+    query_nomad_by_formula,
 )
 from core.tools.sciverse_search import (
     SciverseEvidence,
@@ -74,6 +87,11 @@ from core.tools.doi_resolve import (
     find_open_access_pdf,
     resolve_doi_by_title,
     resolve_pdf_link,
+)
+from core.tools.symbolic_regression import (
+    SymbolicFitResult,
+    SymbolicRegressor,
+    run_symbolic_regression,
 )
 from core.tools.text_split import split_into_chunks
 
@@ -124,6 +142,15 @@ __all__ = [
     "OQMDClient",
     "oqmd_is_available",
     "query_oqmd_by_formula",
+    "MaterialDBEvidence",
+    "NOMADClient",
+    "build_db_evidence_block",
+    "build_material_coverage",
+    "collect_material_formulas",
+    "detect_db_gaps",
+    "parse_elements",
+    "query_materials_databases",
+    "query_nomad_by_formula",
     "JournalQuality",
     "enrich_paper_quality",
     "lookup_journal_quality",
@@ -131,5 +158,10 @@ __all__ = [
     "find_open_access_pdf",
     "resolve_doi_by_title",
     "resolve_pdf_link",
+    "SymbolicFitResult",
+    "SymbolicRegressor",
+    "run_symbolic_regression",
+    "CalibrationReport",
+    "calibrate_surrogate_with_databases",
 ]
 

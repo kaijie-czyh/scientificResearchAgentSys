@@ -1,0 +1,25 @@
+# Replit 精简依赖（去掉 chromadb 等大包，减少安装时间）
+# chromadb 缺失时系统自动降级为关键词检索，不影响 demo
+
+# Web 服务
+fastapi>=0.110.0
+uvicorn>=0.23.2
+python-multipart>=0.0.9
+
+# 核心数据建模
+pydantic>=2.5.0
+
+# 状态持久化
+sqlalchemy>=2.0.0
+
+# LLM 适配
+openai>=1.12.0
+anthropic>=0.21.0
+
+# 配置与工具
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# 文献检索
+arxiv>=2.1.0
+requests>=2.31.0

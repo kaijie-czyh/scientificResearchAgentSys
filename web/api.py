@@ -33,6 +33,30 @@ from runtime.cli import _load_env  # noqa: E402
 _load_env()
 
 
+def _set_global_seed() -> None:
+    """设置全局随机种子，保证构效关系搜索（MCTS 等）结果可复现。
+
+    赛题复现审核要求：随机种子与复现说明。
+    默认 seed=42，可用环境变量 SRA_SEED 覆盖。
+    注意：LLM 输出本身有随机性，本种子保证算法内随机操作（节点扩展、
+    tie-breaking、采样扰动等）在相同 LLM 输入下可复现。
+    """
+    import random
+
+    seed = int(os.environ.get("SRA_SEED", "42"))
+    random.seed(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:  # numpy 非必需
+        pass
+    print(f"[SRA] 全局随机种子已设置: {seed}（可用 SRA_SEED 覆盖）", file=sys.stderr)
+
+
+_set_global_seed()
+
+
 def _guard_single_instance() -> None:
     """启动时检测端口冲突，防止多 uvicorn 实例分裂内存状态。
 
@@ -50,7 +74,7 @@ def _guard_single_instance() -> None:
         return
     import socket
 
-    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    port = int(os.environ.get("SRA_WEB_PORT") or os.environ.get("PORT") or "8001")
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         probe.bind(("0.0.0.0", port))
@@ -1204,6 +1228,7 @@ def list_research_gaps(project_id: str) -> dict:
                 "statement": g.statement,
                 "detail": g.detail,
                 "evidence": g.evidence,
+                "db_evidence": g.db_evidence,
                 "related_materials": g.related_materials,
                 "actionability": g.actionability,
                 "priority": g.priority,
@@ -1935,6 +1960,7 @@ def list_claims(project_id: str, status: Optional[str] = None) -> dict:
             "evidence_count": len(c.evidence_refs),
             "evidence_refs": c.evidence_refs,
             "source_idea_id": c.source_idea_id,
+            "source_stage": c.source_stage,
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "verified_at": c.verified_at.isoformat() if c.verified_at else None,
             # 冲突可视化：相关文献冲突（非空 → 该 Claim 处于争议中）
@@ -2110,6 +2136,8 @@ def get_discovery_detail(project_id: str) -> dict:
         "discovery_relationships": relationships,
         "discovery_search_trace": kv.get("discovery_search_trace", {}),
         "discovery_literature_points": kv.get("discovery_literature_points", []),
+        "discovery_symbolic_regression": kv.get("discovery_symbolic_regression", {}),
+        "discovery_surrogate_calibration": kv.get("discovery_surrogate_calibration", {}),
         "discovery_report_content": kv.get("discovery_report_content", ""),
         "discovery_report_artifact_id": kv.get("discovery_report_artifact_id", ""),
         "materials_cross_validation_report": kv.get("materials_cross_validation_report", {}),
@@ -3092,7 +3120,14 @@ def _require_project(project_id: str) -> ProjectState:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/data-sources")
@@ -3167,6 +3202,6 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    # 优先取 SRA_WEB_PORT；Render/Fly 等 PaaS 注入 $PORT 时兼容使用
+    port = int(os.environ.get("SRA_WEB_PORT") or os.environ.get("PORT") or "8001")
     uvicorn.run("web.api:app", host="0.0.0.0", port=port, reload=False)
-    uvicorn.run("web.api:app", host="0.0.0.0", port=8000, reload=False)

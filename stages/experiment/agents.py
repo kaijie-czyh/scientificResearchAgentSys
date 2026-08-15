@@ -194,14 +194,20 @@ class ExperimentConfigAgent(AgentNode):
                     task_type=self.task_type,
                     output_schema=ExperimentConfigSchema,
                     system=(
-                        "你是实验设计助手。根据 Claim 与方法文档生成 1-3 组实验配置，"
-                        "每个配置含 name/dataset/baseline/hyperparams/verifies_claim_ids。"
-                        "实验设计原则：覆盖核心 Claim、baseline 公平可比、超参合理可复现。"
+                        "你是实验设计助手。根据 Claim 与方法文档生成 3-6 组实验配置，"
+                        "每组配置含 name/dataset/baseline/hyperparams/verifies_claim_ids。"
+                        "实验设计原则："
+                        "1) 覆盖核心 Claim（每条 claim 至少被一组实验验证）；"
+                        "2) 必须包含三类实验：baseline 对照、消融实验、参数敏感性分析；"
+                        "3) baseline 与本文方法条件公平可比；"
+                        "4) hyperparams 给出具体可复现取值（learning rate、epochs、batch size 等）。"
                         "verifies_claim_ids 必须从给定的 claim_ids 列表中选取。"
                     ),
                     prompt=(
                         f"Claim IDs: {input_obj.claim_ids}\n"
-                        f"方法文档：\n{method_content[:1500]}"
+                        f"方法文档：\n{method_content[:2000]}\n"
+                        "请产出完整实验配置，若方法文档含实验设计建议（第 7 章），"
+                        "应将其落为具体实验组。"
                     ),
                 )
                 configs = [c.model_dump() for c in result.configs]
@@ -230,16 +236,31 @@ class ExperimentConfigAgent(AgentNode):
 
     @staticmethod
     def _placeholder(input_obj: ExperimentConfigInput) -> list[dict]:
-        return [
+        claim_ids = input_obj.claim_ids or []
+        groups = [
             {
-                "name": f"exp_{i + 1}",
+                "name": "exp_baseline",
                 "dataset": "placeholder_dataset",
                 "baseline": "random",
-                "hyperparams": {"lr": 1e-3, "epochs": 10},
-                "verifies_claim_ids": input_obj.claim_ids,
-            }
-            for i in range(min(2, max(1, len(input_obj.claim_ids))))
+                "hyperparams": {"lr": 1e-3, "epochs": 10, "batch_size": 64},
+                "verifies_claim_ids": claim_ids,
+            },
+            {
+                "name": "exp_ablation",
+                "dataset": "placeholder_dataset",
+                "baseline": "ours(no_ablation)",
+                "hyperparams": {"lr": 1e-3, "epochs": 10, "batch_size": 64},
+                "verifies_claim_ids": claim_ids,
+            },
+            {
+                "name": "exp_sensitivity",
+                "dataset": "placeholder_dataset",
+                "baseline": "ours",
+                "hyperparams": {"lr": [1e-4, 1e-3, 1e-2], "epochs": 10, "batch_size": 64},
+                "verifies_claim_ids": claim_ids,
+            },
         ]
+        return groups
 
 
 # ===== CodeGenerateAgent（借鉴 AI-Researcher Code Agent）=====

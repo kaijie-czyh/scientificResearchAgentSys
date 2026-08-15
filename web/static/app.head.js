@@ -78,7 +78,6 @@
         try {
             // 后端存的是 UTC 时间（无时区后缀），前端显示为本地时区
             const d = new Date(iso + "Z"); // 加 Z 标记为 UTC
-            const d = new Date(iso);
             if (isNaN(d.getTime())) return iso;
             const pad = n => String(n).padStart(2, "0");
             return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
@@ -358,6 +357,7 @@
                     state.humanDraft = ""; // 新请求/消失/切换 → 丢弃上一节点草稿，避免串节点
                     renderPage();
                 }
+            }
             const prevPending = state.statusCache && state.statusCache.pending_human;
             state.statusCache = data;
             updateBadges(data);
@@ -905,9 +905,6 @@
             ]),
         ]);
         card.appendChild(resumeRow);
-
-        ]);
-        card.appendChild(btnRow);
 
         const resultArea = el("div", { id: "create-result" });
         card.appendChild(resultArea);
@@ -1536,68 +1533,6 @@
                 "任务已启动，正在初始化…"));
         }
         return card;
-        ]);
-        const actionRow = el("div", { class: "btn-row" }, [
-            el("button", {
-                class: "btn btn-success",
-                onclick: () => startPipeline(),
-            }, data.status === "created" ? "启动 Pipeline" : "继续 / 重启"),
-            el("button", {
-                class: "btn btn-accent",
-                onclick: () => startDiscovery(),
-            }, "启动构效关系发现"),
-            el("button", {
-                class: "btn btn-secondary",
-                onclick: () => { pollStatus(); showToast("已刷新", "success"); },
-            }, "刷新状态"),
-        ]);
-        actionCard.appendChild(actionRow);
-
-        // 实验失败时的特殊操作区
-        if (data.status === "experiment_failed") {
-            const failCard = el("div", { class: "card" }, [
-                el("div", { class: "card-title" }, "实验未通过 — 后续选择"),
-                el("p", { class: "muted small" },
-                    "实验未能验证核心 Claim 是科研常态。你可以选择：强制进入论文写作（撰写负面结果），" +
-                    "或重新启动 Pipeline 从思路探讨阶段改进方案。"),
-            ]);
-            const failRow = el("div", { class: "btn-row" }, [
-                el("button", {
-                    class: "btn btn-warning",
-                    onclick: () => startPipeline(true),
-                }, "强制生成论文（撰写负面结果）"),
-                el("button", {
-                    class: "btn btn-secondary",
-                    onclick: () => {
-                        startPipeline();
-                        showToast("已重新启动 Pipeline，将从未完成阶段继续", "success");
-                    },
-                }, "重新启动 Pipeline"),
-            ]);
-            failCard.appendChild(failRow);
-            content.appendChild(failCard);
-        }
-
-        // 中止/失败时的操作
-        if (data.status === "aborted" || data.status === "failed") {
-            const errCard = el("div", { class: "card" }, [
-                el("div", { class: "card-title" }, "异常恢复"),
-                el("p", { class: "muted small" },
-                    `Pipeline 状态为 ${data.status}。可以重新启动继续执行，或查看错误信息。`),
-                el("div", { class: "btn-row" }, [
-                    el("button", {
-                        class: "btn btn-success",
-                        onclick: () => startPipeline(),
-                    }, "重新启动"),
-                ]),
-            ]);
-            content.appendChild(errCard);
-        }
-
-        content.appendChild(actionCard);
-
-        // 节点历史时间线
-        content.appendChild(renderTimeline(data.node_history || []));
     }
 
     function renderStageProgress(data) {
@@ -1746,53 +1681,6 @@
                         break;
                     }
                 }
-            const data = await api("GET", `/api/projects/${state.currentProjectId}/papers`);
-            clear(content);
-            content.appendChild(el("div", { class: "page-header" }, [
-                el("h2", { class: "page-title" }, "论文浏览"),
-                el("p", { class: "page-desc" }, `共 ${data.papers.length} 篇入库论文，点击条目展开详情。`),
-            ]));
-
-            // 上传文献入口（与新建页共用 renderUploadCard）
-            if (state.currentProjectId) {
-                content.appendChild(renderUploadCard());
-            }
-
-            if (!data.papers.length) {
-                content.appendChild(el("div", { class: "list-empty" }, "暂无论文，可使用上方表单上传，或启动 research 阶段自动检索"));
-                return;
-            }
-            const list = el("div", { class: "list" });
-            data.papers.forEach(p => list.appendChild(renderPaperItem(p)));
-            content.appendChild(list);
-
-            // 若从证据跳转过来，自动展开匹配的论文并滚动到视口
-            if (state.pendingPaperId) {
-                const targetId = state.pendingPaperId;
-                state.pendingPaperId = null;  // 消费一次
-                setTimeout(() => {
-                    const items = list.querySelectorAll(".list-item");
-                    for (const it of items) {
-                        const body = it.querySelector(".list-item-body");
-                        if (body && body.textContent.includes(targetId)) {
-                            it.scrollIntoView({ behavior: "smooth", block: "center" });
-                            return;
-                        }
-                        // 未展开则先展开再判断
-                        if (!it.classList.contains("expanded")) {
-                            it.click();
-                            const b = it.querySelector(".list-item-body");
-                            if (b && b.textContent.includes(targetId)) {
-                                it.scrollIntoView({ behavior: "smooth", block: "center" });
-                                return;
-                            } else {
-                                it.classList.remove("expanded");
-                                const rm = it.querySelector(".list-item-body");
-                                if (rm) rm.remove();
-                            }
-                        }
-                    }
-                }, 100);
             }
         } catch (e) {
             clear(content);
@@ -1889,6 +1777,13 @@
                         <dt>证据片段</dt><dd>${escapeHtml(p.snippet || "（无片段）")}</dd>
                         <dt>命中子问题</dt><dd>${escapeHtml(p.subquery || "—")}</dd>
                     </dl>
+                `;
+                item.appendChild(body);
+            }
+        });
+        return item;
+    }
+
     function renderPaperItem(p) {
         const item = el("div", { class: "list-item" });
         const head = el("div", { class: "list-item-head" }, [
@@ -2024,35 +1919,38 @@
 
     function renderEvidenceEntry(e) {
         const src = e.source || "?";
+        // 元信息单独成块，便于在窄屏时整体换行，防止长标题把 doc/id/状态挤出可视区
+        const meta = el("div", { class: "ev-entry-meta" });
         const row = el("div", { class: "ev-entry" }, [
             el("span", { class: `badge ev-src-badge ev-src-${src}`, text: src }),
             el("span", { class: "ev-entry-title", text: e.title || "(无标题)" }),
+            meta,
         ]);
         if (src === "sciverse") {
-            row.appendChild(el("span", { class: "ev-entry-score",
+            meta.appendChild(el("span", { class: "ev-entry-score",
                 text: `证据分 ${Number(e.evidence_score || 0).toFixed(2)}` }));
-            row.appendChild(el("span", { class: "mono ev-entry-id",
+            meta.appendChild(el("span", { class: "mono ev-entry-id",
                 text: `doc:${e.external_id || "-"}` }));
             if (Number(e.offset || 0) > 0) {
-                row.appendChild(el("span", { class: "ev-entry-offset",
+                meta.appendChild(el("span", { class: "ev-entry-offset",
                     text: `@偏移${e.offset}` }));
             }
         } else {
             const eid = e.external_id || "";
-            if (eid) row.appendChild(el("span", { class: "mono ev-entry-id", text: eid }));
+            if (eid) meta.appendChild(el("span", { class: "mono ev-entry-id", text: eid }));
         }
         // 关联依据（量化可审计）：match_type 说明为何关联该论文；
         // paper_id 为空 → 检索命中但未关联（被 filter 相关性筛选/去重剔除）。
         if (e.paper_id) {
             const reason = e.match_type || "证据来源关联";
-            row.appendChild(el("span", { class: "ev-entry-linked",
+            meta.appendChild(el("span", { class: "ev-entry-linked",
                 text: `已入库 · ${reason}` }));
             if (Number(e.paper_relevance || 0) > 0) {
-                row.appendChild(el("span", { class: "ev-entry-rel",
+                meta.appendChild(el("span", { class: "ev-entry-rel",
                     text: `相关度 ${Number(e.paper_relevance).toFixed(2)}` }));
             }
         } else {
-            row.appendChild(el("span", { class: "ev-entry-unlinked",
+            meta.appendChild(el("span", { class: "ev-entry-unlinked",
                 text: "未入库 · 被筛选/去重剔除" }));
         }
         return row;

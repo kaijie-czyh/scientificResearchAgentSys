@@ -301,3 +301,169 @@ def build_literature_points(points_def: list[dict]) -> list[LiteraturePoint]:
             )
         )
     return points
+
+
+@dataclass
+class CalibrationReport:
+    """代理模型-数据库校准报告。
+
+    将代理模型（基于文献数据点的加权 KNN）的预测值与
+    Materials Project / OQMD / NOMAD 的 DFT 计算值对比，
+    量化代理模型的系统偏差，使搜索空间有数据库证据支持。
+    """
+
+    calibrated: bool = False           # 是否完成校准（至少 1 个材料匹配到数据库值）
+    n_checked: int = 0                 # 尝试查询的材料数
+    n_matched: int = 0                 # 成功匹配到数据库值的材料数
+    sources_used: list[str] = field(default_factory=list)  # 命中的数据源
+    mae: float = 0.0                   # 平均绝对误差（代理预测 vs 数据库 DFT）
+    bias: float = 0.0                  # 系统偏差（预测均值 - 数据库均值）
+    per_material: list[dict] = field(default_factory=list)  # 逐材料对比详情
+    note: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "calibrated": self.calibrated,
+            "n_checked": self.n_checked,
+            "n_matched": self.n_matched,
+            "sources_used": self.sources_used,
+            "mae": round(self.mae, 4),
+            "bias": round(self.bias, 4),
+            "per_material": self.per_material,
+            "note": self.note,
+        }
+
+
+def _extract_formula_from_config(config: dict) -> str:
+    """从配置字典中提取材料化学式。
+
+    搜索常见的键名：material, formula, composition, compound 等。
+    """
+    for key in ("material", "formula", "composition", "compound", "material_formula"):
+        val = config.get(key)
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def calibrate_surrogate_with_databases(
+    surrogate: SurrogateModel,
+    lit_points: list[LiteraturePoint],
+) -> CalibrationReport:
+    """用材料数据库 DFT 值校准代理模型。
+
+    对文献数据点中出现的材料，查询 MP / OQMD / NOMAD 的 DFT 计算值
+    （带隙 / 形成能），与代理模型对该材料配置的预测值对比，
+    计算 MAE 和系统偏差，输出校准报告。
+
+    所有数据库查询均优雅降级（网络不可用或未配置 API key 时跳过）。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    report = CalibrationReport()
+
+    # 延迟导入避免循环依赖
+    try:
+        from core.tools.materials_project import query_material_by_formula as mp_query
+    except Exception:
+        mp_query = None
+    try:
+        from core.tools.oqmd_nomad import query_oqmd_by_formula
+    except Exception:
+        query_oqmd_by_formula = None
+    try:
+        from core.tools.materials_db_gap import query_nomad_by_formula
+    except Exception:
+        query_nomad_by_formula = None
+
+    seen_formulas: set[str] = set()
+    comparisons: list[dict] = []
+    db_values: list[float] = []
+    pred_values: list[float] = []
+    sources_hit: set[str] = set()
+
+    for lp in lit_points:
+        formula = _extract_formula_from_config(lp.config)
+        if not formula or formula in seen_formulas:
+            continue
+        seen_formulas.add(formula)
+        report.n_checked += 1
+
+        # 查询三个数据库，取第一个命中的 DFT 值
+        db_value: Optional[float] = None
+        db_source = ""
+
+        # 1. Materials Project（带隙）
+        if mp_query is not None:
+            try:
+                mp_results = mp_query(formula)
+                if mp_results:
+                    bg = mp_results[0].get("band_gap")
+                    if bg is not None:
+                        db_value = float(bg)
+                        db_source = "Materials Project"
+                        sources_hit.add("Materials Project")
+            except Exception as e:
+                logger.debug("MP 校准查询失败 (%s): %s", formula, e)
+
+        # 2. OQMD（形成能 / 带隙）
+        if db_value is None and query_oqmd_by_formula is not None:
+            try:
+                oqmd_resp = query_oqmd_by_formula(formula)
+                if oqmd_resp and oqmd_resp.matched and oqmd_resp.entries:
+                    entry = oqmd_resp.entries[0]
+                    if entry.formation_energy is not None:
+                        db_value = float(entry.formation_energy)
+                        db_source = "OQMD"
+                        sources_hit.add("OQMD")
+                    elif entry.band_gap is not None:
+                        db_value = float(entry.band_gap)
+                        db_source = "OQMD"
+                        sources_hit.add("OQMD")
+            except Exception as e:
+                logger.debug("OQMD 校准查询失败 (%s): %s", formula, e)
+
+        # 3. NOMAD（仅做命中密度统计，无直接数值属性可取）
+        if db_value is None and query_nomad_by_formula is not None:
+            try:
+                nomad_resp = query_nomad_by_formula(formula)
+                if nomad_resp and nomad_resp.get("matched"):
+                    sources_hit.add("NOMAD")
+                    # NOMAD API 不直接返回带隙/形成能，仅标记命中
+            except Exception as e:
+                logger.debug("NOMAD 校准查询失败 (%s): %s", formula, e)
+
+        if db_value is None:
+            continue
+
+        # 代理模型对该配置的预测值
+        pred_target, confidence = surrogate.predict(lp.config) if surrogate.is_available() else (0.0, 0.0)
+        report.n_matched += 1
+        db_values.append(db_value)
+        pred_values.append(pred_target)
+
+        comparisons.append({
+            "formula": formula,
+            "db_source": db_source,
+            "db_value": round(db_value, 4),
+            "surrogate_prediction": round(pred_target, 4),
+            "deviation": round(pred_target - db_value, 4),
+            "surrogate_confidence": round(confidence, 4),
+        })
+
+    if not comparisons:
+        report.note = "无材料匹配到数据库 DFT 值（可能网络不可用或材料不在库中）"
+        return report
+
+    # 计算校准指标
+    n = len(comparisons)
+    report.mae = sum(abs(p - d) for p, d in zip(pred_values, db_values)) / n
+    pred_mean = sum(pred_values) / n
+    db_mean = sum(db_values) / n
+    report.bias = pred_mean - db_mean
+    report.sources_used = sorted(sources_hit)
+    report.per_material = comparisons
+    report.calibrated = True
+    report.note = f"代理模型与 {n} 个材料的数据库 DFT 值对比完成"
+    return report

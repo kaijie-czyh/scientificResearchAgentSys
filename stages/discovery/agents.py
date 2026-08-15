@@ -47,7 +47,9 @@ from core.tools import (
     SurrogateModel,
     build_literature_points,
     build_search_variables,
+    calibrate_surrogate_with_databases,
     perturb_config,
+    run_symbolic_regression,
 )
 from core.tools.sciverse_search import agentic_search as sciverse_agentic_search
 from core.tools.sciverse_search import is_available as sciverse_is_available
@@ -899,7 +901,68 @@ class LLMGuidedSearchAgent(AgentNode):
             except Exception as e:
                 logger.warning("持久化 discovery_search_trace 到 KV 失败: %s", e)
 
-        output = LLMGuidedSearchOutput(candidates=candidates)
+        # ===== 符号回归（第二搜索算法，与 MCTS 互补） =====
+        # 从文献数据点直接拟合解析表达式（如 ZT = f(组成, 温度)），
+        # 输出可解释公式 + R²/MAE，作为发现候选补充进验证链路。
+        symbolic_fit_dict: dict = {}
+        try:
+            sr_points = [
+                {"config": lp.config, "target": lp.target}
+                for lp in lit_points
+                if lp.config and lp.target is not None
+            ]
+            if len(sr_points) >= 3:
+                sr_result = run_symbolic_regression(
+                    sr_points, population_size=50, generations=25, seed=42
+                )
+                symbolic_fit_dict = sr_result.to_dict()
+                logger.info(
+                    "符号回归完成：fitted=%s, R²=%.4f, MAE=%.4f, expr=%s",
+                    sr_result.fitted, sr_result.r2, sr_result.mae,
+                    sr_result.expr_str[:80],
+                )
+            else:
+                symbolic_fit_dict = {
+                    "fitted": False,
+                    "note": f"文献数据点仅 {len(sr_points)} 个，不足 3 个，跳过符号回归",
+                }
+        except Exception as e:
+            logger.warning("符号回归执行失败（不阻塞主流程）: %s", e)
+            symbolic_fit_dict = {"fitted": False, "note": f"符号回归异常: {e}"}
+
+        # 持久化符号回归结果到 KV（前端展示）
+        if store is not None:
+            try:
+                store.save_kv("discovery_symbolic_regression", symbolic_fit_dict)
+            except Exception as e:
+                logger.warning("持久化 discovery_symbolic_regression 到 KV 失败: %s", e)
+
+        # ===== 代理模型-数据库校准（性能评估闭环） =====
+        # 将代理模型预测值与 MP / OQMD / NOMAD 的 DFT 值对比，
+        # 量化系统偏差，使搜索空间有数据库证据支持。
+        calibration_dict: dict = {}
+        try:
+            cal_report = calibrate_surrogate_with_databases(surrogate, lit_points)
+            calibration_dict = cal_report.to_dict()
+            logger.info(
+                "代理模型校准完成：calibrated=%s, matched=%d/%d, MAE=%.4f, bias=%.4f",
+                cal_report.calibrated, cal_report.n_matched, cal_report.n_checked,
+                cal_report.mae, cal_report.bias,
+            )
+        except Exception as e:
+            logger.warning("代理模型数据库校准失败（不阻塞主流程）: %s", e)
+            calibration_dict = {"calibrated": False, "note": f"校准异常: {e}"}
+
+        if store is not None:
+            try:
+                store.save_kv("discovery_surrogate_calibration", calibration_dict)
+            except Exception as e:
+                logger.warning("持久化 discovery_surrogate_calibration 到 KV 失败: %s", e)
+
+        output = LLMGuidedSearchOutput(
+            candidates=candidates,
+            symbolic_fit=symbolic_fit_dict,
+        )
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
@@ -1035,12 +1098,10 @@ class DiscoveryValidateAgent(AgentNode):
                 relationships = []
                 for r in result.relationships:
                     rel = r.model_dump()
-                    # 构造 evidence_refs（证据链）
-                    rel["evidence_refs"] = [
-                        {"type": "paper", "id": pid}
-                        for pid in r.evidence_paper_ids
-                        if pid in input_obj.paper_ids
-                    ]
+                    # 构造 evidence_refs（可追溯证据链：paper 标题 + 相关 chunk + 片段）
+                    rel["evidence_refs"] = self._resolve_evidence_refs(
+                        r.evidence_paper_ids, input_obj.paper_ids, store
+                    )
                     # 若结构化 mechanism 字段缺失，组装
                     if not rel.get("mechanism"):
                         rel["mechanism"] = _compose_mechanism(
@@ -1050,6 +1111,12 @@ class DiscoveryValidateAgent(AgentNode):
                             rel.get("quantitative_reason", ""),
                             rel.get("domain_specific_concept", ""),
                         )
+                    # 新知 vs 已知：与已入库文献的量化相似度 Top-N（支持 novelty 判断）
+                    rel["novelty_context"] = self._compute_novelty_context(
+                        rel.get("relationship", ""),
+                        rel.get("mechanism", ""),
+                        store,
+                    )
                     relationships.append(rel)
 
                 # 真实入库为 Claim（构效关系发现即 Claim）
@@ -1133,17 +1200,51 @@ class DiscoveryValidateAgent(AgentNode):
                             "error": str(e),
                         }
 
+                # NOMAD 交叉验证（赛题路线 A 加分项：nomad-lab.eu 开放计算数据）
+                nomad_results: list[dict] = []
+                try:
+                    from core.tools import query_nomad_by_formula
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("NOMAD 工具导入失败: %s", e)
+                    query_nomad_by_formula = None
+                for rel in relationships:
+                    material = (rel.get("config", {}) or {}).get("material", "")
+                    if not material or query_nomad_by_formula is None:
+                        continue
+                    try:
+                        nomad_resp = query_nomad_by_formula(material)
+                        rel["nomad_validation"] = nomad_resp
+                        nomad_results.append({
+                            "claim_id": rel.get("claim_id", ""),
+                            "material": material,
+                            "matched": nomad_resp.get("matched", False),
+                            "count": nomad_resp.get("count", 0),
+                            "source": nomad_resp.get("source", ""),
+                        })
+                    except Exception as e:
+                        logger.warning("NOMAD 验证失败（%s）：%s", material, e)
+                        rel["nomad_validation"] = {
+                            "query": material,
+                            "matched": False,
+                            "source": "error",
+                            "error": str(e),
+                        }
+
                 # 持久化交叉验证报告到 KV（前端展示）
                 cross_val_store = {
                     "materials_project": cv_report_dict,
                     "oqmd": oqmd_results,
+                    "nomad": nomad_results,
                 }
                 store.save_kv("materials_cross_validation_report", cross_val_store)
                 logger.info(
-                    "材料数据库交叉验证完成：MP mp_validated=%d，OQMD matched=%d/%d，overall_confidence=%.2f",
+                    "材料数据库交叉验证完成：MP mp_validated=%d，OQMD matched=%d/%d，"
+                    "NOMAD matched=%d/%d，overall_confidence=%.2f",
                     cv_report.mp_validated,
                     sum(1 for r in oqmd_results if r.get("matched")),
                     len(oqmd_results),
+                    sum(1 for r in nomad_results if r.get("matched")),
+                    len(nomad_results),
                     cv_report.overall_confidence,
                 )
             except Exception as e:
@@ -1244,6 +1345,138 @@ class DiscoveryValidateAgent(AgentNode):
                 f"其中 {n_novel} 条 novel"
             ),
         )
+
+    @staticmethod
+    def _resolve_evidence_refs(
+        evidence_paper_ids: list[str],
+        known_paper_ids: list[str],
+        store: Optional[KnowledgeStore],
+    ) -> list[dict]:
+        """把 evidence_paper_ids 解析为可追溯证据链。
+
+        Each ref: {type: "paper", id, title, chunk_id, snippet, external_score}
+        - title 来自 KnowledgeStore 论文实体（提升前端可读性，而非只显示 hash id）
+        - chunk_id + snippet 来自论文分块（溯源到段落级）
+        - 无法入库解析的 id 仍保留原始结构（不丢链）
+        """
+        refs: list[dict] = []
+        if not evidence_paper_ids:
+            return refs
+
+        # 论文标题缓存（一次查库，避免 N+1 查询）
+        title_cache: dict[str, str] = {}
+        abstract_cache: dict[str, str] = {}
+        if store is not None:
+            try:
+                papers = store.list_papers() or []
+                for p in papers:
+                    title_cache[p.paper_id] = p.title or ""
+                    abstract_cache[p.paper_id] = p.abstract or ""
+            except Exception as e:  # noqa: BLE001
+                logger.warning("证据链标题回填失败: %s", e)
+
+        for pid in evidence_paper_ids:
+            pid = (pid or "").strip()
+            if not pid:
+                continue
+            ref: dict = {"type": "paper", "id": pid}
+            title = title_cache.get(pid) or pid
+            ref["title"] = title
+            # 尝试定位论文分块，溯源到段落级
+            if store is not None:
+                try:
+                    chunks = store.get_paper_chunks(pid) or []
+                    if chunks:
+                        best = chunks[0]
+                        # 取与发现最相关的分块：优先取首个非空（可扩展为向量检索 top-1）
+                        ref["chunk_id"] = best.chunk_id
+                        snippet = (best.text or "").strip()[:220]
+                        if snippet:
+                            ref["snippet"] = snippet
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("证据 chunk 解析失败（%s）: %s", pid, e)
+            # 兜底：无标题信息时用摘要片段提示
+            if ref.get("title") == pid and abstract_cache.get(pid):
+                ref["snippet"] = abstract_cache[pid][:220]
+            # 仅保留已知论文（筛掉不在库中的幽灵 id）
+            if pid in known_paper_ids or pid in title_cache:
+                refs.append(ref)
+        return refs
+
+    @staticmethod
+    def _compute_novelty_context(
+        relationship_text: str,
+        mechanism_text: str,
+        store: Optional[KnowledgeStore],
+        top_n: int = 3,
+    ) -> dict:
+        """对发现陈述做「已知文献相似度 Top-N」量化对比（新知 vs 已知）。
+
+        用轻量 Token 重叠（Jaccard）计算发现与已入库论文标题/摘要的相似度：
+        - 相似度低（<0.3）→ 文献库中无明显前例，support 新颖性判断为 novel
+        - 相似度高（>=0.5）→ 存在高度相似已知工作，提示 partially_known / known
+        不依赖 embedding 模型，避免额外依赖与失败点。
+        """
+        query_text = f"{relationship_text} {mechanism_text}".lower()
+        # 提取有意义的 token（字母数字 + 化学式）
+        import re as _re
+
+        def _tokens(text: str) -> set[str]:
+            return set(_re.findall(r"[a-z]{2,}[0-9]*|[a-z][0-9]+[a-z]?", text))
+
+        q_tokens = _tokens(query_text)
+        if not q_tokens:
+            return {"top_similar_papers": [], "max_similarity": 0.0, "assessment": "insufficient_text"}
+
+        if store is None:
+            return {"top_similar_papers": [], "max_similarity": 0.0, "assessment": "no_store"}
+
+        scored: list[dict] = []
+        try:
+            papers = store.list_papers() or []
+        except Exception as e:  # noqa: BLE001
+            logger.warning("新知对比文献读取失败: %s", e)
+            return {"top_similar_papers": [], "max_similarity": 0.0, "assessment": "error"}
+
+        for p in papers:
+            title = (p.title or "").lower()
+            abstract = (p.abstract or "").lower()
+            doc_text = f"{title} {abstract}"
+            doc_tokens = _tokens(doc_text)
+            if not doc_tokens:
+                continue
+            inter = len(q_tokens & doc_tokens)
+            union = len(q_tokens | doc_tokens)
+            sim = inter / max(union, 1)
+            if sim <= 0.05:
+                continue
+            scored.append({
+                "paper_id": p.paper_id,
+                "title": p.title or "(无标题)",
+                "similarity": round(sim, 3),
+                "matched_terms": sorted(list(q_tokens & doc_tokens))[:8],
+            })
+
+        scored.sort(key=lambda x: -x["similarity"])
+        top = scored[:top_n]
+        max_sim = top[0]["similarity"] if top else 0.0
+
+        # 评估结论：相似度阈值（保守）
+        if not top:
+            assessment = "novel"  # 库内无相似文献
+        elif max_sim >= 0.5:
+            assessment = "known"  # 高度相似，已有工作
+        elif max_sim >= 0.3:
+            assessment = "partially_known"
+        else:
+            assessment = "novel"
+
+        return {
+            "top_similar_papers": top,
+            "max_similarity": round(max_sim, 3),
+            "assessment": assessment,
+            "method": "token-overlap jaccard (lightweight)",
+        }
 
     @staticmethod
     def _placeholder(input_obj: DiscoveryValidateInput) -> list[dict]:
