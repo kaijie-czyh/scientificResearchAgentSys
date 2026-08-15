@@ -23,6 +23,10 @@ anthropic>=0.21.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
 
+# 产物下载格式转换（快速下载 / 每页下载：md + docx + pdf 三格式）
+python-docx>=1.1.0
+fpdf2>=2.7.0
+
 # 文献检索（research 阶段真实调用）
 arxiv>=2.1.0
 requests>=2.31.0

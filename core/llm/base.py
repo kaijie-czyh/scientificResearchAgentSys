@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import abc
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional, Type, TypeVar
 
@@ -16,6 +17,29 @@ from pydantic import BaseModel
 
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def strip_think_tags(text: str) -> str:
+    """剥离模型输出中的 ``<think>...</think>`` 推理块，只保留最终答复。
+
+    MiniMax-M3 等推理模型会把思考链（reasoning）一并拼进 ``content``，
+    污染下游报告 / 文档。此函数：
+    1. 反复移除非贪婪的 ``<think>...</think>`` 配对块（支持嵌套）；
+    2. 移除残留的孤立 ``<think>`` / ``</think>`` 标签；
+    3. 去掉首尾多余空白。
+
+    对不含标签的文本原样返回（仅做 strip）。
+    """
+    if not text:
+        return text
+    # 1. 反复剥离成对块（跨行、忽略大小写），直到不再变化，处理嵌套
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    # 2. 移除残留孤立标签（截断 / 不配对场景）
+    text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 class LLMError(Exception):

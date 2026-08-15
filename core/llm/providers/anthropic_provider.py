@@ -19,6 +19,7 @@ from core.llm.base import (
     LLMRequest,
     LLMResponse,
     StructuredOutputRequest,
+    strip_think_tags,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -74,6 +75,8 @@ class AnthropicProvider(LLMProvider):
             if hasattr(block, "text"):
                 text_parts.append(block.text)
         text = "".join(text_parts)
+        # 剥离可能的 <think> 思考链（保险，Claude 常规不带但保持一致性）
+        text = strip_think_tags(text)
 
         usage = resp.usage
         return LLMResponse(

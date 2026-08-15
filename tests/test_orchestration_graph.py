@@ -327,8 +327,11 @@ def test_runner_resume_after_human_completes_graph():
     assert not runner.is_pending_human()
     # context 中应有 human 节点写入的响应文本
     assert ctx.get(ContextKey[str]("test.human_text")) == "ok"
-    # 所有 3 个节点都已记录
-    assert len(ctx.history()) == 3
+    # 所有 3 个节点都已执行。
+    # 注意：human 节点经历两次生命周期记录（pending_human 等待 + success 收到响应），
+    # 故历史条数 > 节点数，这里按「唯一 node_id 集合」断言更稳健。
+    executed_node_ids = {h["node_id"] for h in ctx.history()}
+    assert executed_node_ids == {"a", "human", "b"}
 
 
 def test_runner_resume_without_pending_human_raises():

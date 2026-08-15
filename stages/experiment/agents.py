@@ -142,6 +142,15 @@ class AnomalyReportSchema(BaseModel):
     suggestion: str = Field(default="", description="处置建议")
 
 
+class OutcomeAssessItem(BaseModel):
+    """单条方法改进建议（可执行、可溯源）。"""
+
+    target: str = Field(description="建议作用对象：claim_id / experiment_id / method 文档")
+    action: str = Field(description="具体动作：补证据/修代码/重跑/调参/换基线/改方法")
+    reason: str = Field(description="给出该建议的实验证据（实验结果/metrics/异常）")
+    expected: str = Field(description="执行后期望达成的效果")
+
+
 class OutcomeAssessSchema(BaseModel):
     """实验成败评估 schema。"""
 
@@ -153,6 +162,14 @@ class OutcomeAssessSchema(BaseModel):
         description="proceed_to_writing / rollback_to_ideation / retry_experiment / abort"
     )
     summary: str = Field(description="一句话总结")
+    advice: list[OutcomeAssessItem] = Field(
+        default_factory=list,
+        description=(
+            "方法改进建议列表（2-6 条）: 基于实验结果给 Claim 验证/方法设计/实验配置"
+            "的具体可执行建议。每条必须指向具体 target，说明 action/reason/expected，"
+            "禁止空泛话术（如'建议优化模型'）。"
+        ),
+    )
 
 
 # ===== ExperimentConfigAgent =====
@@ -1184,8 +1201,12 @@ class ExperimentOutcomeAssessAgent(AgentNode):
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
         dry_run: bool = ctx.get(DRY_RUN, True)
 
-        # dry_run：诚实返回失败（占位数据无法验证 Claim）
+        # dry_run：诚实返回失败（占位数据无法验证 Claim），
+        # 但也要给出结构化、可执行的方法改进建议（而非一句话话术）
         if dry_run:
+            advice = self._build_rule_advice(
+                claim_statuses=[], exp_summaries=[], anomaly_report=""
+            )
             outcome = {
                 "success": False,
                 "verified_claim_ids": [],
@@ -1197,6 +1218,7 @@ class ExperimentOutcomeAssessAgent(AgentNode):
                     "诚实返回 success=False，不强行进入论文写作阶段。"
                     "启用真实 API 调用（SRA_DRY_RUN=false）后，将基于真实实验结果评估。"
                 ),
+                "advice": advice,
             }
             output = ExperimentOutcomeAssessOutput(outcome=outcome)
             return NodeResult(
@@ -1214,6 +1236,7 @@ class ExperimentOutcomeAssessAgent(AgentNode):
                 "inconclusive_claim_ids": list(input_obj.claim_ids),
                 "recommendation": "abort",
                 "summary": "KnowledgeStore 未注入，无法评估",
+                "advice": [],
             }
             output = ExperimentOutcomeAssessOutput(outcome=outcome)
             return NodeResult(
@@ -1308,33 +1331,57 @@ class ExperimentOutcomeAssessAgent(AgentNode):
             recommendation = "retry_experiment"
             summary = f"实验无法定论（{len(inconclusive_claim_ids)} 个 Claim），建议重试实验"
 
-        # 可选：调用 LLM 做更细致的评估（保留范式，默认不调用以节省 tokens）
-        # 若需 LLM 评估，取消以下注释：
-        # if registry is not None:
-        #     try:
-        #         result = registry.structured_output(
-        #             task_type=self.task_type,
-        #             output_schema=OutcomeAssessSchema,
-        #             system=(
-        #                 "你是科研评估助手。根据实验结果判断每个 Claim 是被验证、反驳还是无法定论。"
-        #                 "实验失败是科研常态，不应强行进入写作阶段。"
-        #                 "请结合 metrics 量化数据与 Claim 语义判断验证结论。"
-        #             ),
-        #             prompt=(
-        #                 f"待验证 Claim: {claim_statuses}\n"
-        #                 f"{results_text}\n"
-        #                 f"实验明细: {exp_summaries}\n"
-        #                 f"异常报告: {input_obj.anomaly_report}"
-        #             ),
-        #         )
-        #         success = result.success
-        #         verified_claim_ids = result.verified_claim_ids
-        #         refuted_claim_ids = result.refuted_claim_ids
-        #         inconclusive_claim_ids = result.inconclusive_claim_ids
-        #         recommendation = result.recommendation
-        #         summary = result.summary
-        #     except Exception as e:
-        #         logger.warning("OutcomeAssess LLM 调用失败，用规则判断: %s", e)
+        # ---- 方法改进建议（advice）：替代原先的一句话话术 ----
+        advice: list[dict] = self._build_rule_advice(
+            claim_statuses=claim_statuses,
+            exp_summaries=exp_summaries,
+            anomaly_report=input_obj.anomaly_report,
+        )
+
+        # 尝试用 LLM 生成更细致的逐条建议（失败/无 registry 时保留规则建议）
+        if registry is not None:
+            try:
+                result = registry.structured_output(
+                    task_type=self.task_type,
+                    output_schema=OutcomeAssessSchema,
+                    system=(
+                        "你是科研评估助手。根据实验结果判断每个 Claim 是被验证、反驳还是无法定论。"
+                        "实验失败是科研常态，不应强行进入写作阶段。"
+                        "请结合 metrics 量化数据与 Claim 语义判断验证结论，"
+                        "并给出 2-6 条**可执行**的方法改进建议：每条必须指向具体 "
+                        "target（claim_id/experiment_id/method 文档），包含 action/reason/expected，"
+                        "禁止空泛话术（如'建议优化模型'）。"
+                    ),
+                    prompt=(
+                        f"待验证 Claim: {json.dumps(claim_statuses, ensure_ascii=False)}\n"
+                        f"{results_text}\n"
+                        f"实验明细: {json.dumps(exp_summaries, ensure_ascii=False)}\n"
+                        f"异常报告: {input_obj.anomaly_report or '(无)'}"
+                    ),
+                )
+                # 用 LLM 的验证结论覆盖规则判断（advice 若无则保留规则建议）
+                if result.verified_claim_ids or result.refuted_claim_ids or result.inconclusive_claim_ids:
+                    verified_claim_ids = list(result.verified_claim_ids)
+                    refuted_claim_ids = list(result.refuted_claim_ids)
+                    inconclusive_claim_ids = list(result.inconclusive_claim_ids)
+                if result.recommendation:
+                    recommendation = result.recommendation
+                if result.summary:
+                    summary = result.summary
+                if getattr(result, "advice", None) is not None:
+                    llm_advice = [
+                        {
+                            "target": a.target,
+                            "action": a.action,
+                            "reason": a.reason,
+                            "expected": a.expected,
+                        }
+                        for a in result.advice
+                    ]
+                    if llm_advice:
+                        advice = llm_advice
+            except Exception as e:
+                logger.warning("OutcomeAssess LLM 调用失败，用规则判断: %s", e)
 
         outcome = {
             "success": success,
@@ -1343,6 +1390,7 @@ class ExperimentOutcomeAssessAgent(AgentNode):
             "inconclusive_claim_ids": inconclusive_claim_ids,
             "recommendation": recommendation,
             "summary": summary,
+            "advice": advice,
         }
 
         output = ExperimentOutcomeAssessOutput(outcome=outcome)
@@ -1353,11 +1401,96 @@ class ExperimentOutcomeAssessAgent(AgentNode):
         )
 
     @staticmethod
-    def _extract_metrics_from_summary(result_summary: str) -> dict:
-        """从 result_summary 中提取 metrics。
+    def _build_rule_advice(
+        claim_statuses: list[dict],
+        exp_summaries: list[dict],
+        anomaly_report: str = "",
+    ) -> list[dict]:
+        """规则引擎生成可执行的方法改进建议（advice）。
 
-        result_summary 形如 "metrics: {...}\n..."，提取首个完整 JSON 对象。
+        替代原本"一句话话术"：每条 advice 指向具体 target（claim_id / experiment_id /
+        method 文档），说明 action / reason / expected。用于 dry_run 与 LLM 失败兜底。
         """
+        advice: list[dict] = []
+        has_anomaly = bool(anomaly_report and "无异常" not in anomaly_report)
+
+        # 1) 按 Claim 状态逐条给出验证/补证建议
+        for c in claim_statuses:
+            st = c.get("status", "draft")
+            cid = c.get("claim_id", "")
+            statement = (c.get("statement") or "")[:60]
+            if st == ClaimStatus.VERIFIED.value:
+                advice.append({
+                    "target": cid,
+                    "action": "补充预期结果细节",
+                    "reason": f"Claim 已被实验验证（{statement}…）",
+                    "expected": "在论文 Experiments 章节给出量化指标与显著性说明",
+                })
+            elif st == ClaimStatus.REFUTED.value:
+                advice.append({
+                    "target": cid,
+                    "action": "回退设计并重构假设",
+                    "reason": f"Claim 被实验反驳（{statement}）",
+                    "expected": "修改方法假设或缩小适用范围，再重新实验验证",
+                })
+            else:
+                advice.append({
+                    "target": cid,
+                    "action": "补充文献证据或实验结果",
+                    "reason": f"Claim 处于 {st}，证据不足（{statement}）",
+                    "expected": "补齐证据链后状态升级为 verified，才能在论文中引用",
+                })
+
+        # 2) 按实验状态给出具体改进点
+        for e in exp_summaries:
+            eid = e.get("exp_id", "")
+            name = e.get("name", "")
+            status = e.get("status", "")
+            metrics = e.get("metrics") or {}
+            if status == ExperimentStatus.FAILED.value:
+                advice.append({
+                    "target": eid,
+                    "action": "修复实验代码或依赖后重跑",
+                    "reason": f"实验 {name} 运行失败",
+                    "expected": "成功产出 metrics 以便验证关联 Claim",
+                })
+            elif status == ExperimentStatus.ANOMALY_DETECTED.value:
+                advice.append({
+                    "target": eid,
+                    "action": "按异常报告定位根因（loss spike/NaN/不收敛）",
+                    "reason": f"实验 {name} 检测到异常：{str(e.get('anomaly_notes') or '')[:80]}",
+                    "expected": "消除异常后重跑，得到有效指标",
+                })
+            elif status == ExperimentStatus.COMPLETED.value and not metrics:
+                advice.append({
+                    "target": eid,
+                    "action": "补全结构化 metrics / 检查结果解析",
+                    "reason": f"实验 {name} 已完成但未提取到 metrics",
+                    "expected": "提供可比较的量化指标，支撑 Claim 验证",
+                })
+
+        # 3) 全局异常
+        if has_anomaly:
+            advice.append({
+                "target": "experiment 阶段",
+                "action": "先解决异常再评估实验结果",
+                "reason": f"异常报告：{anomaly_report[:100]}",
+                "expected": "异常清零后实验结论可信",
+            })
+
+        # 4) 去重（同 target+action 只留一条）
+        seen: set = set()
+        dedup: list[dict] = []
+        for a in advice:
+            key = (a["target"], a["action"])
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(a)
+        return dedup[:8]
+
+    @staticmethod
+    def _extract_metrics_from_summary(result_summary: str) -> dict:
         if not result_summary:
             return {}
         idx = result_summary.find("metrics:")

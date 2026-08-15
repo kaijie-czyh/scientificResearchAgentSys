@@ -24,6 +24,7 @@ from core.llm.base import (
     LLMRequest,
     LLMResponse,
     StructuredOutputRequest,
+    strip_think_tags,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -70,6 +71,8 @@ class OpenAIProvider(LLMProvider):
             raise LLMError(f"OpenAI complete 调用失败: {e}") from e
 
         text = resp.choices[0].message.content or ""
+        # 剥离推理模型（MiniMax-M3 等）拼进 content 的 <think> 思考链，只留最终答复
+        text = strip_think_tags(text)
         usage = resp.usage
         return LLMResponse(
             text=text,
