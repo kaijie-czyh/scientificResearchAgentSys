@@ -1,0 +1,958 @@
+% =====================================================================
+% SciFinder-Agent 系统说明文档（v1.0 · 2026-08-15）
+% 适用版本：仓库 main 分支（含 PR #4 feat/code-update-v2 已合并）
+% 编译命令：pdflatex + bibtex + pdflatex ×2
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\usepackage{ctex}
+
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage{listings}
+\usepackage{framed}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black,
+    pdfauthor={SciFinder-Agent Team},
+    pdftitle={SciFinder-Agent 系统说明文档},
+    pdfsubject={User Manual · v1.0}
+}
+
+% ----- 标题样式 -----
+\titleformat{\section}{\large\bfseries\color{blue!60!black}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries\color{black}}{\thesubsection}{0.5em}{}
+\titleformat{\subsubsection}{\small\bfseries}{\thesubsubsection}{0.4em}{}
+
+% ----- 页眉页脚 -----
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small SciFinder-Agent 系统说明文档}
+\fancyhead[R]{\small v1.0 \textbar{} 2026-08-15}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ----- listings 风格 -----
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{shstyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{blue!60!black}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\small,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    frame=single,
+    rulecolor=\color{codegray}
+}
+\lstset{style=shstyle}
+
+% ----- 元信息 -----
+\title{\textbf{SciFinder-Agent 系统说明文档} \\[0.3em]
+       \large 用户手册 \textbar{} 架构参考 \textbar{} 运维指南 \\[0.2em]
+       \normalsize \textmd{适用版本：v1.0 \textbar{} 2026-08-15}}
+\author{材构发现智能体团队 \\ \small \texttt{scifinder-agent@github.com}}
+\date{\today}
+
+% =====================================================================
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent 本文档是 SciFinder-Agent 的系统说明文档，覆盖从安装、运行、配置、功能使用到运维部署的全过程。读者对象包括：
+
+\begin{itemize}[leftmargin=2em]
+\item \textbf{领域研究者}（材料/化学/生物学）：希望使用本系统辅助自己的研究，能直接根据第 4--7 章上手；
+\item \textbf{开发者}（系统集成）：希望理解模块间接口和扩展点，能从第 3 章与第 12 章的 API 参考入手；
+\item \textbf{运维人员}（部署）：希望了解 HF Space / Replit / 本地三种部署方案，从第 10 章入手；
+\item \textbf{评审者/技术评委}（快速了解系统全貌）：可直接读第 1--3 章（系统概述、架构概览、模块清单）。
+\end{itemize}
+
+文档以仓库 \texttt{main} 分支（已合并 PR \#4 \texttt{feat/code-update-v2}）为基准撰写，与代码同步更新。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{系统概述}
+% =====================================================================
+
+\subsection{项目定位}
+
+SciFinder-Agent 是面向小数据-强物理约束体系的科研自动化平台。系统以 5 阶段流水线（研究 / 构思 / 设计 / 实验 / 撰写）覆盖一项研究的完整生命周期，并在 5 阶段之外单独维护一个 \textbf{Discovery 子模块}，负责从已积累的文献与材料知识中发现新的构效关系候选。
+
+与同类系统的区别不在于"是否使用大模型"，而在于：
+\begin{itemize}[leftmargin=2em]
+\item \textbf{物理硬筛与 LLM 平级}：Discovery 子模块在生成候选之前/之后都做物理一致性校验，化学式非法、电中性违规、ZT 超出物理可达范围等问题直接剪枝，不消耗 LLM 调用次数。
+\item \textbf{失败可重入}：单节点失败不中断全流程；KV 表 + SQLite 表 + 节点历史三种通信载体保证恢复时数据不丢。
+\item \textbf{指标自检}：9 类系统级指标自动计算（节点完成率、KV 覆盖率、文献抓取率、5 维评分分布等），不需要人工拼凑评估数据。
+\end{itemize}
+
+\subsection{目标体系}
+
+系统在材料科学方向上跑通，主要面向：
+\begin{itemize}[leftmargin=2em]
+\item \textbf{热电材料}（Bi$_2$Te$_3$ 系 / SnSe / half-Heusler / PbTe）；
+\item \textbf{催化剂}（光催化 / 电催化 CO$_2$ 还原 / OER）；
+\item \textbf{钙钛矿型材料}（太阳能电池 / 铁弹畴调控）；
+\item \textbf{高熵合金与晶态储氢材料}。
+\end{itemize}
+
+但流水线框架并不绑定特定体系——只要能定义一个"研究主题 → 子问题 → 文献 → 候选 → 证据"的循环，理论上任意学科都可接入。
+
+\subsection{版本与依赖}
+
+\begin{table}[h]
+\centering
+\caption{版本依赖一览（截至 v1.0）}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{项} & \textbf{值} \\
+\midrule
+Python & 3.10+ \\
+Node 数 & 43（37 流水线 + 6 Discovery） \\
+测试数 & 326（pytest 单元 + 集成 + 端到端）\\
+LLM Provider & MiniMax-M3 / Anthropic / OpenAI 兼容 / 本地 vLLM \\
+数据库 & SQLite 3（项目级 \texttt{knowledge.db}）\\
+向量库 & ChromaDB 本地持久化 \\
+Web 前端 & 原生 HTML/CSS/JS，零构建 \\
+文档格式 & Markdown + LaTeX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{系统架构}
+% =====================================================================
+
+\subsection{6 层结构}
+
+系统分为 6 层，每层有明确的职责边界：
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{应用层}：Web Dashboard（FastAPI）、CLI（runtime/cli.py）、HF Space 镜像、Replit 后端。
+\item \textbf{编排层}：\texttt{core/orchestration/} 下的 43 个 Agent 节点，调度顺序由 \texttt{orchestration\_graph.py} 的拓扑结构定义。
+\item \textbf{工具与 LLM}：\texttt{core/tools/}（数据源、向量检索、冲突裁决、5 维评分） + \texttt{core/llm/}（多 Provider 路由、Prompt 模板、结构化输出校验）。
+\item \textbf{数据与知识}：KV 表（31 关键字段）+ SQLite（Paper / material / claim / idea / gap / conflict / evidence）+ ChromaDB（向量）。
+\item \textbf{外部数据源}：arXiv / Semantic Scholar / Sciverse / Materials Project / OQMD / NOMAD / MinerU PDF 解析。
+\item \textbf{系统级指标}：\texttt{core/observability/} + \texttt{tools/export\_metrics\_report.py}，自动产出 9 类指标。
+\end{enumerate}
+
+完整 6 层架构图见 \texttt{docs/architecture.svg}。
+
+\subsection{节点拓扑（43 节点）}
+
+系统节点分为 3 类：
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{流水线节点（37）}：分布在 5 阶段中，每个节点有明确的输入输出 Schema；
+\item \textbf{Discovery 子模块节点（6）}：\texttt{hypothesis\_seed} / \texttt{search\_space} / \texttt{llm\_guided\_search} / $\star$\texttt{physics\_hard\_filter} / \texttt{discovery\_validate} / \texttt{discovery\_report}；
+\item \textbf{编排基础节点（基础设施）}：human checkpoint / dry-run 检查 / 错误重试 / 状态持久化。
+\end{enumerate}
+
+每个节点的详细 I/O 见 \texttt{core/orchestration/registry.py} 中的注册表。节点必要性的辩护见仓库根目录 \texttt{节点必要性与通信设计.md}。
+
+\subsection{通信载体}
+
+节点之间通过三种载体交换数据，按用途分工：
+
+\begin{table}[h]
+\centering
+\caption{三种通信载体的分工}
+\begin{tabular}{@{}lp{4cm}p{6cm}@{}}
+\toprule
+\textbf{载体} & \textbf{适用场景} & \textbf{关键字段} \\
+\midrule
+KV 表 & 跨阶段状态 / 配置参数 & \texttt{topic}, \texttt{subqueries}, \texttt{search\_keywords}, \texttt{knowledge.db} \\
+SQLite 表 & 结构化数据 & \texttt{papers}, \texttt{materials}, \texttt{material\_properties}, \texttt{claims}, \texttt{research\_gaps}, \texttt{research\_conflicts}, \texttt{evidence\_log} \\
+Node History & 节点执行轨迹 / 失败恢复 & \texttt{node\_id}, \texttt{status}, \texttt{started\_at}, \texttt{ended\_at}, \texttt{summary} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{模块清单}
+% =====================================================================
+
+\subsection{核心模块（\texttt{core/}）}
+
+\begin{table}[h]
+\centering
+\small
+\caption{核心模块清单}
+\begin{tabular}{@{}lp{8cm}@{}}
+\toprule
+\textbf{模块} & \textbf{职责} \\
+\midrule
+\texttt{orchestration/} & 节点注册、状态机、依赖图、执行调度 \\
+\texttt{knowledge/} & KV 表 + SQLite 仓库；Paper / Material / Claim / Gap / Conflict / Evidence Log \\
+\texttt{llm/} & MiniMax / Anthropic / OpenAI 兼容 / 本地 vLLM；Prompt 模板；结构化输出校验 \\
+\texttt{tools/} & 数据源适配器；向量检索；任务路由；5 维评分；冲突裁决；符号回归；材料缺口分析 \\
+\texttt{physics\_consistency/} & 118 元素周期表 + 化学式解析 + DFS 价态 + 18 电子规则 + Goldschmidt + 物理量范围 \\
+\texttt{observability/} & 9 类系统级指标聚合 + 跨项目扫描 + 报告导出 \\
+\texttt{state/} & 全局 KV 状态机；项目级 working dir；checkpoint 序列化 \\
+\texttt{artifacts/} & 产物落盘（报告 Markdown / CSV / HTML）\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{5 阶段流水线（\texttt{stages/}）}
+
+\begin{itemize}[leftmargin=2em]
+\item \texttt{research/agents.py}：研究主题 $\to$ 子问题分解 $\to$ 文献抓取 $\to$ 文献筛选与冲突裁决；
+\item \texttt{ideation/agents.py}：从研究输出生成 Idea（含新颖性 / 可行性 / Gap 相关性三维评分）；
+\item \texttt{design/agents.py}：Idea $\to$ 实验设计（含材料 CV 验证、工艺参数）；
+\item \texttt{experiment/agents.py}：实验代码生成与本地执行（默认 local，可改 remote SSH）；
+\item \texttt{writing/agents.py}：结果 $\to$ 论文草稿（含引言 / 方法 / 结果 / 讨论 / 参考文献）。
+\end{itemize}
+
+\subsection{Discovery 子模块（\texttt{stages/discovery/agents.py}）}
+
+独立于 5 阶段的构效关系发现模块，详见第 7 章。
+
+\subsection{运行时与 Web}
+
+\begin{itemize}[leftmargin=2em]
+\item \texttt{runtime/cli.py}：无界面命令行入口；
+\item \texttt{runtime/pipeline.py}：流水线驱动器（CLI 与 Web 共用）；
+\item \texttt{web/api.py}：FastAPI 应用，38 个 API 端点（详见第 12 章）；
+\item \texttt{web/static/}：原生 HTML / CSS / JS 单页前端，零构建，零外部依赖。
+\end{itemize}
+
+% =====================================================================
+\section{安装与运行}
+% =====================================================================
+
+\subsection{环境准备}
+
+\begin{enumerate}[leftmargin=2em]
+\item Python 3.10 或更高；
+\item 推荐使用虚拟环境：
+\begin{verbatim}
+python -m venv .venv
+source .venv/bin/activate    # Linux/macOS
+# 或 Windows PowerShell： .venv\Scripts\Activate.ps1
+\end{verbatim}
+\item 安装依赖：
+\begin{verbatim}
+pip install -r requirements.txt
+\end{verbatim}
+\item 复制环境配置：
+\begin{verbatim}
+cp .env.example .env
+# 编辑 .env，至少填入 MINIMAX_API_KEY
+\end{verbatim}
+\end{enumerate}
+
+\subsection{最小配置（dry\_run 模式）}
+
+如果暂不接入真实 LLM，把 \texttt{SRA\_DRY\_RUN=true} 保持打开，系统会用占位数据完成全部流水线，便于做架构验证 / 教学演示 / 离线开发。
+
+\subsection{配置真实 LLM}
+
+\begin{enumerate}[leftmargin=2em]
+\item 登录 \texttt{https://platform.minimaxi.com/console/plan} 申请 sk-cp key；
+\item 编辑 \texttt{.env}：
+\begin{verbatim}
+MINIMAX_API_KEY=sk-cp-your-key-here
+MINIMAX_BASE_URL=https://api.minimaxi.com/v1
+SRA_DRY_RUN=false
+\end{verbatim}
+\item \textbf{注意}：国内版 key（platform.minimaxi.com）必须配国内版 endpoint（api.minimaxi.com），国际版同理。key 与 endpoint 不匹配会返回 401 invalid api key。
+\end{enumerate}
+
+\subsection{启动 Web 服务}
+
+\begin{verbatim}
+python -m web.api
+# 默认端口 8000，可通过 SRA_WEB_PORT 覆盖
+# 启动后访问 http://localhost:8000
+\end{verbatim}
+
+启动成功后会看到一行日志：
+\begin{verbatim}
+[SRA] 全局随机种子已设置: 42（可用 SRA_SEED 覆盖）
+[SRA] Web 服务已启动：http://0.0.0.0:8000
+\end{verbatim}
+
+\subsection{启动 CLI 模式}
+
+\begin{verbatim}
+# 运行完整流程
+python -m runtime.cli run --topic "half-Heusler 热电材料" --no-dry-run
+
+# 指定项目 ID，便于后续 resume
+python -m runtime.cli run --topic "..." --project-id my_proj_001
+
+# 仅跑到某阶段
+python -m runtime.cli run --topic "..." --stop-before experiment
+\end{verbatim}
+
+% =====================================================================
+\section{核心功能使用：5 阶段流水线}
+% =====================================================================
+
+\subsection{典型工作流}
+
+一个完整流程的标准路径：
+
+\begin{enumerate}[leftmargin=2em]
+\item 用户在前端或 CLI 输入研究主题（如"half-Heusler 热电材料 ZT 优化"）；
+\item \textbf{Research 阶段}（约 5--15 分钟）：
+  \begin{itemize}
+  \item \texttt{topic\_refine} 把主题精炼为可检索的子问题；
+  \item \texttt{subquery\_decompose} 拆解为 3--8 个子问题；
+  \item \texttt{paper\_fetch} 并行调用 arXiv + Semantic Scholar + Sciverse 三源；
+  \item \texttt{paper\_filter} 用 5 维度评分保留 Top-18；
+  \item \texttt{material\_extraction} 抽取材料组成、性能数据、合成工艺；
+  \item \texttt{cross\_validate} 在多源之间做交叉验证；
+  \item \texttt{conflict\_adjudicate} 处理文献分歧；
+  \item \texttt{research\_gap} 提炼 Research Gap。
+  \end{itemize}
+\item \textbf{Ideation 阶段}（约 3--5 分钟）：从 Research 输出生成 Idea，含新颖性 / 可行性 / Gap 相关性三维评分；
+\item \textbf{Design 阶段}（约 5--10 分钟）：Idea $\to$ 实验设计（材料 CV 验证、工艺参数、合成路线）；
+\item \textbf{Experiment 阶段}（约 10--60 分钟，依赖代码运行时间）：执行实验代码（默认 local subprocess）；
+\item \textbf{Writing 阶段}（约 5--10 分钟）：把结果组织成论文草稿。
+\end{enumerate}
+
+\subsection{断点恢复}
+
+任何节点失败或中断后，下次启动可以使用 resume：
+
+\begin{verbatim}
+python -m runtime.cli resume --project-id my_proj_001
+\end{verbatim}
+
+\texttt{resume} 会从 \texttt{kv\_store} 读出所有已完成节点的状态，跳过已完成的节点，从第一个失败的节点或第一个未开始但需执行的节点继续。
+
+\subsection{人机协同}
+
+Discovery 子模块与 Research 阶段都会触发 human checkpoint，把决策权交给领域专家。系统在以下情况触发人工确认：
+\begin{itemize}[leftmargin=2em]
+\item 文献冲突的最终裁决（当 IF 加权后置信度 $<$ 0.5 时）；
+\item 候选材料的实验风险等级（当 5 维评分 $<$ 0.5 时）；
+\item Discovery 输出的工程化建议（成本 / 安全 / 法规限制）。
+\end{itemize}
+
+人工响应通过 \texttt{POST /api/projects/\{project\_id\}/human-response} 提交。
+
+\subsection{产物清单}
+
+一个项目跑完，会在 \texttt{projects/<project\_id>/} 下产生：
+
+\begin{verbatim}
+projects/proj_xxx/
+├── knowledge.db          # SQLite 知识库
+├── artifacts/
+│   ├── research_report.md
+│   ├── full_report.md
+│   ├── gap_list.json
+│   ├── metrics.json
+│   └── cross_validation.csv
+└── experiments/          # 实验代码与日志
+\end{verbatim}
+
+每个产物都有对应的 Web 端点可下载（详见第 12 章 API 参考）。
+
+% =====================================================================
+\section{Web Dashboard 操作}
+% =====================================================================
+
+\subsection{主页布局}
+
+启动后访问 \texttt{http://localhost:8000}，主界面分为 4 个面板：
+\begin{itemize}[leftmargin=2em]
+\item \textbf{顶部状态栏}：节点完成率 / KV 覆盖率 / 系统级指标快照；
+\item \textbf{左侧项目列表}：所有项目按创建时间倒序；
+\item \textbf{中央工作区}：当前选中项目的阶段进度可视化；
+\item \textbf{右侧详情面板}：当前选中节点的输入/输出/日志。
+\end{itemize}
+
+\subsection{创建项目}
+
+\begin{enumerate}[leftmargin=2em]
+\item 点击左上"新建项目"按钮；
+\item 填写主题（如"half-Heusler 热电材料"）；
+\item 选择 dry-run / 真实运行；
+\item 点击"启动"，系统自动调度流水线。
+\end{enumerate}
+
+\subsection{查看进展}
+
+\begin{itemize}[leftmargin=2em]
+\item 进度条：5 阶段完成百分比；
+\item 节点历史：每个节点的执行时间、输入/输出、错误信息；
+\item KV 状态：当前所有 KV 字段的实际值；
+\item 实时日志：节点正在做的事（stdout 输出流）。
+\end{itemize}
+
+\subsection{查看产物}
+
+项目运行结束后，"产物" 面板会出现：
+\begin{itemize}[leftmargin=2em]
+\item \textbf{research\_report.md}：文献调研报告 Markdown 版；
+\item \textbf{full\_report.md}：包含全文 + 引用的完整报告；
+\item \textbf{gap\_list.json}：结构化的 Research Gap 清单；
+\item \textbf{cross\_validation.csv}：材料 CV 验证结果；
+\item \textbf{metrics.json}：系统级指标快照。
+\end{itemize}
+
+每个产物都有"下载"按钮，对应后端 \texttt{/api/projects/\{id\}/download/\{artifact\_type\}}。
+
+\subsection{触发 Discovery}
+
+在项目的"Discovery" 标签下点击"运行 Discovery"，系统会：
+\begin{enumerate}[leftmargin=2em]
+\item 读取已有材料 + 性质 + 引用关系；
+\item 生成搜索空间（基于材料的 categorical + continuous 变量）；
+\item 启动 MCTS + LLM 引导搜索（可设置轮数）；
+\item 输出候选 + 5 维评分 + 实验指导。
+\end{enumerate}
+
+\subsection{系统级指标面板}
+
+顶部"系统级指标" 标签显示 9 类指标的实时数据：
+\begin{itemize}[leftmargin=2em]
+\item 节点完成率 / KV 覆盖率；
+\item 文献抓取率（arXiv / S2 / Sciverse 三源命中率）；
+\item 5 维评分分布（P25 / 中位数 / P75）；
+\item Gap 质量分布 / CV 一致性 / 证据链完整度；
+\item 降级触发率 / 流水线效率。
+\end{itemize}
+
+可通过 \texttt{GET /api/metrics/system} 直接读 JSON，或 \texttt{GET /api/metrics/system/markdown} 拿 Markdown 版。
+
+% =====================================================================
+\section{Discovery 子模块}
+% =====================================================================
+
+\subsection{设计理念}
+
+Discovery 子模块是 SciFinder-Agent 的"科学创造"模块。它在 5 阶段流水线之外独立运行，输入是项目的 Research + Material + Property 累积知识，输出是带 5 维评分与物理硬筛证据链的构效关系候选。
+
+核心理念：
+\begin{itemize}[leftmargin=2em]
+\item \textbf{LLM 发散 + 规则收敛}：MCTS 搜索由 LLM 在规则允许的搜索空间内做发散探索；
+\item \textbf{物理硬筛兜底}：化学式非法 / 电中性违规 / ZT 超范围等问题在剪枝阶段直接淘汰，不消耗 LLM 调用次数；
+\item \textbf{评分透明}：每条候选的 5 维评分独立给出，领域专家可逐项质疑。
+\end{itemize}
+
+\subsection{6 个节点的工作流}
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{\texttt{hypothesis\_seed}}：从 Research Gap 抽取初始假设种子；
+\item \textbf{\texttt{search\_space}}：定义搜索空间（变量类型 / 范围 / 约束）；
+\item \textbf{\texttt{llm\_guided\_search}}：MCTS + LLM 引导搜索（默认 10 轮，可在 \texttt{.env} 中调 \texttt{SRA\_DISCOVERY\_ROUNDS}）；
+\item \textbf{$\star$\texttt{physics\_hard\_filter}}：物理一致性硬筛（118 元素价态 + DFS + 18e + Goldschmidt + 物理量范围）；
+\item \textbf{\texttt{discovery\_validate}}：双路交叉验证（Materials Project + 内置规则，缺 MP key 时降级为单路）；
+\item \textbf{\texttt{discovery\_report}}：5 维评分报告（外推安全 / 文献密度 / 机制论证 / CV 一致性 / 预测区间合理性）。
+\end{enumerate}
+
+\subsection{5 维度可信度评分}
+
+每条候选输出 5 维独立分数（0--1）：
+
+\begin{table}[h]
+\centering
+\caption{5 维度评分定义与权重}
+\begin{tabular}{@{}lp{6cm}l@{}}
+\toprule
+\textbf{维度} & \textbf{定义} & \textbf{权重} \\
+\midrule
+外推安全 & 候选与数据库已知样本的空间距离 & 0.20 \\
+文献密度 & 支撑该候选的文献数量 / 期刊质量 / 新旧 & 0.25 \\
+机制论证 & 物理原理 / 因果链 / 量化解释完整度 & 0.20 \\
+CV 一致性 & Materials Project + 规则两路一致率 & 0.20 \\
+预测区间合理性 & 预测性能是否在已知物理边界内 & 0.15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{物理一致性硬筛（v2.1 关键能力）}
+
+硬筛做两层嵌入：
+
+\begin{itemize}[leftmargin=2em]
+\item \textbf{生成前}：候选变量组合必须满足搜索空间约束 + 物理可达范围；
+\item \textbf{生成后}：候选配置 $\to$ 实际化学式 $\to$ 化学式合法性 / 电中性 / 18 电子规则 / Goldschmidt / 物理量范围。
+\end{itemize}
+
+实测样例：
+
+\begin{table}[h]
+\centering
+\small
+\caption{物理硬筛实测（节选）}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{候选} & \textbf{判定} & \textbf{原因} \\
+\midrule
+Bi$_2$Te$_3$ & 通过 & 化学式合法 + 电中性 OK \\
+SnSe & 通过 & 化学式合法 + 电中性 OK \\
+ZrNiSn & 通过 & 18 电子规则（金属间化合物）\\
+Novec-7100 & \textbf{拒绝} & 未知元素 No \\
+Bi$_2$Te$_3$, ZT=50 & \textbf{拒绝} & ZT 超出物理可达范围 \\
+合成温度 $<$ 0 K & \textbf{拒绝} & 违反热力学 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{数据源与知识库}
+% =====================================================================
+
+\subsection{外部数据源}
+
+\begin{table}[h]
+\centering
+\small
+\caption{8 个外部数据源}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{来源} & \textbf{类型} & \textbf{许可证} & \textbf{是否必填} \\
+\midrule
+arXiv & 学术预印本 & 公开 & 否（默认）\\
+Semantic Scholar & 学术检索 & 公开 + 可选 token & 否（默认）\\
+Sciverse & 深度解析文献 & 学术 token & 推荐（GOAI 方向三）\\
+Materials Project & 材料结构 + 性能 & X-API-KEY & 路线 A 推荐 \\
+OQMD & 开放量子材料 & 公开 & 否（可选）\\
+NOMAD & 材料档案 & 公开 & 否（可选）\\
+MinerU & PDF 解析 & token & 否（可选）\\
+LLM Provider (6) & 文本生成 & OpenAI 兼容 & 是 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+所有来源登记在 \texttt{core/tools/data\_provenance.py}，包含 URL / 数据类型 / 访问方式 / 许可证 / 最后访问时间。
+
+\subsection{SQLite 表结构}
+
+知识库（每个项目一个 \texttt{knowledge.db}）包含以下表：
+
+\begin{itemize}[leftmargin=2em]
+\item \texttt{kv\_store}：通用 KV（topic / subqueries / search\_keywords / 各种配置）；
+\item \texttt{papers}：文献元数据（title / authors / year / venue / abstract / DOI / arxiv\_id）；
+\item \texttt{materials}：材料元数据（name / formula / category / doping\_info）；
+\item \texttt{material\_properties}：材料性质数据（property\_name / value / unit / evidence\_level）；
+\item \texttt{materials\_cross\_validation}：CV 验证结果；
+\item \texttt{claims}：结构化主张；
+\item \texttt{research\_gaps}：Research Gap 清单；
+\item \texttt{research\_conflicts}：文献冲突裁决记录；
+\item \texttt{evidence\_log}：检索溯源（subquery / source / paper\_id / evidence\_score / snippet）；
+\item \texttt{node\_history}：节点执行轨迹；
+\item \texttt{human\_requests} / \texttt{human\_responses}：人机协同；
+\item \texttt{metrics}：项目级指标快照。
+\end{itemize}
+
+\subsection{数据合规}
+
+本项目使用的所有外部数据源均在 \texttt{core/tools/data\_provenance.py} 集中登记与披露，符合赛题 §5.3 数据来源合规要求。主办方发放的 WAYB / WAYC 蛋白组学数据包与本项目"材料科学文献驱动"方向不直接对接，仅在附录"未来工作：跨学科扩展候选"中列出。
+
+% =====================================================================
+\section{系统级指标}
+% =====================================================================
+
+\subsection{9 类指标}
+
+\begin{table}[h]
+\centering
+\small
+\caption{9 类系统级指标（通过 \texttt{GET /api/metrics/system} 读取）}
+\begin{tabular}{@{}lp{8cm}@{}}
+\toprule
+\textbf{指标} & \textbf{计算方式} \\
+\midrule
+节点完成率 & success / total 节点数（含 5 阶段 + Discovery） \\
+KV 覆盖率 & 31 关键字段的实际填充率 \\
+文献抓取率 & arXiv / S2 / Sciverse 三源命中率加权 \\
+5 维评分分布 & P25 / 中位数 / P75（基于已完成 Discovery 的项目）\\
+Gap 质量分布 & 4 维度的均值与方差 \\
+CV 一致性 & Materials Project + 规则两路一致率 \\
+证据链 & 按阶段 manual / retrieved 占比 \\
+降级触发率 & 三路（MP / Sciverse / LLM）降级触发比例 \\
+流水线效率 & 平均耗时 / LLM 调用次数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{一键导出}
+
+\begin{verbatim}
+python tools/export_metrics_report.py --prefix metrics_real
+# 输出 metrics_real.json / .md / .csv / .html
+\end{verbatim}
+
+\subsection{Golden Set 回归测试}
+
+\texttt{tests/test\_golden\_set.py} 包含 8 个固定查询（覆盖热电 / 催化剂 / 电池 / 钙钛矿 / CO2 还原 / 铁电等体系），每次升级后跑一次以确保行为不漂移：
+
+\begin{verbatim}
+SRA_WEB_SKIP_GUARD=1 python -m pytest tests/test_golden_set.py -v
+\end{verbatim}
+
+% =====================================================================
+\section{部署}
+% =====================================================================
+
+\subsection{本地（开发）}
+
+\begin{verbatim}
+# 1. 启动后端
+python -m web.api
+# 2. 浏览器访问 http://localhost:8000
+\end{verbatim}
+
+\subsection{HuggingFace Space（推荐·零信用卡）}
+
+\begin{enumerate}[leftmargin=2em]
+\item 在 HF 创建一个 Docker SDK Space；
+\item 把仓库 push 到 HF（HF 会自动 build）；
+\item 在 Space Settings $\rightarrow$ Variables and secrets 配置：
+\begin{verbatim}
+MINIMAX_API_KEY = sk-cp-your-key
+# 可选：
+SCIVERSE_API_TOKEN = ...
+MATERIALS_PROJECT_API_KEY = ...
+\end{verbatim}
+\item Space 启动后访问 HF 提供的 URL 即可。
+\end{enumerate}
+
+Dockerfile 已内置在仓库根目录。HF 配置示例见 \texttt{.env.example.hf}。
+
+\subsection{Replit（免费后端）}
+
+\begin{enumerate}[leftmargin=2em]
+\item Replit 导入 GitHub 仓库；
+\item 选择 Python 模板，\texttt{.replit} 会自动加载；
+\item 配置 Secrets（等同于 \texttt{.env}）；
+\item Run $\rightarrow$ Webview 即可。
+\end{enumerate}
+
+注意：Replit 免费版会在无活动后休眠，重新唤醒需要 30--60 秒。
+
+\subsection{Render.com}
+
+仓库根目录 \texttt{render.yaml} 定义了 Render 部署配置。Render 会按 Dockerfile 构建并暴露端口。
+
+\subsection{反向代理与 HTTPS}
+
+生产环境建议用 Nginx / Caddy 反向代理 + Let's Encrypt 自动签发证书。HF Space 与 Render 都默认提供 HTTPS，无需额外配置。
+
+% =====================================================================
+\section{故障排查}
+% =====================================================================
+
+\subsection{常见问题速查表}
+
+\begin{table}[h]
+\centering
+\small
+\caption{常见问题与排查}
+\begin{tabular}{@{}p{4cm}p{6cm}p{3cm}@{}}
+\toprule
+\textbf{症状} & \textbf{可能原因} & \textbf{排查} \\
+\midrule
+LLM 调用 401 invalid api key & key 与 endpoint 不匹配 & 检查 \texttt{.env} 中 \texttt{MINIMAX\_API\_KEY} 与 \texttt{MINIMAX\_BASE\_URL} 是否都使用国内版（或都国际版）\\
+Sciverse 返回 403 & Token 失效 & 重新登录 \texttt{https://sciverse.opendatalab.com/tokens} \\
+Materials Project 报 401 & API key 失效 & 重新登录 \texttt{https://next-gen.materialsproject.org/api} \\
+流水线卡在 research 阶段 & 文献源超时 & 看 Node History 中 failed 节点；可设置 \texttt{SRA\_FETCH\_TIMEOUT=60} 提升超时 \\
+Discovery 输出为空 & 搜索空间过窄 & 检查 \texttt{search\_space} 节点的 categorical 变量列表 \\
+Web 启动报端口占用 & 8000 端口已被占 & 设置 \texttt{SRA\_WEB\_PORT=18090} 或关掉冲突进程 \\
+pytest 报 web guard & 测试试图启动 Web & 设置环境变量 \texttt{SRA\_WEB\_SKIP\_GUARD=1} \\
+前端显示"内存驻留" & HF Space 重启 / 休眠 & 重新创建项目（演示环境无持久化）\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{日志位置}
+
+\begin{itemize}[leftmargin=2em]
+\item \textbf{应用日志}：stdout（如用 systemd / Docker 则 \texttt{docker logs} / \texttt{journalctl}）；
+\item \textbf{节点日志}：每个项目的 \texttt{kv\_store} 表 + \texttt{node\_history} 表；
+\item \textbf{系统级指标快照}：每个项目目录下的 \texttt{metrics.json}。
+\end{itemize}
+
+\subsection{重置与清理}
+
+\begin{verbatim}
+# 删除单个项目（注意：不可恢复）
+rm -rf projects/proj_xxx/
+
+# 全量清理（危险！会删除所有项目）
+rm -rf projects/*/
+
+# 清理 Python 缓存
+find . -name __pycache__ -exec rm -rf {} + 2>/dev/null
+find . -name .pytest_cache -exec rm -rf {} + 2>/dev/null
+
+# 重新初始化
+mkdir -p projects/
+\end{verbatim}
+
+% =====================================================================
+\section{API 参考}
+% =====================================================================
+
+本节列出 38 个 API 端点的精简参考。完整 OpenAPI Schema 启动后可访问 \texttt{http://localhost:8000/openapi.json} 或 \texttt{/docs}（Swagger UI）。
+
+\subsection{项目管理}
+
+\begin{table}[h]
+\centering
+\small
+\caption{项目管理端点}
+\begin{tabular}{@{}p{6cm}p{2.5cm}p{5cm}@{}}
+\toprule
+\textbf{端点} & \textbf{方法} & \textbf{说明} \\
+\midrule
+\texttt{/api/projects} & POST & 创建项目 \\
+\texttt{/api/projects} & GET & 列出所有项目 \\
+\texttt{/api/projects/\{id\}/status} & GET & 查看项目状态 \\
+\texttt{/api/projects/\{id\}/run} & POST & 启动流水线 \\
+\texttt{/api/projects/\{id\}/run-topic-discovery} & POST & 启动 topic discovery \\
+\texttt{/api/projects/\{id\}/run-discovery} & POST & 启动 Discovery \\
+\texttt{/api/projects/\{id\}/discoveries} & GET & 列出 Discovery 结果 \\
+\texttt{/api/projects/\{id\}/recommendations} & GET & 候选推荐 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{数据查询}
+
+\begin{table}[h]
+\centering
+\small
+\caption{数据查询端点}
+\begin{tabular}{@{}p{6cm}p{2.5cm}p{5cm}@{}}
+\toprule
+\textbf{端点} & \textbf{方法} & \textbf{说明} \\
+\midrule
+\texttt{/api/projects/\{id\}/papers} & GET & 列出项目文献 \\
+\texttt{/api/projects/\{id\}/materials} & GET & 列出项目材料 \\
+\texttt{/api/projects/\{id\}/materials/\{mid\}/profile} & GET & 单材料详情 \\
+\texttt{/api/projects/\{id\}/gaps} & GET & 列出 Research Gap \\
+\texttt{/api/projects/\{id\}/conflicts} & GET & 列出文献冲突 \\
+\texttt{/api/projects/\{id\}/evidence} & GET & 检索证据链 \\
+\texttt{/api/projects/\{id\}/claims} & GET & 列出 Claim \\
+\texttt{/api/projects/\{id\}/experiments} & GET & 列出实验 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{写入与人机协同}
+
+\begin{table}[h]
+\centering
+\small
+\caption{写入与人机协同端点}
+\begin{tabular}{@{}p{6cm}p{2.5cm}p{5cm}@{}}
+\toprule
+\textbf{端点} & \textbf{方法} & \textbf{说明} \\
+\midrule
+\texttt{/api/projects/\{id\}/notes} & POST & 添加备注 \\
+\texttt{/api/projects/\{id\}/notes} & GET & 查看备注 \\
+\texttt{/api/projects/\{id\}/human-response} & POST & 提交人工决策 \\
+\texttt{/api/projects/\{id\}/conflicts/\{cid\}/adjudicate} & POST & 冲突裁决 \\
+\texttt{/api/projects/\{id\}/materials/re-extract} & POST & 重新抽取材料 \\
+\texttt{/api/projects/\{id\}/upload-paper} & POST & 上传文献 \\
+\texttt{/api/projects/\{id\}/upload-topic} & POST & 上传主题文件 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{报告与导出}
+
+\begin{table}[h]
+\centering
+\small
+\caption{报告与导出端点}
+\begin{tabular}{@{}p{7cm}p{2.5cm}p{4.5cm}@{}}
+\toprule
+\textbf{端点} & \textbf{方法} & \textbf{说明} \\
+\midrule
+\texttt{/api/projects/\{id\}/research-report} & GET & 文献调研报告 Markdown \\
+\texttt{/api/projects/\{id\}/discovery-detail} & GET & Discovery 详情 JSON \\
+\texttt{/api/projects/\{id\}/materials-cross-validation} & GET & 材料 CV 验证结果 \\
+\texttt{/api/projects/\{id\}/method-alignment} & GET & 方法对齐表 \\
+\texttt{/api/projects/\{id\}/dashboard} & GET & dashboard 综合数据 \\
+\texttt{/api/projects/\{id\}/download/\{artifact\}} & GET & 下载产物 \\
+\texttt{/api/projects/\{id\}/download/cross-validation} & GET & 下载 CV CSV \\
+\texttt{/api/projects/\{id\}/papers/import} & POST & 导入外部文献 \\
+\texttt{/api/projects/\{id\}/papers/\{pid\}/pdf} & GET & 抓取文献 PDF \\
+\texttt{/api/projects/\{id\}/unlinked-papers} & GET & 未链接文献列表 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{系统级}
+
+\begin{table}[h]
+\centering
+\small
+\caption{系统级端点}
+\begin{tabular}{@{}p{7cm}p{2.5cm}p{4.5cm}@{}}
+\toprule
+\textbf{端点} & \textbf{方法} & \textbf{说明} \\
+\midrule
+\texttt{/} & GET & Web 前端入口 \\
+\texttt{/static/\{path\}} & GET & 静态资源 \\
+\texttt{/api/data-sources} & GET & 8 个数据源登记 \\
+\texttt{/api/metrics/system} & GET & 9 类指标 JSON \\
+\texttt{/api/metrics/system/markdown} & GET & 9 类指标 Markdown \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{扩展与开发}
+% =====================================================================
+
+\subsection{添加新节点}
+
+在 \texttt{core/orchestration/} 下新增一个 Python 模块，定义节点函数：
+
+\begin{verbatim}
+from core.orchestration import register_node
+
+@register_node(
+    node_id="my_custom_node",
+    description="我的自定义节点",
+    inputs=["some_kv_key"],
+    outputs=["another_kv_key"],
+)
+def my_node(state, config):
+    # ... 业务逻辑
+    return {"status": "success", "result": ...}
+\end{verbatim}
+
+然后在 \texttt{orchestration\_graph.py} 中加入该节点到流水线。
+
+\subsection{添加新数据源}
+
+在 \texttt{core/tools/} 下新增一个适配器，实现统一接口：
+
+\begin{verbatim}
+class MyDataSourceAdapter:
+    name = "my_datasource"
+    license = "公开"
+    
+    def search(self, query: str, max_results: int = 20):
+        # ... 调用外部 API
+        return [{"paper_id": ..., "title": ..., ...}]
+\end{verbatim}
+
+并在 \texttt{core/tools/data\_provenance.py} 登记。
+
+\subsection{添加新的 LLM Provider}
+
+在 \texttt{core/llm/} 下新增 provider 实现，遵循 \texttt{BaseProvider} 接口。
+
+\subsection{自定义 5 维评分权重}
+
+编辑 \texttt{core/tools/discovery\_metrics.py} 中的 \texttt{DEFAULT\_WEIGHTS}。注意：修改后需要更新 \texttt{tests/test\_golden\_set.py} 中 Golden Set 的预期分值范围。
+
+\subsection{开发约定}
+
+\begin{itemize}[leftmargin=2em]
+\item 代码风格：PEP 8 + Black（CI 会自动检查）；
+\item 类型注解：尽量完整，但允许 \texttt{Any}；
+\item 测试：新模块必须有对应单元测试（覆盖率 $\geq$ 80\%）；
+\item 日志：使用 \texttt{logging} 模块，不用 \texttt{print()}；
+\item 异常：自定义异常类必须继承 \texttt{SRAError}。
+\end{itemize}
+
+% =====================================================================
+\section{附录}
+% =====================================================================
+
+\subsection{附录 A：术语表}
+
+\begin{itemize}[leftmargin=2em]
+\item \textbf{SRA}：SciFinder-Agent 缩写。
+\item \textbf{CV 一致性}：Cross-Validation consistency，材料参数在不同数据库 / 规则之间的一致率。
+\item \textbf{Discovery}**：从已有知识中发现新构效关系候选的子模块。
+\item \textbf{Human Checkpoint}：流水线中需要领域专家决策的节点。
+\item \textbf{KV 表}：键值表，存储跨阶段状态。
+\item \textbf{Node History}：节点执行轨迹。
+\item \textbf{PGEC}：Phonon-Glass Electron-Crystal，热电材料的优化范式。
+\item \textbf{Research Gap}：现有文献尚未充分覆盖的研究空白。
+\item \textbf{Streaming}：HF Space 重启后丢失状态（演示环境无持久化）。
+\item \textbf{ZT}：无量纲热电优值。
+\end{itemize}
+
+\subsection{附录 B：环境变量一览}
+
+\begin{table}[h]
+\centering
+\small
+\caption{系统环境变量}
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{变量} & \textbf{含义} \\
+\midrule
+\texttt{MINIMAX\_API\_KEY} & MiniMax API key（必填）\\
+\texttt{MINIMAX\_BASE\_URL} & MiniMax endpoint URL（必填）\\
+\texttt{SRA\_DRY\_RUN} & 是否启用占位数据（默认 true）\\
+\texttt{SRA\_SEED} & 全局随机种子（默认 42）\\
+\texttt{SRA\_WEB\_PORT} & Web 服务端口（默认 8000）\\
+\texttt{SRA\_WEB\_SKIP\_GUARD} & 测试时跳过 Web 启动检查（设 1）\\
+\texttt{SRA\_TASKS\_CONFIG\_PATH} & tasks.yaml 路径覆盖（可选）\\
+\texttt{SCIVERSE\_API\_TOKEN} & Sciverse token（可选）\\
+\texttt{MATERIALS\_PROJECT\_API\_KEY} & MP API key（可选）\\
+\texttt{SRA\_EXECUTION\_MODE} & 实验执行模式 local / remote（默认 local）\\
+\texttt{SRA\_REMOTE\_SSH\_HOST} & 远程 SSH 地址（remote 模式用）\\
+\texttt{SRA\_DISCOVERY\_ROUNDS} & Discovery MCTS 轮数（默认 10）\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{附录 C：架构图}
+
+完整 6 层 + 43 节点架构图见 \texttt{docs/architecture.svg}，可通过 \texttt{tools/render\_architecture.py} 重新生成。
+
+\subsection{附录 D：相关文档}
+
+\begin{itemize}[leftmargin=2em]
+\item \texttt{README.md}：项目主页（v2.2）；
+\item \texttt{节点必要性与通信设计.md}：43 节点设计辩护；
+\item \texttt{docs/architecture.svg}：架构图；
+\item \texttt{新推进材料存放暂时/最终提交材料v2/方案说明文档.md}：方案说明文档；
+\item \texttt{新推进材料存放暂时/最终提交材料v2/技术路线概述.md}：技术路线；
+\item \texttt{新推进材料存放暂时/最终提交材料v2/文献调研报告/}：文献调研报告（LaTeX + PDF）；
+\item \texttt{新推进材料存放暂时/最终提交材料v2/构效分析报告/}：构效分析报告（LaTeX + PDF）。
+\end{itemize}
+
+% ----- 参考文献 -----
+\bibliographystyle{ieeetr}
+\bibliography{refs}
+
+\end{document}

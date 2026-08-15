@@ -217,7 +217,8 @@ scientificResearchAgentSys/
 ├── tools/                     指标导出 / 架构图生成
 ├── docs/
 │   ├── architecture.svg       6 层 + 41 节点架构图
-│   └── node_architecture.md   节点拓扑文档
+│   ├── node_architecture.md   节点拓扑文档
+│   └── system_manual/         系统说明文档（LaTeX + PDF，20 页）
 ├── 节点必要性与通信设计.md     41 节点设计辩护
 ├── hf-space-deploy/           HF Space 静态镜像
 └── 新推进材料存放暂时/         赛事提交包（不随仓库上传）
