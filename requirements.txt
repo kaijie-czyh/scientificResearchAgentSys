@@ -1,13 +1,18 @@
 # 科研论文 Agent 系统依赖
 # Python >= 3.10
 
+# Web 服务（HF Spaces / 本地）
+fastapi>=0.110.0
+uvicorn>=0.23.2
+python-multipart>=0.0.9
+
 # 核心数据建模
 pydantic>=2.5.0
 
 # 状态持久化
 sqlalchemy>=2.0.0
 
-# 向量检索（本地起步）
+# 向量检索（可选：无 chromadb 时自动降级）
 chromadb>=0.4.22
 
 # LLM 适配
@@ -17,6 +22,10 @@ anthropic>=0.21.0
 # 配置与工具
 pyyaml>=6.0
 python-dotenv>=1.0.0
+
+# 产物下载格式转换（快速下载 / 每页下载：md + docx + pdf 三格式）
+python-docx>=1.1.0
+fpdf2>=2.7.0
 
 # 文献检索（research 阶段真实调用）
 arxiv>=2.1.0
@@ -29,7 +38,3 @@ requests>=2.31.0
 
 # 论文写作阶段（后续启用）
 # pylatex>=1.4.2
-
-# 测试
-pytest>=7.4.0
-pytest-asyncio>=0.23.0

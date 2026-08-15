@@ -9,6 +9,7 @@ Pipeline 在独立线程中异步执行，人工节点通过 HumanCallbackBridge
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -20,7 +21,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
-from typing import Any, Optional
 
 # 确保项目根在 sys.path（python -m web.api 已保证，但直接运行脚本时需补充）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +31,30 @@ if str(_PROJECT_ROOT) not in sys.path:
 from runtime.cli import _load_env  # noqa: E402
 
 _load_env()
+
+
+def _set_global_seed() -> None:
+    """设置全局随机种子，保证构效关系搜索（MCTS 等）结果可复现。
+
+    赛题复现审核要求：随机种子与复现说明。
+    默认 seed=42，可用环境变量 SRA_SEED 覆盖。
+    注意：LLM 输出本身有随机性，本种子保证算法内随机操作（节点扩展、
+    tie-breaking、采样扰动等）在相同 LLM 输入下可复现。
+    """
+    import random
+
+    seed = int(os.environ.get("SRA_SEED", "42"))
+    random.seed(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:  # numpy 非必需
+        pass
+    print(f"[SRA] 全局随机种子已设置: {seed}（可用 SRA_SEED 覆盖）", file=sys.stderr)
+
+
+_set_global_seed()
 
 
 def _guard_single_instance() -> None:
@@ -50,7 +74,7 @@ def _guard_single_instance() -> None:
         return
     import socket
 
-    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    port = int(os.environ.get("SRA_WEB_PORT") or os.environ.get("PORT") or "8001")
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         probe.bind(("0.0.0.0", port))
@@ -81,6 +105,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from core.config import get_config  # noqa: E402
 from core.knowledge import KnowledgeStore  # noqa: E402
+from core.llm.base import strip_think_tags  # noqa: E402
 from core.orchestration.node import HumanRequest, HumanResponse  # noqa: E402
 from core.state.lifecycle import LifecycleStage  # noqa: E402
 from core.state.session import ProjectSession  # noqa: E402
@@ -221,6 +246,8 @@ class ProjectState:
     next_nodes: list[str] = field(default_factory=list)
     notes: list[dict] = field(default_factory=list)
     recommendation: str = ""
+    # 方法改进建议（实验成败评估 advice，逐条可执行；experiment_failed 后展示）
+    advice: list[dict] = field(default_factory=list)
     # 路线 A：构效关系发现产出（从 discovery 子图 context 收集）
     discovery: dict = field(default_factory=dict)
     # 方向推荐产出（从 topic_discovery 子图收集）
@@ -397,6 +424,8 @@ def _run_pipeline_thread(project_id: str, topic: str, resume: bool, force_writin
         state.status = result.status
         state.summary = result.summary
         state.recommendation = result.recommendation
+        # 方法改进建议：从实验成败评估 outcome.advice 透传给前端展示
+        state.advice = (result.experiment_outcome or {}).get("advice", []) or []
         state.node_history = result.node_history or []
         state.current_node = None
         state.next_nodes = []
@@ -421,10 +450,6 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
             on_resume=lambda: _set_state_status(state, "running"),
         )
         _progress_cbs = _make_progress_callback(state)
-        state.status = "running"
-        state.run_mode = "discovery"
-        pipeline = Pipeline(config=_CONFIG)
-        human_cb = _BRIDGE.make_callback(project_id)
         result: PipelineResult = pipeline.run_discovery(
             project_id=project_id,
             topic=topic,
@@ -437,10 +462,12 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
         state.status = result.status
         state.summary = result.summary
         state.recommendation = result.recommendation
+        # 方法改进建议：从实验成败评估 outcome.advice 透传给前端展示
+        state.advice = (result.experiment_outcome or {}).get("advice", []) or []
         state.node_history = result.node_history or []
         state.current_node = None
         state.next_nodes = []
-        # 从 node_history 提取 discovery 产出摘要
+        # 从 node_history 提取 discovery 产出摘要（含假设列表，供 Web 排序展示）
         state.discovery = _extract_discovery_summary(
             result.node_history, result.extra.get("hypotheses") or []
         )
@@ -451,12 +478,10 @@ def _run_discovery_thread(project_id: str, topic: str, resume: bool) -> None:
 
 
 def _extract_discovery_summary(node_history: list[dict], hypotheses: list[dict] | None = None) -> dict:
-    """从节点历史提取 discovery 产出摘要（含假设列表的物理一致性标注）。
+    """从节点历史提取 discovery 产出摘要。
 
-    修复：原代码在此处有重复定义（同一函数出现两次），导致第二个定义覆盖第一个，
-    调用时一旦传入 hypotheses 参数即触发
-    `_extract_discovery_summary() takes 1 positional argument but 2 were given`。
-    现合并为单一实现，行为稳定。
+    合并版本（HEAD + PR）：保留 HEAD 的 hypothesis_list（前端 dashboard 需要），
+    同时采用 PR 的节点 ID 集合（cp_before_search）。
     """
     summary = {
         "hypotheses": 0, "candidates": 0, "relationships": 0, "novel": 0,
@@ -464,7 +489,7 @@ def _extract_discovery_summary(node_history: list[dict], hypotheses: list[dict] 
     }
     for h in node_history or []:
         node_id = h.get("node_id", "")
-        if node_id in ("hypothesis_seed", "search_space", "llm_guided_search",
+        if node_id in ("hypothesis_seed", "search_space", "cp_before_search", "llm_guided_search",
                         "discovery_validate", "discovery_report"):
             summary["nodes"].append({
                 "node_id": node_id,
@@ -739,6 +764,7 @@ def get_status(project_id: str) -> dict:
         "status": state.status,
         "summary": state.summary,
         "recommendation": state.recommendation,
+        "advice": state.advice,
         "error": state.error,
         "current_stage": current_stage,
         "stage_statuses": stage_statuses,
@@ -1063,9 +1089,18 @@ def list_materials(project_id: str) -> dict:
                 "symbol": norm["symbol"],
                 "unit": norm["unit"],
                 "category": norm["category"],
+                "dimension": norm.get("dimension", "other"),
                 "value": p.value,
                 "value_num": p.value_num,
                 "condition": p.condition,
+                # 深度分析字段（机制/证据/数据类型）
+                "mechanism": p.mechanism,
+                "impact_on_target": p.impact_on_target,
+                "evidence_level": p.evidence_level or "E",
+                "evidence_count": p.evidence_count,
+                "data_type": p.data_type,
+                "test_temperature": p.test_temperature,
+                "source_type": p.source_type,
                 "paper_title": p.paper_title,
                 "confidence": p.confidence,
                 "source_snippet": p.source_snippet,
@@ -1084,6 +1119,27 @@ def list_materials(project_id: str) -> dict:
                 "atmosphere": s.atmosphere,
                 "duration": s.duration,
                 "steps": s.steps,
+                # 深度分析字段（完整实验参数 + 分步流程 + 风险 + 可复现性 + 证据）
+                "precursor_ratio": s.precursor_ratio,
+                "solvent": s.solvent,
+                "heating_rate": s.heating_rate,
+                "ph": s.ph,
+                "stirring": s.stirring,
+                "aging_time": s.aging_time,
+                "drying_temperature": s.drying_temperature,
+                "calcination_temperature": s.calcination_temperature,
+                "calcination_time": s.calcination_time,
+                "cooling_method": s.cooling_method,
+                "post_treatment": s.post_treatment,
+                "equipment": s.equipment,
+                "yield": s.yield_,
+                "phase_purity": s.phase_purity,
+                "particle_size": s.particle_size,
+                "workflow_steps": s.workflow_steps,
+                "risks": s.risks,
+                "reproducibility_score": s.reproducibility_score,
+                "evidence_level": s.evidence_level or "E",
+                "evidence_count": s.evidence_count,
                 "paper_title": s.paper_title,
                 "confidence": s.confidence,
                 "source_snippet": s.source_snippet,
@@ -1179,6 +1235,70 @@ def list_materials(project_id: str) -> dict:
     }
 
 
+def _infer_target(props: list) -> str:
+    """从项目内性质数据推断研究目标性能（默认 ZT）。
+
+    统计 performance 维度性质（ZT/功率因子/转换效率）出现频率，取最高者；
+    无性能数据时默认 ZT（热电为项目主场景）。
+    """
+    from core.knowledge.normalize import normalize_property
+
+    counter: dict[str, int] = {}
+    for p in props:
+        norm = normalize_property(getattr(p, "property_name", ""), getattr(p, "property_name_cn", ""))
+        if norm.get("dimension") == "performance":
+            key = norm["key"]
+            counter[key] = counter.get(key, 0) + 1
+    if not counter:
+        return "ZT"
+    return max(counter, key=counter.get)
+
+
+@app.get("/api/projects/{project_id}/materials/{material_id}/profile")
+def get_material_profile(project_id: str, material_id: str) -> dict:
+    """获取材料深度分析画像（多维性质 → 机制 → 目标性能 → 对比 → 候选排序 → 合成路线）。
+
+    这是「材料选择 + 性质判断 + 合成方案设计 + 实验决策」的深度分析入口：
+    - 性质按六大维度分组（结构/电子/热/光/力/化学稳定性）
+    - 性质 → 机制 → 目标性能 关系解释（规则引擎 + LLM 增强）
+    - 目标性能因果拆解（如 ZT = S²σT/κ）
+    - 材料横向对比矩阵（单位统一 + 范围显示 + 证据等级）
+    - 材料候选排序（六维加权评分，可溯源）
+    - 合成路线对比 + 推荐 + 风险 + 可复现性评分
+
+    确定性规则引擎兜底，不编造数据；缺失值明确标记 missing。
+    """
+    from core.knowledge.material_analysis import build_profile
+    from core.knowledge.normalize import categorize_material
+
+    _require_project(project_id)
+    store = KnowledgeStore(_CONFIG.paths.project_db(project_id))
+    mat = store.get_material(material_id)
+    if mat is None:
+        raise HTTPException(status_code=404, detail="材料不存在")
+
+    # 该材料的性质 + 合成
+    props = store.list_material_properties(material_id=material_id)
+    syns = store.list_material_synthesis(material_id=material_id)
+
+    # 全体材料（用于对比矩阵 + 候选排序）
+    all_materials = store.list_materials(limit=500)
+    all_props = store.list_material_properties()
+    all_syns = store.list_material_synthesis()
+    props_by_mat: dict[str, list] = {}
+    for p in all_props:
+        props_by_mat.setdefault(p.material_id, []).append(p)
+    syns_by_mat: dict[str, list] = {}
+    for s in all_syns:
+        syns_by_mat.setdefault(s.material_id, []).append(s)
+
+    target = _infer_target(all_props)
+    profile = build_profile(mat, props, syns, all_materials, props_by_mat, syns_by_mat, target)
+    profile["category"] = categorize_material(mat.name, mat.formula)
+    profile["target"] = target
+    return profile
+
+
 @app.get("/api/projects/{project_id}/gaps")
 def list_research_gaps(project_id: str) -> dict:
     """获取研究缺口清单（Task 3：Research Gap 识别）。
@@ -1204,6 +1324,7 @@ def list_research_gaps(project_id: str) -> dict:
                 "statement": g.statement,
                 "detail": g.detail,
                 "evidence": g.evidence,
+                "db_evidence": g.db_evidence,
                 "related_materials": g.related_materials,
                 "actionability": g.actionability,
                 "priority": g.priority,
@@ -1935,6 +2056,7 @@ def list_claims(project_id: str, status: Optional[str] = None) -> dict:
             "evidence_count": len(c.evidence_refs),
             "evidence_refs": c.evidence_refs,
             "source_idea_id": c.source_idea_id,
+            "source_stage": c.source_stage,
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "verified_at": c.verified_at.isoformat() if c.verified_at else None,
             # 冲突可视化：相关文献冲突（非空 → 该 Claim 处于争议中）
@@ -2110,7 +2232,9 @@ def get_discovery_detail(project_id: str) -> dict:
         "discovery_relationships": relationships,
         "discovery_search_trace": kv.get("discovery_search_trace", {}),
         "discovery_literature_points": kv.get("discovery_literature_points", []),
-        "discovery_report_content": kv.get("discovery_report_content", ""),
+        "discovery_symbolic_regression": kv.get("discovery_symbolic_regression", {}),
+        "discovery_surrogate_calibration": kv.get("discovery_surrogate_calibration", {}),
+        "discovery_report_content": strip_think_tags(kv.get("discovery_report_content", "")),
         "discovery_report_artifact_id": kv.get("discovery_report_artifact_id", ""),
         "materials_cross_validation_report": kv.get("materials_cross_validation_report", {}),
     }
@@ -2409,6 +2533,8 @@ def get_dashboard(project_id: str) -> dict:
         "topic": state.topic,
         "status": state.status,
         "summary": state.summary,
+        "recommendation": state.recommendation,
+        "advice": state.advice,
         "current_stage": current_stage,
         "stage_statuses": stage_statuses,
         "counts": counts,
@@ -2470,14 +2596,28 @@ def download_artifact(project_id: str, artifact_type: str, format: str = "md"):
 
     if artifact_type == "research-report":
         report = store.get_kv("cross_validation_report") or {}
-        md_content = _build_research_report_md(report)
+        md_content = _build_research_report_md(report, store)
         base_filename = "research_report"
 
     elif artifact_type == "discovery-report":
         content = store.get_kv("discovery_report_content") or ""
+        content = strip_think_tags(content)
         if not content:
             summary = store.get_kv("discovery_summary") or {}
-            content = f"# 构效关系发现报告\n\n{json.dumps(summary, ensure_ascii=False, indent=2)}"
+            if summary:
+                content = (
+                    "# 构效关系发现报告\n\n"
+                    f"- 候选假设数：{summary.get('hypotheses', 0)}\n"
+                    f"- 验证发现数：{summary.get('relationships', 0)}\n"
+                    f"- 其中新颖发现：{summary.get('novel', 0)}\n\n"
+                    "> 报告正文尚未生成（LLM 生成失败或 discovery_report 节点未运行），"
+                    "以上为结构化摘要。"
+                )
+            else:
+                content = (
+                    "# 构效关系发现报告\n\n"
+                    "> 尚未生成发现报告，请先运行「构效关系发现」流程。"
+                )
         md_content = content
         base_filename = "discovery_report"
 
@@ -2490,9 +2630,9 @@ def download_artifact(project_id: str, artifact_type: str, format: str = "md"):
             if arts:
                 md_content = am.read_content(arts[0]) or str(arts[0].content or "")
             else:
-                md_content = "# 无方法文档"
+                md_content = "# 暂无方法文档\n\n> 尚未生成方法设计文档，请先运行 design 阶段。"
         except Exception:
-            md_content = "# 无方法文档"
+            md_content = "# 暂无方法文档\n\n> 尚未生成方法设计文档，请先运行 design 阶段。"
         base_filename = "method_doc"
 
     elif artifact_type == "paper-draft":
@@ -2504,9 +2644,9 @@ def download_artifact(project_id: str, artifact_type: str, format: str = "md"):
             if arts:
                 md_content = am.read_content(arts[0]) or str(arts[0].content or "")
             else:
-                md_content = "# 无论文稿"
+                md_content = "# 暂无 论文稿\n\n> 尚未生成论文稿，请先运行 writing 阶段。"
         except Exception:
-            md_content = "# 无论文稿"
+            md_content = "# 暂无 论文稿\n\n> 尚未生成论文稿，请先运行 writing 阶段。"
         base_filename = "paper_draft"
 
     elif artifact_type == "claims-summary":
@@ -2538,45 +2678,255 @@ def download_artifact(project_id: str, artifact_type: str, format: str = "md"):
         return _make_download(md_content, f"{base_filename}.md", "text/markdown", "md")
 
 
-def _build_research_report_md(report: dict) -> str:
-    """把 cross_validation_report 转为 Markdown。
+def _build_research_report_md(report: dict, store: Optional[KnowledgeStore] = None) -> str:
+    """把 cross_validation_report 转为 Markdown 调研报告。
 
-    修复：原代码仅从 KV 的 cross_validation_report 取 conflicts，遗漏
-    research_conflicts 表中由 CrossValidateAgent 落库的冲突实体（含 claim /
-    sources / resolution / confidence）。现已合并两路数据，确保冲突结论在
-    报告导出中可见。
+    合并版本（HEAD + PR #4）：采用 PR 的 5 节结构化版式（缺口 / 共识 / 冲突 /
+    引用链 / 证据链），同时保持 HEAD 的 store 参数可选（向后兼容旧调用）。
+
+    报告结构（完整版，满足辅助科研的「完整性 + 用词准确」）：
+    1. 研究缺口（类型 / 陈述 / 优先级 / 可操作性 / 建议行动）
+    2. 共识
+    3. 文献冲突（陈述 / 来源立场 / 处置 / 置信度）
+    4. 文献引用链（引用文献清单 + 结论引用溯源）
+    5. 证据链（检索溯源轨迹：子问题 → 数据源 → 命中 → 入库）
+
+    store 提供结构化实体（Material / ResearchGap / ResearchConflict 等）；
+    report dict 作为兜底。二者皆可为空，函数始终返回一个结构完整的报告骨架。
     """
-    md = "# 文献调研报告\n\n"
-    md += f"**综合置信度**: {report.get('overall_confidence', 0):.2f}\n\n"
+    lines: list[str] = ["# 文献调研报告", ""]
 
-    gaps = report.get("gaps", [])
-    if gaps:
-        md += "## Research Gaps\n\n"
-        for i, g in enumerate(gaps, 1):
-            md += f"{i}. {g}\n"
-        md += "\n"
+    # 主题与总体置信度
+    topic = ""
+    if store is not None:
+        try:
+            topic = store.get_kv("research_topic") or ""
+        except Exception:
+            topic = ""
+    topic = topic or report.get("topic", "") or report.get("title", "")
+    if topic:
+        lines.append(f"> **研究主题**：{topic}")
 
-    consensus = report.get("consensus", [])
+    overall = report.get("overall_confidence")
+    try:
+        overall_str = f"{float(overall):.2f}" if overall is not None else "—"
+    except (TypeError, ValueError):
+        overall_str = str(overall)
+    lines.append(f"> **综合置信度**：{overall_str}")
+    lines.append(f"> **生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("")
+
+    # ===== 统一拉取数据（供各章节复用）=====
+    papers: list = []
+    gaps_entities: list = []
+    conflicts_entities: list = []
+    evidence_entries: list = []
+    evidence_summary: dict = {}
+    if store is not None:
+        try:
+            papers = store.list_papers() or []
+        except Exception:
+            papers = []
+        try:
+            gaps_entities = store.list_research_gaps() or []
+        except Exception:
+            gaps_entities = []
+        try:
+            conflicts_entities = store.list_research_conflicts() or []
+        except Exception:
+            conflicts_entities = []
+        try:
+            evidence_entries = store.list_evidence(limit=500) or []
+        except Exception:
+            evidence_entries = []
+        try:
+            evidence_summary = store.evidence_stats() or {}
+        except Exception:
+            evidence_summary = {}
+    paper_by_id: dict[str, Any] = {p.paper_id: p for p in papers}
+
+    # ===== 1. 研究缺口 =====
+    report_gaps = report.get("gaps", []) if isinstance(report, dict) else []
+    if gaps_entities or report_gaps:
+        lines.append("## 1. 研究缺口（Research Gaps）")
+        lines.append("")
+        if gaps_entities:
+            for i, g in enumerate(gaps_entities, 1):
+                actions = "；".join(g.suggested_actions) if g.suggested_actions else "—"
+                mats = ", ".join(g.related_materials) if g.related_materials else "—"
+                tag = (
+                    f"{_cn(_GAP_TYPE_CN, g.gap_type)} · 优先级 {g.priority} · "
+                    f"可操作 {_cn(_GAP_ACTIONABILITY_CN, g.actionability)}"
+                )
+                lines.append(f"{i}. **[{tag}]** {g.statement or '—'}")
+                lines.append(f"   - 关联材料：{mats}")
+                lines.append(f"   - 建议行动：{actions}")
+                if g.detail:
+                    lines.append(f"   - 说明：{g.detail}")
+            lines.append("")
+        else:
+            for i, g in enumerate(report_gaps, 1):
+                if isinstance(g, dict):
+                    lines.append(f"{i}. {g.get('statement') or g.get('gap') or g}")
+                else:
+                    lines.append(f"{i}. {g}")
+            lines.append("")
+
+    # ===== 2. 共识 =====
+    consensus = report.get("consensus", []) if isinstance(report, dict) else []
     if consensus:
-        md += "## 共识\n\n"
+        lines.append("## 2. 共识")
+        lines.append("")
         for i, c in enumerate(consensus, 1):
-            md += f"{i}. {c}\n"
-        md += "\n"
+            lines.append(f"{i}. {c}")
+        lines.append("")
 
-    conflicts = report.get("conflicts", [])
-    if conflicts:
-        md += "## 冲突结论（来自 KV）\n\n"
-        for c in conflicts:
-            if isinstance(c, dict):
-                md += f"- **{c.get('topic', '?')}**: {c.get('description', '')}\n"
-                if c.get("positions"):
-                    for pos in c["positions"]:
-                        md += f"  - {pos}\n"
-            else:
-                md += f"- {c}\n"
-        md += "\n"
+# ===== 3. 文献冲突 =====
+    # 合并版本（HEAD + PR）：HEAD 的"## 冲突结论（来自 KV）"被 PR 的"## 3. 文献冲突"
+    # 取代，因为 PR 版本同时从 store.conflicts_entities（结构化实体）+ report.conflicts
+    # （KV 兜底）两路拉数据，并展示置信度 / 立场 / 处置建议，HEAD 的简化版是它的子集。
+    report_conflicts = report.get("conflicts", []) if isinstance(report, dict) else []
+    if conflicts_entities or report_conflicts:
+        lines.append("## 3. 文献冲突")
+        lines.append("")
+        if conflicts_entities:
+            for i, c in enumerate(conflicts_entities, 1):
+                lines.append(f"### 冲突 {i}：{c.claim or '(未命名冲突)'}")
+                lines.append("")
+                try:
+                    lines.append(f"- **置信度**：{float(c.confidence):.2f}")
+                except (TypeError, ValueError):
+                    lines.append(f"- **置信度**：{c.confidence}")
+                for src in c.sources or []:
+                    stance = src.get("stance", "?") if isinstance(src, dict) else "?"
+                    pid = src.get("paper_id", src.get("title", "?")) if isinstance(src, dict) else str(src)
+                    lines.append(f"- **来源立场**：`{_cn(_STANCE_CN, stance)}` — {pid}")
+                if c.subquery:
+                    lines.append(f"- **关联子问题**：{c.subquery}")
+                if c.resolution:
+                    lines.append(f"- **处置建议**：{c.resolution}")
+                lines.append("")
+        else:
+            for i, c in enumerate(report_conflicts, 1):
+                if isinstance(c, dict):
+                    claim = c.get("claim") or c.get("topic") or c.get("description") or "(未命名冲突)"
+                    lines.append(f"{i}. **{claim}**")
+                    conf_val = c.get("confidence")
+                    if conf_val is not None:
+                        try:
+                            lines.append(f"   - 置信度: {float(conf_val):.2f}")
+                        except (TypeError, ValueError):
+                            pass
+                    for src in c.get("sources") or c.get("positions") or []:
+                        lines.append(f"   - 观点/来源: {src}")
+                    for pid in c.get("source_paper_ids") or []:
+                        lines.append(f"   - 关联论文: {pid}")
+                    if c.get("subquery"):
+                        lines.append(f"   - 关联子问题: {c['subquery']}")
+                    if c.get("resolution"):
+                        lines.append(f"   - 处置: {c['resolution']}")
+                else:
+                    lines.append(f"{i}. {c}")
+            lines.append("")
 
-    return md
+    # ===== 4. 文献引用链（Reference Chain）=====
+    if papers:
+        lines.append("## 4. 文献引用链（Reference Chain）")
+        lines.append("")
+        lines.append(
+            "> 调研涉及的全部文献及其可溯源元数据，并汇总研究结论（缺口 / 冲突）"
+            "对文献的引用，实现「结论 → 文献」双向溯源。"
+        )
+        lines.append("")
+        lines.append("### 4.1 引用文献清单")
+        lines.append("")
+        lines.append("| # | 标题 | 作者（年份） | 期刊 · arXiv/DOI |")
+        lines.append("|---|---|---|---|")
+        for i, p in enumerate(papers, 1):
+            authors = ", ".join(p.authors[:2]) if p.authors else "—"
+            if len(p.authors) > 2:
+                authors += " 等"
+            year = p.year if p.year is not None else "—"
+            ext_id = p.arxiv_id or p.doi or "—"
+            title = re.sub(r"<[^>]+>", "", p.title or "").replace("\n", " ").strip() or "—"
+            title = title[:60] + ("…" if len(title) > 60 else "")
+            title = title.replace("|", "\\|")
+            venue = re.sub(r"<[^>]+>", "", p.venue or "").replace("\n", " ").strip() or "—"
+            venue = venue[:30] + ("…" if len(venue) > 30 else "")
+            venue = venue.replace("|", "\\|")
+            lines.append(
+                f"| {i} | {title} | {authors}（{year}） | {venue} · {ext_id} |"
+            )
+        lines.append("")
+
+        # 4.2 结论 → 文献引用溯源（缺口 / 冲突）
+        cite_by_paper: dict[str, set[str]] = {}
+
+        def _inc_cite(pid: Any, kind: str) -> None:
+            if not pid:
+                return
+            cite_by_paper.setdefault(str(pid), set()).add(kind)
+
+        for g in gaps_entities:
+            for ev in (g.evidence or []):
+                _inc_cite(ev.get("paper_id") if isinstance(ev, dict) else None, "研究缺口")
+        for c in conflicts_entities:
+            for src in (c.sources or []):
+                _inc_cite(src.get("paper_id") if isinstance(src, dict) else None, "文献冲突")
+
+        if cite_by_paper:
+            lines.append("### 4.2 结论引用溯源")
+            lines.append("")
+            lines.append("| 标题 | 支撑的结论类型 |")
+            lines.append("|---|---|")
+            for pid, kinds in sorted(cite_by_paper.items()):
+                detail = "、".join(sorted(kinds))
+                pp = paper_by_id.get(pid)
+                title = re.sub(r"<[^>]+>", "", (pp.title if pp is not None and pp.title else "")).replace("|", "\\|").strip() or "—"
+                lines.append(f"| {title} | {detail} |")
+            lines.append("")
+
+    # ===== 5. 证据链（Evidence Chain / 检索溯源轨迹）=====
+    if evidence_entries:
+        lines.append("## 5. 证据链（检索溯源轨迹）")
+        lines.append("")
+        total_ev = evidence_summary.get("total") or len(evidence_entries)
+        linked_ev = evidence_summary.get("linked", 0)
+        by_source = evidence_summary.get("by_source") or {}
+        src_str = "、".join(f"{k}×{v}" for k, v in by_source.items()) if by_source else "—"
+        lines.append(f"- **证据条目总数**：{total_ev}（其中已关联入库：{linked_ev}）")
+        lines.append(f"- **数据源分布**：{src_str}")
+        lines.append("")
+        lines.append("| # | 子问题 | 数据源 | 命中文献 | 证据分 | 入库 |")
+        lines.append("|---|---|---|---|---|---|")
+        shown = 0
+        for e in evidence_entries:
+            if shown >= 200:
+                lines.append(
+                    f"| … | 其余 {len(evidence_entries) - shown} 条从略（详见「证据链」面板） | | | | |"
+                )
+                break
+            linked = "✓" if e.get("paper_id") else "—"
+            title = (e.get("title") or "—")[:50].replace("|", "\\|").replace("\n", " ")
+            score = e.get("evidence_score") or 0.0
+            try:
+                score_str = f"{float(score):.2f}"
+            except (TypeError, ValueError):
+                score_str = str(score)
+            subq = (e.get("subquery") or "—")[:30].replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {shown + 1} | {subq} | {e.get('source') or '—'} | {title} | "
+                f"{score_str} | {linked} |"
+            )
+            shown += 1
+        lines.append("")
+
+    # 空报告兜底
+    if len(lines) <= 4:  # 仅标题 + 概览
+        lines.append("> 暂无调研产出。请先运行 research 阶段（启动 Pipeline）。")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def _build_research_conflicts_md(store: KnowledgeStore) -> str:
@@ -2625,61 +2975,146 @@ def _make_download(content: str, filename: str, media_type: str, fmt: str = "md"
     )
 
 
+# ===== 状态 / 术语中文映射（统一报告用词）=====
+
+_CLAIM_STATUS_CN = {
+    "draft": "草稿",
+    "evidence_linked": "已关联证据",
+    "verified": "已验证",
+    "refuted": "已被反驳",
+    "superseded": "已被取代",
+}
+_CLAIM_ROLE_CN = {
+    "contribution": "核心贡献",
+    "method": "方法",
+    "assumption": "假设",
+    "result": "结果",
+}
+_IDEA_STATUS_CN = {
+    "draft": "草稿",
+    "validated": "已验证",
+    "rejected": "已否决",
+    "adopted": "已采纳",
+}
+_EXPERIMENT_STATUS_CN = {
+    "planned": "已规划",
+    "running": "运行中",
+    "completed": "已完成",
+    "failed": "失败",
+    "anomaly_detected": "检测到异常",
+}
+_GAP_TYPE_CN = {
+    "contradiction": "矛盾结论",
+    "unexplored": "未探索方向",
+    "underexplored": "探索不足方向",
+    "missing_link": "缺失知识连接",
+    "missing_connection": "缺失知识连接",
+    "data_gap": "数据缺口",
+    "method_gap": "方法缺口",
+}
+_GAP_ACTIONABILITY_CN = {
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+}
+_STANCE_CN = {
+    "support": "支持",
+    "refute": "反驳",
+}
+
+
+def _cn(mapping: dict, key: Any) -> str:
+    """英文枚举值 → 中文术语，未知或空则返回原值/占位。"""
+    if key is None:
+        return "—"
+    s = str(key)
+    return mapping.get(s, s)
+
+
 def _build_claims_summary_md(store: KnowledgeStore) -> str:
-    """构建 Claim 汇总 Markdown。"""
+    """构建 Claim 汇总 Markdown（中文术语 + 状态/角色映射）。"""
     claims = store.list_claims()
     md = "# Claim 汇总\n\n"
+    md += f"共 **{len(claims)}** 条 Claim\n\n---\n\n"
+    if not claims:
+        md += "> 暂无 Claim，请先运行 design 阶段。\n\n"
+        return md
     for c in claims:
         md += f"## {c.claim_id}\n\n"
-        md += f"**陈述**: {c.statement}\n\n"
-        md += f"**状态**: {c.status.value}\n\n"
-        md += f"**角色**: {c.role}\n\n"
+        md += f"**陈述**：{c.statement}\n\n"
+        md += f"**状态**：{_cn(_CLAIM_STATUS_CN, c.status.value if hasattr(c.status, 'value') else c.status)}\n\n"
+        md += f"**角色**：{_cn(_CLAIM_ROLE_CN, c.role)}\n\n"
+        if getattr(c, "created_at", None):
+            md += f"**创建时间**：{c.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+        if getattr(c, "verified_at", None):
+            md += f"**验证时间**：{c.verified_at.strftime('%Y-%m-%d %H:%M')}\n\n"
         if c.evidence_refs:
-            md += "**证据**:\n"
+            md += "**证据链**：\n"
             for ref in c.evidence_refs:
-                md += f"- {ref.get('type', '?')}: {ref.get('id', '?')}"
+                ev_type = _cn({"paper": "文献", "experiment": "实验"}, ref.get("type", "?"))
+                md += f"- {ev_type}：{ref.get('id', '?')}"
                 if ref.get("chunk_id"):
-                    md += f" (chunk: {ref['chunk_id']})"
+                    md += f"（chunk: {ref['chunk_id']}）"
                 md += "\n"
-        md += "\n"
+        md += "\n---\n\n"
     return md
 
 
 def _build_ideas_summary_md(store: KnowledgeStore) -> str:
-    """构建研究思路汇总 Markdown。"""
+    """构建研究思路汇总 Markdown（中文术语 + 结构化验证记录）。"""
     ideas = store.list_ideas()
     md = "# 研究思路汇总\n\n"
-    md += f"共 {len(ideas)} 个思路\n\n---\n\n"
+    md += f"共 **{len(ideas)}** 个思路\n\n---\n\n"
+    if not ideas:
+        md += "> 暂无研究思路，请先运行 ideation 阶段。\n\n"
+        return md
     for idea in ideas:
         md += f"## {idea.idea_id}\n\n"
-        md += f"**状态**: {idea.status}\n\n"
-        md += f"**思路**: {idea.text}\n\n"
+        md += f"**状态**：{_cn(_IDEA_STATUS_CN, idea.status)}\n\n"
+        md += f"**思路**：{idea.text}\n\n"
         if idea.constraints:
-            md += f"**约束**: {'; '.join(idea.constraints)}\n\n"
+            md += f"**约束条件**：{'；'.join(idea.constraints)}\n\n"
         if idea.source_paper_ids:
-            md += f"**来源论文**: {', '.join(idea.source_paper_ids)}\n\n"
+            md += f"**来源论文**：{', '.join(idea.source_paper_ids)}\n\n"
+        if getattr(idea, "created_by", None):
+            md += f"**提出者**：{idea.created_by}\n\n"
         if idea.validation_notes:
-            md += f"**验证**: {json.dumps(idea.validation_notes, ensure_ascii=False)}\n\n"
+            md += "**验证记录**：\n"
+            if isinstance(idea.validation_notes, dict):
+                for k, v in idea.validation_notes.items():
+                    md += f"- **{k}**：{v}\n"
+            else:
+                md += f"- {idea.validation_notes}\n"
+            md += "\n"
         md += "---\n\n"
     return md
 
 
 def _build_experiment_results_md(store: KnowledgeStore, project_id: str) -> str:
-    """构建实验结果 Markdown（含 metrics）。"""
+    """构建实验结果 Markdown（含 metrics，中文术语）。"""
     experiments = store.list_experiments()
     md = "# 实验结果汇总\n\n"
-    md += f"共 {len(experiments)} 个实验\n\n---\n\n"
+    md += f"共 **{len(experiments)}** 个实验\n\n---\n\n"
+    if not experiments:
+        md += "> 暂无实验记录，请先运行 experiment 阶段。\n\n"
+        return md
     for exp in experiments:
         md += f"## {exp.name or exp.experiment_id}\n\n"
-        md += f"**状态**: {exp.status.value if hasattr(exp.status, 'value') else exp.status}\n\n"
+        md += f"**状态**：{_cn(_EXPERIMENT_STATUS_CN, exp.status.value if hasattr(exp.status, 'value') else exp.status)}\n\n"
         if hasattr(exp, 'metrics') and exp.metrics:
-            md += f"**Metrics**: {json.dumps(exp.metrics, ensure_ascii=False, indent=2)}\n\n"
+            md += "**评估指标**：\n"
+            if isinstance(exp.metrics, dict):
+                for k, v in exp.metrics.items():
+                    md += f"- **{k}**：{v}\n"
+            else:
+                md += f"```\n{json.dumps(exp.metrics, ensure_ascii=False, indent=2)}\n```\n"
+            md += "\n"
         if exp.result_summary:
-            md += f"**结果摘要**:\n```\n{exp.result_summary[:3000]}\n```\n\n"
-        if exp.anomaly_notes:
-            md += f"**异常**: {exp.anomaly_notes[:1000]}\n\n"
+            md += f"**结果摘要**：\n```\n{exp.result_summary[:3000]}\n```\n\n"
+        if getattr(exp, 'anomaly_notes', None):
+            md += f"**异常说明**：{exp.anomaly_notes[:1000]}\n\n"
         if exp.verifies_claim_ids:
-            md += f"**验证 Claim**: {', '.join(exp.verifies_claim_ids)}\n\n"
+            md += f"**验证的 Claim**：{', '.join(exp.verifies_claim_ids)}\n\n"
         md += "---\n\n"
     return md
 
@@ -2690,13 +3125,13 @@ def _build_full_report_md(store: KnowledgeStore, project_id: str) -> str:
 
     # 标题
     topic = store.get_kv("research_topic") or "(未设置主题)"
-    parts.append(f"# 科研项目全流程报告\n\n**研究主题**: {topic}\n\n**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n---\n\n")
+    parts.append(f"# 科研项目全流程报告\n\n**研究主题**：{topic}\n\n**生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n---\n\n")
 
     # 1. 调研报告
     report = store.get_kv("cross_validation_report") or {}
     if report:
         parts.append("---\n\n# 第一部分：文献调研\n\n")
-        parts.append(_build_research_report_md(report))
+        parts.append(_build_research_report_md(report, store))
 
     # 1.1 补充：research_conflicts 表中的冲突结论（修复导出遗漏）
     conflict_md = _build_research_conflicts_md(store)
@@ -2748,16 +3183,94 @@ def _build_full_report_md(store: KnowledgeStore, project_id: str) -> str:
     except Exception:
         pass
 
+    # 7. 构效关系发现（独立子系统：MCTS + LLM 引导搜索）
+    discovery_content = strip_think_tags(store.get_kv("discovery_report_content") or "")
+    if not discovery_content:
+        summary = store.get_kv("discovery_summary") or {}
+        if summary:
+            discovery_content = (
+                "# 构效关系发现\n\n"
+                f"- 候选假设数：{summary.get('hypotheses', 0)}\n"
+                f"- 验证发现数：{summary.get('relationships', 0)}\n"
+                f"- 其中新颖发现：{summary.get('novel', 0)}\n"
+            )
+    if discovery_content:
+        parts.append("\n\n---\n\n# 第七部分：构效关系发现\n\n")
+        parts.append(discovery_content)
+
     return "".join(parts) if parts else "# 全流程报告\n\n（暂无产出）"
 
 
 # ===== 格式转换：Markdown → DOCX / PDF =====
 
 
+# ===== Markdown 解析辅助（表格 + 行内标记）=====
+
+
+def _md_strip_inline(text: str) -> str:
+    """去除行内 Markdown 标记（加粗/斜体/行内代码），供 DOCX/PDF 纯文本渲染。"""
+    # 行内代码 `x`
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    # 加粗 **x** / __x__
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"__([^_]+)__", r"\1", text)
+    # 斜体 *x*（避免误伤 ** 已处理后的残留）
+    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", text)
+    return text.strip()
+
+
+def _md_is_table_separator(line: str) -> bool:
+    """判断是否为 Markdown 表格分隔行（如 |---|:--:|---|）。"""
+    stripped = line.strip().replace(" ", "")
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return False
+    inner = stripped[1:-1]
+    if not inner:
+        return False
+    cells = inner.split("|")
+    return all(c and set(c) <= {"-", ":"} for c in cells)
+
+
+def _md_split_table_row(line: str) -> list[str]:
+    """把 Markdown 表格行 `| a | b |` 拆为单元格列表（去首尾空 + 去行内标记）。
+
+    正确处理转义管道符 ``\\|``：拆分时跳过 ``\\|``，拆分后再还原为字面 ``|``，
+    避免标题 / 期刊里的 ``|``（如「中文标题 | 英文标题」）被误当分隔符导致列错位。
+    """
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells: list[str] = []
+    cur: list[str] = []
+    j = 0
+    n = len(stripped)
+    while j < n:
+        ch = stripped[j]
+        if ch == "\\" and j + 1 < n and stripped[j + 1] == "|":
+            cur.append("|")
+            j += 2
+            continue
+        if ch == "|":
+            cells.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        j += 1
+    cells.append("".join(cur))
+    return [_md_strip_inline(c) for c in cells]
+
+
 def _md_to_docx_response(md_content: str, base_filename: str) -> Response:
-    """将 Markdown 转为 DOCX 并返回下载响应。"""
+    """将 Markdown 转为 DOCX 并返回下载响应。
+
+    支持：标题（#/##/###）、引用（>）、列表（-/*/数字）、代码块（```）、
+    分隔线（---）、以及 Markdown 表格（| a | b |，含 |---| 分隔行）。
+    """
     import io
     from docx import Document
+    from docx.enum.table import WD_TABLE_ALIGNMENT
     from docx.shared import Pt
 
     doc = Document()
@@ -2765,13 +3278,17 @@ def _md_to_docx_response(md_content: str, base_filename: str) -> Response:
     style = doc.styles["Normal"]
     style.font.size = Pt(11)
 
+    lines = md_content.split("\n")
     in_code_block = False
-    for line in md_content.split("\n"):
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
 
         # 代码块
         if stripped.startswith("```"):
             in_code_block = not in_code_block
+            i += 1
             continue
         if in_code_block:
             p = doc.add_paragraph(line)
@@ -2779,25 +3296,56 @@ def _md_to_docx_response(md_content: str, base_filename: str) -> Response:
             run = p.runs[0] if p.runs else p.add_run("")
             run.font.name = "Consolas"
             run.font.size = Pt(9)
+            i += 1
+            continue
+
+        # Markdown 表格：| ... | 且下一行为 |---| 分隔行
+        if stripped.startswith("|") and i + 1 < len(lines) and _md_is_table_separator(lines[i + 1]):
+            header = _md_split_table_row(stripped)
+            i += 2  # 跳过分隔行
+            rows: list[list[str]] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append(_md_split_table_row(lines[i]))
+                i += 1
+            ncols = len(header)
+            table = doc.add_table(rows=1, cols=ncols)
+            table.style = "Table Grid"
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            # 表头加粗
+            hdr_cells = table.rows[0].cells
+            for j in range(ncols):
+                hdr_cells[j].text = header[j] if j < len(header) else ""
+                for para in hdr_cells[j].paragraphs:
+                    for run in para.runs:
+                        run.bold = True
+            # 数据行
+            for row in rows:
+                cells = table.add_row().cells
+                for j in range(ncols):
+                    cells[j].text = row[j] if j < len(row) else ""
+            doc.add_paragraph("")  # 表格后空行，避免与后续段落粘连
             continue
 
         # 标题
         if stripped.startswith("### "):
-            doc.add_heading(stripped[4:], level=3)
+            doc.add_heading(_md_strip_inline(stripped[4:]), level=3)
         elif stripped.startswith("## "):
-            doc.add_heading(stripped[3:], level=2)
+            doc.add_heading(_md_strip_inline(stripped[3:]), level=2)
         elif stripped.startswith("# "):
-            doc.add_heading(stripped[2:], level=1)
+            doc.add_heading(_md_strip_inline(stripped[2:]), level=1)
         elif stripped.startswith("---"):
             doc.add_paragraph("─" * 40)
+        elif stripped.startswith("> "):
+            doc.add_paragraph(_md_strip_inline(stripped[2:]))
         elif stripped.startswith("- ") or stripped.startswith("* "):
-            doc.add_paragraph(stripped[2:], style="List Bullet")
+            doc.add_paragraph(_md_strip_inline(stripped[2:]), style="List Bullet")
         elif stripped and stripped[0].isdigit() and ". " in stripped[:5]:
             idx = stripped.index(". ")
-            doc.add_paragraph(stripped[idx + 2:], style="List Number")
+            doc.add_paragraph(_md_strip_inline(stripped[idx + 2:]), style="List Number")
         elif stripped:
-            doc.add_paragraph(stripped)
+            doc.add_paragraph(_md_strip_inline(stripped))
         # 空行跳过
+        i += 1
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -2808,30 +3356,89 @@ def _md_to_docx_response(md_content: str, base_filename: str) -> Response:
     )
 
 
+# 中文字体（SimHei/微软雅黑）缺失的符号字形 → 安全 ASCII/中文表示。
+# 避免 PDF 里出现「方块/乱码」。注意：这些映射仅用于 PDF 纯文本渲染，
+# 不影响 Markdown / DOCX 原文。
+_PDF_GLYPH_MAP = {
+    "\u2713": "[通过]",   # ✓ CHECK MARK
+    "\u2714": "[通过]",   # ✔ HEAVY CHECK MARK
+    "\u2717": "[未通过]",  # ✗ BALLOT X
+    "\u2718": "[未通过]",  # ✘ HEAVY BALLOT X
+    "\u26a0": "[!]",      # ⚠ WARNING SIGN
+    "\u2605": "[*]",      # ★ BLACK STAR
+    "\u2606": "[*]",      # ☆ WHITE STAR
+    "\u2192": "->",       # → RIGHTWARDS ARROW
+    "\u21d2": "=>",       # ⇒ RIGHTWARDS DOUBLE ARROW
+    "\u2b06": "[上]",      # ⬆ UP ARROW
+    "\u2b07": "[下]",      # ⬇ DOWN ARROW
+    "\u2026": "...",      # … HORIZONTAL ELLIPSIS
+    "\ufe0f": "",         # emoji 变体选择符（⚠️ → ⚠）
+}
+
+
+def _pdf_safe_text(text: str, max_chars: int = 100) -> str:
+    """pdf 文本安全化：去除不可打印控制符，替换中文字体缺失的符号字形，
+    超长行按字符截断；连续无空格长串（URL / 代码）按 40 字符插空格，
+    防止 fpdf2 抛 'Not enough horizontal space to render a single character'。"""
+    if text is None:
+        return ""
+    # 替换缺失字形（先做，避免 emoji 变体选择符干扰）
+    for src, dst in _PDF_GLYPH_MAP.items():
+        if src in text:
+            text = text.replace(src, dst)
+    # 保留常见标点与中文，剥离控制字符（\x00-\x1f 等）
+    safe = "".join(ch for ch in text if ch >= " " or ch in "\n\r\t")
+    # 给超过 40 字符的无空格连续串插入空格，便于 word wrap
+    out = []
+    span = 0
+    for ch in safe:
+        if ch.isspace():
+            span = 0
+            out.append(ch)
+            continue
+        span += 1
+        if span > 40:
+            out.append(" ")
+            span = 1
+        out.append(ch)
+    safe = "".join(out)
+    if len(safe) > max_chars:
+        safe = safe[:max_chars] + "..."
+    return safe
+
+
 def _md_to_pdf_response(md_content: str, base_filename: str) -> Response:
     """将 Markdown 转为 PDF 并返回下载响应。
 
     使用 fpdf2 + Windows 系统中文字体（Microsoft YaHei / SimHei）。
+    支持：标题（#/##/###）、引用（>）、列表（-/*）、代码块（```）、
+    分隔线（---）、以及 Markdown 表格（| a | b |，含 |---| 分隔行）。
     """
     import io
     from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
 
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
-    # 注册中文字体（Windows 系统字体）
+    # 注册中文字体（Windows 系统字体）。
+    # 注意：fpdf2 >= 2.7 已弃用 uni=True 参数，传入反而触发 TTC 中文渲染 bug
+    # （multi_cell 抛 "Not enough horizontal space to render a single character"），
+    # 故一律不传 uni；优先 simhei.ttf（单 TTF，最稳），再试 msyh.ttc / simsun.ttc。
     font_name = "chinese"
     font_paths = [
-        "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simsun.ttc",
     ]
     font_loaded = False
     for fp in font_paths:
         if os.path.exists(fp):
             try:
-                pdf.add_font(font_name, "", fp, uni=True)
+                pdf.add_font(font_name, "", fp)
+                # 注册粗体（fpdf2 table 表头默认加粗，需 B 样式字体）
+                pdf.add_font(font_name, "B", fp)
                 font_loaded = True
                 break
             except Exception:
@@ -2842,46 +3449,68 @@ def _md_to_pdf_response(md_content: str, base_filename: str) -> Response:
 
     pdf.set_font(font_name, size=11)
 
+    lines = md_content.split("\n")
     in_code_block = False
-    for line in md_content.split("\n"):
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
 
         if stripped.startswith("```"):
             in_code_block = not in_code_block
+            i += 1
             continue
         if in_code_block:
             pdf.set_font(font_name, size=8)
-            # 截断超长行
-            safe = stripped[:120] if len(stripped) > 120 else stripped
-            pdf.multi_cell(0, 5, safe)
+            # 代码块：超长行按 80 字符截断 + 字符换行（wrapmode=CHAR），
+            # 防止 fpdf2 遇到超宽单词抛 "Not enough horizontal space"
+            pdf.multi_cell(0, 5, _pdf_safe_text(stripped, 80), wrapmode="CHAR", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font(font_name, size=11)
+            i += 1
+            continue
+
+        # Markdown 表格：| ... | 且下一行为 |---| 分隔行
+        if stripped.startswith("|") and i + 1 < len(lines) and _md_is_table_separator(lines[i + 1]):
+            header = _md_split_table_row(stripped)
+            i += 2  # 跳过分隔行
+            rows: list[list[str]] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append(_md_split_table_row(lines[i]))
+                i += 1
+            _draw_pdf_table(pdf, font_name, header, rows)
+            pdf.ln(2)
             continue
 
         if stripped.startswith("### "):
             pdf.set_font(font_name, size=13)
             pdf.ln(3)
-            pdf.multi_cell(0, 7, stripped[4:])
+            pdf.multi_cell(0, 7, _pdf_safe_text(_md_strip_inline(stripped[4:])), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font(font_name, size=11)
         elif stripped.startswith("## "):
             pdf.set_font(font_name, size=15)
             pdf.ln(5)
-            pdf.multi_cell(0, 8, stripped[3:])
+            pdf.multi_cell(0, 8, _pdf_safe_text(_md_strip_inline(stripped[3:])), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font(font_name, size=11)
         elif stripped.startswith("# "):
             pdf.set_font(font_name, size=18)
             pdf.ln(8)
-            pdf.multi_cell(0, 10, stripped[2:])
+            pdf.multi_cell(0, 10, _pdf_safe_text(_md_strip_inline(stripped[2:])), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font(font_name, size=11)
         elif stripped.startswith("---"):
             pdf.ln(3)
-            pdf.multi_cell(0, 5, "=" * 60)
+            pdf.multi_cell(0, 5, "=" * 60, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.ln(2)
+        elif stripped.startswith("> "):
+            pdf.set_font(font_name, size=10)
+            pdf.multi_cell(0, 6, _pdf_safe_text(_md_strip_inline(stripped[2:])), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font(font_name, size=11)
         elif stripped.startswith("- ") or stripped.startswith("* "):
-            pdf.multi_cell(0, 6, f"  • {stripped[2:]}")
+            pdf.multi_cell(0, 6, f"  \u2013 {_pdf_safe_text(_md_strip_inline(stripped[2:]))}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         elif stripped:
-            pdf.multi_cell(0, 6, stripped)
+            pdf.multi_cell(0, 6, _pdf_safe_text(_md_strip_inline(stripped)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         else:
             pdf.ln(3)
+        i += 1
 
     buf = io.BytesIO()
     pdf.output(buf)
@@ -2890,6 +3519,34 @@ def _md_to_pdf_response(md_content: str, base_filename: str) -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{base_filename}.pdf"'},
     )
+
+
+def _draw_pdf_table(pdf: Any, font_name: str, header: list[str], rows: list[list[str]]) -> None:
+    """用 fpdf2 table API 绘制 Markdown 表格。
+
+    列宽按页面有效宽度均分；单元格文本过 _pdf_safe_text 防超宽字符抛异常；
+    表头自动加粗（fpdf2 默认 heading 行为）。
+    """
+    from fpdf import FPDF  # noqa: F401
+
+    ncols = max(len(header), 1)
+    # 有效页面宽度均分到各列
+    usable = pdf.epw  # effective page width (mm)
+    col_widths = tuple(usable / ncols for _ in range(ncols))
+
+    pdf.set_font(font_name, size=9)
+    with pdf.table(col_widths=col_widths, text_align="LEFT") as table:
+        # 表头行
+        head_row = table.row()
+        for j in range(ncols):
+            head_row.cell(_pdf_safe_text(header[j] if j < len(header) else "", 200))
+        # 数据行
+        for row in rows:
+            data_row = table.row()
+            for j in range(ncols):
+                cell_text = row[j] if j < len(row) else ""
+                data_row.cell(_pdf_safe_text(cell_text, 400))
+    pdf.set_font(font_name, size=11)
 
 
 # ===== 文件上传 =====
@@ -3092,7 +3749,14 @@ def _require_project(project_id: str) -> ProjectState:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/data-sources")
@@ -3167,6 +3831,6 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("SRA_WEB_PORT", "8001"))
+    # 优先取 SRA_WEB_PORT；Render/Fly 等 PaaS 注入 $PORT 时兼容使用
+    port = int(os.environ.get("SRA_WEB_PORT") or os.environ.get("PORT") or "8001")
     uvicorn.run("web.api:app", host="0.0.0.0", port=port, reload=False)
-    uvicorn.run("web.api:app", host="0.0.0.0", port=8000, reload=False)

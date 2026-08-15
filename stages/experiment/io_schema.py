@@ -179,8 +179,20 @@ class ExperimentOutcomeAssessOutput(NodeOutput):
         "inconclusive_claim_ids": [...],   # 无法定论的 Claim
         "recommendation": "proceed_to_writing" / "rollback_to_ideation"
                          / "retry_experiment" / "abort",
-        "summary": "一句话总结"
+        "summary": "一句话总结",
+        "advice": [
+            {
+                "target": "claim_id / experiment_id / method 文档",
+                "action": "具体动作（补证据/修代码/重跑/调参/换基线/改方法）",
+                "reason": "给出该建议的实验证据",
+                "expected": "执行后期望达成的效果",
+            },
+            ...
+        ]
     }
+
+    advice 为**可执行**的方法改进建议列表（2-8 条），每条指向具体 target，
+    由实验成败评估 Agent 基于实验结果生成；dry_run / LLM 失败时由规则引擎兜底。
 
     recommendation 取值说明：
     - proceed_to_writing：实验验证了核心 Claim，进入论文写作阶段

@@ -1,0 +1,31 @@
+# 敏感文件：绝对不进入镜像
+.env
+**/.env
+config/secrets.yaml
+
+# 本地产物 / 大文件
+.venv/
+venv/
+node_modules/
+projects/
+*.db
+*.sqlite
+*.log
+*.pyc
+__pycache__/
+.pytest_cache/
+runs/
+mlruns/
+.dvc/
+_fullrun*
+test_result_*
+*.png
+*.pdf
+
+# git 元数据
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+README.md
+DEVLOG.md

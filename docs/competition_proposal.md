@@ -51,8 +51,11 @@
 ```
 research   →  ideation  →  design    →  experiment →  writing
 (文献调研)     (思路生成)    (方法设计)    (实验验证)     (论文写作)
-  6 节点         5 节点        6 节点        8 节点         6 节点
+  10 节点        5 节点        6 节点        9 节点         7 节点
 ```
+
+五阶段主流水线共 37 节点，加上路线 A 构效关系发现流水线（discovery，6 节点），
+合计 **43 节点**（详见 `docs/node_architecture.md` 的完整节点清单与通信机制论证）。
 
 **针对本方向，重点在 research 阶段（基本任务）+ design/experiment 阶段（路线 A 构效关系发现）。**
 
@@ -163,7 +166,7 @@ research   →  ideation  →  design    →  experiment →  writing
 
 系统已完成端到端架构搭建与真实运行验证：
 
-- **5 阶段 24 节点**全部跑通（dry_run + 真实模式）
+- **5 阶段 37 节点**（加 discovery 构效发现 6 节点共 43 节点）全部跑通（dry_run + 真实模式）
 - **真实 LLM 调用**：MiniMax M3，研究主题「联邦学习公平激励机制」真实运行产出：
   - 36 篇 arxiv 论文抓取，6 篇入库
   - 5 个研究思路（基于 7 个 Research Gap + 8 处冲突 + 14 条共识）

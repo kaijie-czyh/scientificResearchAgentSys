@@ -189,11 +189,15 @@ class MCTSSearcher:
         return exploit + explore
 
     def evaluate_with_surrogate(self, config: dict) -> tuple[float, float]:
-        """用代理模型评估配置（不调 LLM）。"""
+        """用代理模型评估配置（不调 LLM）。
+
+        无文献数据点时返回 (0.0, 0.0)：**不编造中性预测值**。
+        0.5 之类的"默认分"会被下游误当成科学预测，因此显式置零，
+        由调用方根据 surrogate_confidence==0 判定"无文献支撑"。
+        """
         if self.surrogate.is_available():
             return self.surrogate.predict(config)
-        # 无文献数据时，返回中性预测
-        return 0.5, 0.1
+        return 0.0, 0.0
 
     def add_candidate(self, candidate: SearchCandidate) -> None:
         """把 LLM 评估后的候选加入池。"""
@@ -214,18 +218,27 @@ class MCTSSearcher:
         return list(self._pool.values())
 
     def best_candidates(self, top_n: int = 5) -> list[SearchCandidate]:
-        """按 (plausibility + predicted_target 归一化) 排序返回 top-N。"""
+        """按 (plausibility + predicted_target 归一化) 排序返回 top-N。
+
+        无文献支撑的候选（surrogate_confidence≈0）被显式降权 0.4：
+        没有文献锚点的配置不允许仅凭 LLM 叙事进入发现前列，
+        它们仍保留在候选池中但被标注为 unsupported，供验证阶段降级处理。
+        """
         if not self._pool:
             return []
         scored = list(self._pool.values())
         # 预测值归一化到 0~1（用池内最大值）
         max_pred = max((c.predicted_target for c in scored), default=1.0) or 1.0
-        scored.sort(
-            key=lambda c: c.plausibility * 0.6
-            + min(1.0, c.predicted_target / max_pred) * 0.3
-            + c.surrogate_confidence * 0.1,
-            reverse=True,
-        )
+        def _rank(c: SearchCandidate) -> float:
+            base = (
+                c.plausibility * 0.6
+                + min(1.0, c.predicted_target / max_pred) * 0.3
+                + c.surrogate_confidence * 0.1
+            )
+            if c.surrogate_confidence <= 0.05:
+                base -= 0.4  # 无文献锚点：惩罚
+            return base
+        scored.sort(key=_rank, reverse=True)
         return scored[:top_n]
 
 
@@ -281,6 +294,90 @@ def build_search_variables(space_def: dict) -> list[SearchVariable]:
     return variables
 
 
+# ===== 目标性能物理边界表（热力学/物理客观定律硬筛） =====
+# 候选的 predicted_target 必须落在对应性能的物理合理区间内，
+# 否则视为违反客观物理规律的候选，在验证阶段直接剪枝。
+# 区间来源：教科书典型值 + 极端文献值的外包络（有意放宽，只拦"物理不可能"）。
+PHYSICAL_TARGET_BOUNDS: dict[str, tuple[float, float]] = {
+    # 热电性能
+    "zt": (1e-3, 4.5),                    # ZT 无量纲；室温 Bi2Te3 ~1，高温 SnSe 报道 2.6-3.1
+    "figure of merit": (1e-3, 4.5),
+    "seebeck": (-1500.0, 2000.0),         # μV/K
+    "seebeck coefficient": (-1500.0, 2000.0),
+    "thermal conductivity": (0.005, 2500.0),  # W/m·K（下限接近理论最小，上限含金刚石）
+    "electrical conductivity": (1.0, 1e7),    # S/m
+    "power factor": (1e-3, 200.0),        # mW/m·K²
+    # 电子结构
+    "band gap": (0.0, 12.0),              # eV
+    "formation energy": (-8.0, 3.0),      # eV/atom
+    # 力学/热学
+    "young's modulus": (0.001, 1400.0),   # GPa
+    "melting point": (0.0, 4000.0),       # K
+    "boiling point": (-200.0, 6000.0),    # °C
+    "specific heat": (1.0, 3000.0),       # J/kg·K（杜隆-珀蒂极限约束）
+    "density": (0.05, 25.0),              # g/cm³
+    # 输运/流体
+    "viscosity": (0.001, 1e6),            # cSt/mPa·s
+    "kinematic viscosity": (0.001, 1e6),
+    "dielectric strength": (0.1, 1500.0),  # kV/mm（真空~∞，工程液体上限）
+    "gwp": (0.0, 30000.0),                # GWP100（CO2 当量）
+    "gwp100": (0.0, 30000.0),
+    "odp": (0.0, 15.0),                   # 臭氧消耗潜值
+    # 光学
+    "refractive index": (1.0, 4.5),
+    "absorption coefficient": (1e-1, 1e7),  # cm⁻¹
+    # 催化/电化学
+    "overpotential": (0.0, 2000.0),       # mV
+    "exchange current density": (1e-12, 1.0),  # A/cm²
+    "faradaic efficiency": (1.0, 100.0),  # %
+    # 通用适任性/评分类目标（无物理单位，仅约束 0~1）
+    "suitability score": (0.0, 1.0),
+    "score": (0.0, 1.0),
+    "performance score": (0.0, 1.0),
+}
+
+# 边界检查豁免的定性目标（无法用数值区间约束）
+_UNBOUNDED_TARGETS = {"property", "performance", "target", "quality", ""}
+
+
+def _normalize_target_key(target_property: str) -> str:
+    """目标性能名归一化：小写 + 去多余空白，用于边界表匹配。"""
+    return " ".join((target_property or "").strip().lower().split())
+
+
+def check_target_plausibility(
+    target_property: str,
+    predicted_value: float,
+) -> tuple[bool, str]:
+    """检查预测的目标性能值是否落在物理合理区间内。
+
+    Returns:
+        (passed, reason)
+        - passed=True：值在边界内（或目标无边界定义，交由 LLM/文献判断）
+        - passed=False：违反物理边界，reason 给出剪枝依据
+    """
+    key = _normalize_target_key(target_property)
+    # 别名映射：热电 ZT 的常见写法
+    if key in {"zt value", "zt值", "无量纲热电优值"}:
+        key = "zt"
+    bounds = PHYSICAL_TARGET_BOUNDS.get(key)
+    if bounds is None:
+        # 未定义边界的目标不做硬筛（避免误杀），交由文献交叉验证判断
+        return True, ""
+    lo, hi = bounds
+    try:
+        v = float(predicted_value)
+    except (TypeError, ValueError):
+        return False, f"预测值 {predicted_value!r} 不是有效数值，无法通过物理边界检查"
+    if not (math.isfinite(v)):
+        return False, "预测值为 NaN/Inf，物理上无意义"
+    if v < lo:
+        return False, f"预测值 {v:.4g} 低于 {key} 物理下限 {lo:g}（违反客观物理规律）"
+    if v > hi:
+        return False, f"预测值 {v:.4g} 超过 {key} 物理上限 {hi:g}（违反客观物理规律）"
+    return True, ""
+
+
 def build_literature_points(points_def: list[dict]) -> list[LiteraturePoint]:
     """从文献数据点定义列表构造 LiteraturePoint。"""
     points = []
@@ -301,3 +398,169 @@ def build_literature_points(points_def: list[dict]) -> list[LiteraturePoint]:
             )
         )
     return points
+
+
+@dataclass
+class CalibrationReport:
+    """代理模型-数据库校准报告。
+
+    将代理模型（基于文献数据点的加权 KNN）的预测值与
+    Materials Project / OQMD / NOMAD 的 DFT 计算值对比，
+    量化代理模型的系统偏差，使搜索空间有数据库证据支持。
+    """
+
+    calibrated: bool = False           # 是否完成校准（至少 1 个材料匹配到数据库值）
+    n_checked: int = 0                 # 尝试查询的材料数
+    n_matched: int = 0                 # 成功匹配到数据库值的材料数
+    sources_used: list[str] = field(default_factory=list)  # 命中的数据源
+    mae: float = 0.0                   # 平均绝对误差（代理预测 vs 数据库 DFT）
+    bias: float = 0.0                  # 系统偏差（预测均值 - 数据库均值）
+    per_material: list[dict] = field(default_factory=list)  # 逐材料对比详情
+    note: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "calibrated": self.calibrated,
+            "n_checked": self.n_checked,
+            "n_matched": self.n_matched,
+            "sources_used": self.sources_used,
+            "mae": round(self.mae, 4),
+            "bias": round(self.bias, 4),
+            "per_material": self.per_material,
+            "note": self.note,
+        }
+
+
+def _extract_formula_from_config(config: dict) -> str:
+    """从配置字典中提取材料化学式。
+
+    搜索常见的键名：material, formula, composition, compound 等。
+    """
+    for key in ("material", "formula", "composition", "compound", "material_formula"):
+        val = config.get(key)
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def calibrate_surrogate_with_databases(
+    surrogate: SurrogateModel,
+    lit_points: list[LiteraturePoint],
+) -> CalibrationReport:
+    """用材料数据库 DFT 值校准代理模型。
+
+    对文献数据点中出现的材料，查询 MP / OQMD / NOMAD 的 DFT 计算值
+    （带隙 / 形成能），与代理模型对该材料配置的预测值对比，
+    计算 MAE 和系统偏差，输出校准报告。
+
+    所有数据库查询均优雅降级（网络不可用或未配置 API key 时跳过）。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    report = CalibrationReport()
+
+    # 延迟导入避免循环依赖
+    try:
+        from core.tools.materials_project import query_material_by_formula as mp_query
+    except Exception:
+        mp_query = None
+    try:
+        from core.tools.oqmd_nomad import query_oqmd_by_formula
+    except Exception:
+        query_oqmd_by_formula = None
+    try:
+        from core.tools.materials_db_gap import query_nomad_by_formula
+    except Exception:
+        query_nomad_by_formula = None
+
+    seen_formulas: set[str] = set()
+    comparisons: list[dict] = []
+    db_values: list[float] = []
+    pred_values: list[float] = []
+    sources_hit: set[str] = set()
+
+    for lp in lit_points:
+        formula = _extract_formula_from_config(lp.config)
+        if not formula or formula in seen_formulas:
+            continue
+        seen_formulas.add(formula)
+        report.n_checked += 1
+
+        # 查询三个数据库，取第一个命中的 DFT 值
+        db_value: Optional[float] = None
+        db_source = ""
+
+        # 1. Materials Project（带隙）
+        if mp_query is not None:
+            try:
+                mp_results = mp_query(formula)
+                if mp_results:
+                    bg = mp_results[0].get("band_gap")
+                    if bg is not None:
+                        db_value = float(bg)
+                        db_source = "Materials Project"
+                        sources_hit.add("Materials Project")
+            except Exception as e:
+                logger.debug("MP 校准查询失败 (%s): %s", formula, e)
+
+        # 2. OQMD（形成能 / 带隙）
+        if db_value is None and query_oqmd_by_formula is not None:
+            try:
+                oqmd_resp = query_oqmd_by_formula(formula)
+                if oqmd_resp and oqmd_resp.matched and oqmd_resp.entries:
+                    entry = oqmd_resp.entries[0]
+                    if entry.formation_energy is not None:
+                        db_value = float(entry.formation_energy)
+                        db_source = "OQMD"
+                        sources_hit.add("OQMD")
+                    elif entry.band_gap is not None:
+                        db_value = float(entry.band_gap)
+                        db_source = "OQMD"
+                        sources_hit.add("OQMD")
+            except Exception as e:
+                logger.debug("OQMD 校准查询失败 (%s): %s", formula, e)
+
+        # 3. NOMAD（仅做命中密度统计，无直接数值属性可取）
+        if db_value is None and query_nomad_by_formula is not None:
+            try:
+                nomad_resp = query_nomad_by_formula(formula)
+                if nomad_resp and nomad_resp.get("matched"):
+                    sources_hit.add("NOMAD")
+                    # NOMAD API 不直接返回带隙/形成能，仅标记命中
+            except Exception as e:
+                logger.debug("NOMAD 校准查询失败 (%s): %s", formula, e)
+
+        if db_value is None:
+            continue
+
+        # 代理模型对该配置的预测值
+        pred_target, confidence = surrogate.predict(lp.config) if surrogate.is_available() else (0.0, 0.0)
+        report.n_matched += 1
+        db_values.append(db_value)
+        pred_values.append(pred_target)
+
+        comparisons.append({
+            "formula": formula,
+            "db_source": db_source,
+            "db_value": round(db_value, 4),
+            "surrogate_prediction": round(pred_target, 4),
+            "deviation": round(pred_target - db_value, 4),
+            "surrogate_confidence": round(confidence, 4),
+        })
+
+    if not comparisons:
+        report.note = "无材料匹配到数据库 DFT 值（可能网络不可用或材料不在库中）"
+        return report
+
+    # 计算校准指标
+    n = len(comparisons)
+    report.mae = sum(abs(p - d) for p, d in zip(pred_values, db_values)) / n
+    pred_mean = sum(pred_values) / n
+    db_mean = sum(db_values) / n
+    report.bias = pred_mean - db_mean
+    report.sources_used = sorted(sources_hit)
+    report.per_material = comparisons
+    report.calibrated = True
+    report.note = f"代理模型与 {n} 个材料的数据库 DFT 值对比完成"
+    return report

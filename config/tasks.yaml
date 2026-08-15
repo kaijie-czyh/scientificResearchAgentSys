@@ -233,6 +233,8 @@ tasks:
     provider: minimax
     model: MiniMax-M3
     temperature: 0.3
+    # 完整多章节报告 + M3 思考链开销，2048 默认值会导致正文被截断（用户反馈"物理机制…额外降低 κ_L（除"处戛然而止）
+    max_tokens: 16384
     description: "生成构效关系发现报告，含物理机制解释与证据链"
 
 # ===== 方向推荐阶段（topic_discovery：研究趋势发现与主题推荐）=====

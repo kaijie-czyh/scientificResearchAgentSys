@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,6 @@ from core.knowledge import (
     ResearchGap,
     ResearchConflict,
 )
-from core.knowledge import KnowledgeStore, Paper, PaperChunk
 from core.llm import LLMRegistry
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
@@ -1383,7 +1382,7 @@ class CrossValidateAgent(AgentNode):
                         "    · cited_chunk_ids 若有具体段落引用则列出；\n"
                         "    · importance 0~1 表示关键度；actionability 限定 high / medium / low 表示可被新研究填补的难易度；\n"
                         "    · rationale 解释为何这是 Gap、为何对材料领域有价值。\n"
-                        "  - overall_confidence：0~1 综合可信度（共识越多、冲突越少、缺口越少 → 越高）。"
+                        "  - overall_confidence：0~1 综合可信度（共识越充分、冲突占比越低 → 越高；识别出的 gap 数本身不扣分）。"
                     ),
                     prompt=(
                         f"研究主题：{topic or sq}\n"
@@ -1503,17 +1502,24 @@ class CrossValidateAgent(AgentNode):
                     subquery=input_obj.subqueries[0] if input_obj.subqueries else "",
                 ))
 
-        # 综合可信度：冲突越少 / 共识越多 / 缺口越少 → 越高
+        # 综合可信度（平衡计分）：共识加分 + 冲突扣分 + 缺口轻微惩罚，语义与注释对齐
+        # - 共识密度：每子问题 3 条共识视为满分，共识越多越高（正面信号）
+        # - 冲突比例：冲突 /（冲突+共识），冲突占比越高越拉低（发现矛盾需复核，但发现本身说明验证有效）
+        # - 缺口惩罚：适度识别 gap 是深入调研的表现；仅当超出「每子问题 3 个」基准时才轻微扣分（封顶）
         n_sq = max(len(input_obj.subqueries), 1)
-        gap_ratio = len(all_gaps) / max(n_sq * 3, 1)
-        conflict_ratio = len(all_conflicts) / max(n_sq * 2, 1)
-        overall = max(0.0, min(1.0, 1.0 - gap_ratio * 0.4 - conflict_ratio * 0.3))
+        consensus_score = min(1.0, len(all_consensus) / max(n_sq * 3, 1))
+        total_statements = max(len(all_consensus) + len(all_conflicts), 1)
+        conflict_ratio = len(all_conflicts) / total_statements
+        gap_penalty = min(0.10, max(0.0, (len(all_gaps) - n_sq * 3) / max(n_sq * 3, 1)) * 0.10)
+
+        overall = 0.5 + 0.35 * consensus_score - 0.25 * conflict_ratio - gap_penalty
+        overall = round(max(0.0, min(1.0, overall)), 3)
 
         return {
             "conflicts": all_conflicts,
             "consensus": all_consensus,
             "gaps": all_gaps,
-            "overall_confidence": round(overall, 3),
+            "overall_confidence": overall,
         }
 
     def _persist_conflicts(
@@ -1684,7 +1690,7 @@ class CrossValidateAgent(AgentNode):
 # ===== MaterialKnowledgeExtractionAgent（Task 2：材料-性能-合成三元组）=====
 
 class MaterialExtractItem(BaseModel):
-    """材料实体抽取 schema 条目。"""
+    """材料实体抽取 schema 条目（多维性质画像抽取）。"""
 
     name: str = Field(description="材料名称/化学式（规范化，如 CH3NH3PbI3、MAPbI3）")
     formula: str = Field(default="", description="化学式（若可解析）")
@@ -1693,21 +1699,36 @@ class MaterialExtractItem(BaseModel):
     lattice_parameters: str = Field(default="", description="晶格参数（如 a=8.85 Å）")
     symmetry: str = Field(default="", description="对称性")
     composition: str = Field(default="", description="组成/掺杂（如 Cs0.05FA0.95PbI3、5% Mn-doped）")
-    # 性能指标（可能多条，需与材料绑定）
+    # ===== 深度分析扩展：基础结构性质 =====
+    material_type: str = Field(default="", description="材料类型（半导体/热电/钙钛矿/陶瓷/金属/高分子…）")
+    crystal_system: str = Field(default="", description="晶系（cubic/tetragonal/orthorhombic/hexagonal/monoclinic/triclinic）")
+    morphology: str = Field(default="", description="单晶/多晶/非晶")
+    phase_composition: str = Field(default="", description="相组成（是否多相）")
+    # 性能指标（可能多条，需与材料绑定；覆盖电子/热/光/力/化学稳定性等多维度）
     properties: list[dict] = Field(
         default_factory=list,
         description=(
-            "[{property_name, property_name_cn, value, value_num, unit, condition}], "
+            "[{property_name, property_name_cn, value, value_num, unit, condition, "
+            "data_type, test_temperature}], "
             "property_name 如 ZT / power_factor / thermal_conductivity / "
-            "electrical_conductivity / seebeck_coefficient"
+            "electrical_conductivity / seebeck_coefficient / band_gap / hardness / "
+            "absorption_coefficient / decomposition_temperature 等；"
+            "data_type ∈ experimental/theoretical（实验值或理论值，不明则留空）；"
+            "test_temperature 为测试温度（如 300 K）。"
+            "只抽取文本明确提到的信息，不要臆造数值。"
         ),
     )
-    # 合成条件（可能多条）
+    # 合成条件（可能多条；只抽取文本明确给出的参数，不要为补齐字段而编造）
     synthesis: list[dict] = Field(
         default_factory=list,
         description=(
-            "[{method, precursors, temperature, pressure, atmosphere, duration, steps}], "
-            "method 如 solid-state reaction / CVD / sol-gel / hot-pressing"
+            "[{method, precursors, precursor_ratio, solvent, temperature, pressure, "
+            "atmosphere, duration, heating_rate, ph, stirring, aging_time, "
+            "drying_temperature, calcination_temperature, calcination_time, "
+            "cooling_method, post_treatment, equipment, yield, phase_purity, "
+            "particle_size, steps}], "
+            "method 如 solid-state reaction / CVD / sol-gel / hot-pressing / hydrothermal。"
+            "未在文本中出现的字段留空，严禁编造实验参数。"
         ),
     )
 
@@ -1743,10 +1764,69 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
     task_type = "material_knowledge_extract"
     input_schema = MaterialExtractionInput
     output_schema = MaterialExtractionOutput
-    # 输出已由 _execute 显式写入 RESEARCH_MATERIAL_KNOWLEDGE（整体 dict），
-    # 这里不再用默认逐字段映射（output_keys 值必须是 ContextKey 实例，
-    # 若写字符串会在 ctx.set 时抛 AttributeError: 'str' object has no attribute 'name'）
-    output_keys = {}
+    # 输出为「材料-性能-合成」整体知识库（单一聚合 dict 写入一个 ContextKey），
+    # 通过覆盖 _apply_output 显式声明写入契约（output_keys 值必须是 ContextKey 实例）。
+    output_keys = {"material_knowledge": RESEARCH_MATERIAL_KNOWLEDGE}
+
+    # ----- 抽取置信度按信息完整度差异化计算（禁止一刀切常数） -----
+    # 数据来源均为论文摘要（非全文），上限受证据等级约束：结构信息齐全 → B 级上限 0.80；
+    # 数值/单位/条件齐全的性能 → B 级上限 0.82；合成工艺参数齐全 → C 级上限 0.73。
+    @staticmethod
+    def _material_conf(item) -> float:
+        """材料实体置信度：化学式 + 结构信息的完整度决定。"""
+        c = 0.55
+        if (item.formula or "").strip():
+            c += 0.10
+        if (item.crystal_structure or "").strip():
+            c += 0.05
+        if (item.space_group or "").strip():
+            c += 0.05
+        if (item.composition or "").strip():
+            c += 0.05
+        return round(c, 2)
+
+    @staticmethod
+    def _property_conf(prop: dict) -> float:
+        """性能数据置信度：有数值 + 单位 + 测试条件才接近上限。"""
+        c = 0.45
+        vn = prop.get("value_num")
+        if vn is not None and str(vn).strip():
+            c += 0.15
+        if (prop.get("unit") or "").strip():
+            c += 0.08
+        if (prop.get("condition") or "").strip():
+            c += 0.05
+        if (prop.get("test_temperature") or "").strip():
+            c += 0.05
+        if (prop.get("data_type") or "").strip():
+            c += 0.04
+        return round(c, 2)
+
+    @staticmethod
+    def _synthesis_conf(syn: dict) -> float:
+        """合成路线置信度：工艺方法 + 关键参数的完整度决定。"""
+        c = 0.45
+        if (syn.get("method") or "").strip():
+            c += 0.10
+        if (syn.get("temperature") or "").strip() or (syn.get("duration") or "").strip():
+            c += 0.08
+        if syn.get("precursors"):
+            c += 0.06
+        if (syn.get("steps") or "").strip():
+            c += 0.04
+        return round(c, 2)
+
+    def _apply_output(self, output: MaterialExtractionOutput, ctx: ExecutionContext) -> None:
+        """把「材料-性能-合成」三元组整体写入 RESEARCH_MATERIAL_KNOWLEDGE。
+
+        输出是整体知识库（单一聚合 dict），而非逐字段散写，故覆盖默认的
+        逐字段映射实现，显式声明写入契约。
+        """
+        ctx.set(RESEARCH_MATERIAL_KNOWLEDGE, {
+            "materials": output.materials,
+            "properties": output.properties,
+            "synthesis": output.synthesis,
+        })
 
     def _build_input(self, ctx: ExecutionContext) -> MaterialExtractionInput:
         return MaterialExtractionInput(paper_ids=ctx.get(RESEARCH_PAPER_IDS, []))
@@ -1783,6 +1863,14 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                     lattice_parameters=m.get("lattice_parameters", ""),
                     symmetry=m.get("symmetry", ""),
                     composition=m.get("composition", ""),
+                    # 深度分析扩展：基础结构性质
+                    material_type=m.get("material_type", ""),
+                    crystal_system=m.get("crystal_system", ""),
+                    morphology=m.get("morphology", ""),
+                    phase_composition=m.get("phase_composition", ""),
+                    is_multiphase=bool(m.get("is_multiphase", False)),
+                    element_composition=m.get("element_composition", ""),
+                    element_ratio=m.get("element_ratio", ""),
                     paper_id=m.get("paper_id"),
                     paper_title=m.get("paper_title", ""),
                     norm_name=norm,
@@ -1818,6 +1906,10 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                     value_num=value_num,
                     unit=p.get("unit") or "",
                     condition=p.get("condition") or "",
+                    # 深度分析扩展：数据类型/测试温度/来源（证据等级由 annotate 规则回填）
+                    data_type=p.get("data_type") or "",
+                    test_temperature=p.get("test_temperature") or "",
+                    source_type="paper" if p.get("paper_id") else "",
                     paper_id=p.get("paper_id"),
                     paper_title=p.get("paper_title") or "",
                     confidence=float(p.get("confidence", 0.0) or 0.0),
@@ -1837,6 +1929,10 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                 _raw_pre = s.get("precursors", []) or []
                 if isinstance(_raw_pre, str):
                     _raw_pre = [_raw_pre]
+                # equipment 同理统一转 list
+                _raw_equip = s.get("equipment", []) or []
+                if isinstance(_raw_equip, str):
+                    _raw_equip = [_raw_equip]
                 # steps 可能是 list，统一转字符串
                 _raw_steps = s.get("steps", "") or ""
                 if isinstance(_raw_steps, list):
@@ -1851,6 +1947,23 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                     atmosphere=s.get("atmosphere") or "",
                     duration=s.get("duration") or "",
                     steps=_raw_steps,
+                    # 深度分析扩展：完整实验参数
+                    precursor_ratio=s.get("precursor_ratio") or "",
+                    solvent=s.get("solvent") or "",
+                    solvent_ratio=s.get("solvent_ratio") or "",
+                    heating_rate=s.get("heating_rate") or "",
+                    ph=s.get("ph") or "",
+                    stirring=s.get("stirring") or "",
+                    aging_time=s.get("aging_time") or "",
+                    drying_temperature=s.get("drying_temperature") or "",
+                    calcination_temperature=s.get("calcination_temperature") or "",
+                    calcination_time=s.get("calcination_time") or "",
+                    cooling_method=s.get("cooling_method") or "",
+                    post_treatment=s.get("post_treatment") or "",
+                    equipment=list(_raw_equip),
+                    yield_=s.get("yield") or "",
+                    phase_purity=s.get("phase_purity") or "",
+                    particle_size=s.get("particle_size") or "",
                     paper_id=s.get("paper_id"),
                     paper_title=s.get("paper_title", ""),
                     confidence=float(s.get("confidence", 0.0) or 0.0),
@@ -1859,13 +1972,6 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                 ))
             except Exception as e:
                 logger.warning("合成落库失败: %s", e)
-
-        # 写入 context（供下游阶段复用）
-        ctx.set(RESEARCH_MATERIAL_KNOWLEDGE, {
-            "materials": materials,
-            "properties": properties,
-            "synthesis": synthesis,
-        })
 
         # 覆盖度重抽：首轮抽取后，对「仅名称」的具体材料做针对性二次抽取
         # （跨论文聚合片段 + 专门 prompt，补全性能/合成，减少空壳材料）
@@ -1913,11 +2019,16 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                     task_type=self.task_type,
                     output_schema=MaterialExtractSchema,
                     system=(
-                        "你是材料科学知识抽取专家。从论文标题与摘要中抽取结构化材料知识：\n"
-                        "1. 材料：化学式/名称、晶体结构、空间群、晶格参数、对称性、组成掺杂\n"
-                        "2. 性能：ZT、功率因子、热导率、电导率、Seebeck 系数等（带数值/条件）\n"
-                        "3. 合成：工艺方法、前驱体、温度、压力、气氛、时间、步骤\n"
-                        "只抽取文本中明确提到的信息，不要臆造。每篇论文列出研究的主要材料。"
+                        "你是材料科学知识抽取专家。从论文标题与摘要中抽取结构化材料知识（多维性质画像）：\n"
+                        "1. 材料：化学式/名称、晶体结构、空间群、晶格参数、对称性、组成掺杂、"
+                        "材料类型、晶系、单晶/多晶/非晶、相组成\n"
+                        "2. 性能：覆盖电子（带隙/电导率/载流子/迁移率/Seebeck）、热（热导率/比热/熔点）、"
+                        "光（吸收系数/折射率）、力学（杨氏模量/硬度）、化学稳定性（分解温度/稳定性）等维度；"
+                        "带数值/单位/条件，并标注 data_type（experimental/theoretical）与 test_temperature\n"
+                        "3. 合成：工艺方法、前驱体及其比例、溶剂、温度、压力、气氛、时间、升温速率、"
+                        "pH、搅拌、煅烧/退火温度、冷却方式、设备、产率、相纯度、粒径、步骤\n"
+                        "硬约束：只抽取文本明确提到的信息，绝不臆造数值或实验参数；"
+                        "未出现的字段留空。每篇论文列出研究的主要材料。"
                     ),
                     prompt=(
                         f"论文标题：{title}\n"
@@ -1955,6 +2066,11 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                         "lattice_parameters": item.lattice_parameters,
                         "symmetry": item.symmetry,
                         "composition": item.composition,
+                        "material_type": item.material_type,
+                        "crystal_system": item.crystal_system,
+                        "morphology": item.morphology,
+                        "phase_composition": item.phase_composition,
+                        "is_multiphase": item.phase_composition != "",
                         "paper_id": p.paper_id,
                         "paper_title": title,
                         "confidence": dynamic_conf,
@@ -1997,9 +2113,11 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                             "value_num": prop.get("value_num"),
                             "unit": prop.get("unit", ""),
                             "condition": prop.get("condition", ""),
+                            "data_type": prop.get("data_type", ""),
+                            "test_temperature": prop.get("test_temperature", ""),
                             "paper_id": p.paper_id,
                             "paper_title": title,
-                            "confidence": prop_conf,
+"confidence": prop_conf,
                             "confidence_breakdown": {
                                 "field_completeness": round(prop_field_score, 2),
                                 "value_in_physical_range": prop_value_score,
@@ -2020,10 +2138,25 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                             "material_name": item.name,
                             "method": syn.get("method", ""),
                             "precursors": syn.get("precursors", []),
+                            "precursor_ratio": syn.get("precursor_ratio", ""),
+                            "solvent": syn.get("solvent", ""),
                             "temperature": syn.get("temperature", ""),
                             "pressure": syn.get("pressure", ""),
                             "atmosphere": syn.get("atmosphere", ""),
                             "duration": syn.get("duration", ""),
+                            "heating_rate": syn.get("heating_rate", ""),
+                            "ph": syn.get("ph", ""),
+                            "stirring": syn.get("stirring", ""),
+                            "aging_time": syn.get("aging_time", ""),
+                            "drying_temperature": syn.get("drying_temperature", ""),
+                            "calcination_temperature": syn.get("calcination_temperature", ""),
+                            "calcination_time": syn.get("calcination_time", ""),
+                            "cooling_method": syn.get("cooling_method", ""),
+                            "post_treatment": syn.get("post_treatment", ""),
+                            "equipment": syn.get("equipment", []),
+                            "yield": syn.get("yield", ""),
+                            "phase_purity": syn.get("phase_purity", ""),
+                            "particle_size": syn.get("particle_size", ""),
                             "steps": syn.get("steps", ""),
                             "paper_id": p.paper_id,
                             "paper_title": title,
@@ -2172,7 +2305,8 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                             condition=prop.get("condition", ""),
                             paper_id=mat.paper_id,
                             paper_title=mat.paper_title,
-                            confidence=0.7,  # 二次抽取置信度略低
+                            # 二次抽取：按字段完整度差异化（跨论文聚合片段，证据略打折）
+                            confidence=round(self._property_conf(prop) * 0.9, 2),
                             source_snippet=(snippets[0] or "")[:800],
                             source_stage="research",
                         ))
@@ -2196,7 +2330,7 @@ class MaterialKnowledgeExtractionAgent(AgentNode):
                             steps=_raw_steps,
                             paper_id=mat.paper_id,
                             paper_title=mat.paper_title,
-                            confidence=0.7,
+                            confidence=round(self._synthesis_conf(syn) * 0.9, 2),
                             source_snippet=(snippets[0] or "")[:800],
                             source_stage="research",
                         ))
@@ -2267,8 +2401,9 @@ class ResearchGapIdentifyAgent(AgentNode):
     task_type = "research_gap_identify"
     input_schema = ResearchGapInput
     output_schema = ResearchGapOutput
-    # 结构化清单整体写入 RESEARCH_GAP_REPORT（与 material_extraction 同理）
-    output_keys = {}
+    # 结构化 Gap 清单整体写入 RESEARCH_GAP_REPORT（字段名 gaps 与 ContextKey 一一映射，
+    # 走默认 _apply_output 逐字段映射即可）。
+    output_keys = {"gaps": RESEARCH_GAP_REPORT}
 
     # 数据驱动检测规则上限（避免一次生成过多 gap 淹没下游）
     MAX_DATA_DRIVEN_GAPS = 12
@@ -2291,11 +2426,36 @@ class ResearchGapIdentifyAgent(AgentNode):
 
         llm_gaps: list[dict] = []
         data_gaps: list[dict] = []
+        db_gaps: list[dict] = []
+        db_evidence_list: list = []
 
-        # 通道 A：LLM 语义分析（仅真实模式且 LLM 可用）
+        # 通道 C 前置：材料数据库证据查询（Materials Project / OQMD / NOMAD）
+        # 真实模式才查（dry_run 不访问外部 API），失败优雅降级不阻塞。
+        if not dry_run and store is not None:
+            try:
+                from core.tools.materials_db_gap import (
+                    collect_material_formulas,
+                    query_materials_databases,
+                )
+                formulas = collect_material_formulas(store)
+                if formulas:
+                    db_evidence_list = query_materials_databases(formulas)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("材料数据库证据查询失败（降级为无数据库证据）: %s", e)
+
+        db_block = ""
+        if db_evidence_list:
+            try:
+                from core.tools.materials_db_gap import build_db_evidence_block
+
+                db_block = build_db_evidence_block(db_evidence_list)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("构建数据库证据块失败: %s", e)
+
+        # 通道 A：LLM 语义分析（仅真实模式且 LLM 可用；注入数据库证据）
         if not dry_run and registry is not None:
             try:
-                llm_gaps = self._llm_identify(input_obj, registry, store)
+                llm_gaps = self._llm_identify(input_obj, registry, store, db_block)
             except Exception as e:
                 logger.warning("Research Gap LLM 识别失败，回退规则通道: %s", e)
 
@@ -2306,8 +2466,29 @@ class ResearchGapIdentifyAgent(AgentNode):
             except Exception as e:
                 logger.warning("Research Gap 数据驱动检测失败: %s", e)
 
+        # 通道 C：数据库驱动缺口检测（规则层，基于三库数据密度）
+        if db_evidence_list and store is not None:
+            try:
+                from core.tools.materials_db_gap import (
+                    build_material_coverage,
+                    detect_db_gaps,
+                )
+                coverage = build_material_coverage(store)
+                db_gaps = detect_db_gaps(db_evidence_list, coverage)
+                for g in db_gaps:
+                    g["gap_id"] = KnowledgeStore.new_id()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("数据库驱动缺口检测失败: %s", e)
+
         # 合并去重（同 statement 保留 LLM 版本，标注 hybrid）
-        gaps = self._merge_gaps(llm_gaps, data_gaps)
+        gaps = self._merge_gaps(llm_gaps, data_gaps + db_gaps)
+
+        # 按 related_materials 回填数据库证据（增强「每条 Gap 有清晰文献+数据库证据链」）
+        if db_evidence_list:
+            try:
+                self._attach_db_evidence(gaps, db_evidence_list)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("数据库证据回填失败: %s", e)
 
         # dry_run 且无真实数据：生成占位 Gap（验证拓扑用）
         if dry_run and not gaps:
@@ -2343,9 +2524,6 @@ class ResearchGapIdentifyAgent(AgentNode):
         saved = 0
         if store is not None:
             saved = self._persist(store, gaps)
-
-        # 写入 context（供下游 ideation/discovery/报告消费）
-        ctx.set(RESEARCH_GAP_REPORT, gaps)
 
         output = ResearchGapOutput(gaps=gaps)
         by_type: dict[str, int] = {}
@@ -2416,8 +2594,13 @@ class ResearchGapIdentifyAgent(AgentNode):
         input_obj: ResearchGapInput,
         registry: LLMRegistry,
         store: Optional[KnowledgeStore],
+        db_evidence_block: str = "",
     ) -> list[dict]:
-        """LLM 语义通道：基于交叉验证报告 + 论文摘要 + 材料知识识别缺口。"""
+        """LLM 语义通道：基于交叉验证报告 + 论文摘要 + 材料知识识别缺口。
+
+        新增：注入「材料数据库证据块」（Materials Project / OQMD / NOMAD 数据密度），
+        让 LLM 用数据库定量事实判断哪些方向是真正的数据缺口，而非泛泛推断。
+        """
         report = input_obj.cross_validation_report or {}
         # 基础 gaps（cross_validate 输出的子问题缺口）+ 冲突 + 共识
         base_gaps = report.get("gaps") or []
@@ -2457,6 +2640,10 @@ class ResearchGapIdentifyAgent(AgentNode):
                 "2. 宁缺毋滥：只输出真正有依据的缺口，3-10 条\n"
                 "3. 给出可操作性（能否被后续 ideation/discovery 直接消费）与优先级\n"
                 "4. 关联相关材料与建议行动\n"
+                "5. 若提示里给出了「材料数据库证据」（三库数据密度），必须据此判断：\n"
+                "   - 三库命中都极低的材料 → 明确标注为数据稀缺（unexplored 或 detail 里说明）；\n"
+                "   - 数据库有计算记录但文献无实验验证的材料 → 标注为「计算有据、实验空白」；\n"
+                "   不要编造数据库未提供的数值，只引用提示里出现的事实。\n"
             ),
             prompt=(
                 f"交叉验证报告：\n"
@@ -2464,7 +2651,8 @@ class ResearchGapIdentifyAgent(AgentNode):
                 f"  已知缺口（子问题粒度）：{base_gaps}\n"
                 f"  矛盾结论：{json.dumps(conflicts, ensure_ascii=False)[:2000]}\n"
                 f"  共识陈述：{consensus[:10]}\n\n"
-                f"代表性论文摘要：\n{abstracts_block}"
+                f"代表性论文摘要：\n{abstracts_block}\n\n"
+                f"材料数据库证据（Materials Project / OQMD / NOMAD 数据密度）：\n{db_evidence_block or '（无）'}"
             ),
         )
         gaps: list[dict] = []
@@ -2645,6 +2833,47 @@ class ResearchGapIdentifyAgent(AgentNode):
         return merged
 
     @staticmethod
+    def _attach_db_evidence(gaps: list[dict], evidence_list: list) -> None:
+        """按 Gap 的 related_materials 回填数据库证据（文献 + 数据库双证据链）。
+
+        每条 Gap 若其关联材料在数据库聚合证据中有命中，则挂载 db_evidence：
+        [{source, formula, mp:{...}, oqmd:{...}, nomad:{...}, total_entry_count}]。
+        已带 db_evidence 的 Gap（db_driven 通道产出）跳过，避免重复。
+        """
+        if not evidence_list:
+            return
+        ev_by_key: dict[str, Any] = {}
+        for ev in evidence_list:
+            formula = (getattr(ev, "formula", "") or "").strip().lower()
+            name = (getattr(ev, "name", "") or "").strip().lower()
+            if formula:
+                ev_by_key[formula] = ev
+            if name and name not in ev_by_key:
+                ev_by_key[name] = ev
+
+        for g in gaps:
+            if g.get("db_evidence"):
+                continue
+            related = g.get("related_materials") or []
+            attached: list[dict] = []
+            seen_formula: set[str] = set()
+            for r in related:
+                key = str(r).strip().lower()
+                ev = ev_by_key.get(key)
+                if ev is None:
+                    continue
+                fkey = (getattr(ev, "formula", "") or "").strip().lower()
+                if fkey in seen_formula:
+                    continue
+                seen_formula.add(fkey)
+                try:
+                    attached.append(ev.db_evidence())
+                except Exception:  # noqa: BLE001
+                    continue
+            if attached:
+                g["db_evidence"] = attached
+
+    @staticmethod
     def _placeholder_gaps(subqueries: list[str]) -> list[dict]:
         """dry_run 占位 Gap（验证拓扑用）。"""
         sq = subqueries[0] if subqueries else "研究主题"
@@ -2674,6 +2903,7 @@ class ResearchGapIdentifyAgent(AgentNode):
                     statement=g.get("statement", ""),
                     detail=g.get("detail", ""),
                     evidence=g.get("evidence") or [],
+                    db_evidence=g.get("db_evidence") or [],
                     related_materials=g.get("related_materials") or [],
                     actionability=g.get("actionability", "medium"),
                     priority=int(g.get("priority", 3)),

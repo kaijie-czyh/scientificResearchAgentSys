@@ -47,6 +47,46 @@ PROPERTY_CANON: dict[str, dict] = {
     "phonon_mean_free_path": {"key": "phonon_mean_free_path", "cn": "声子平均自由程", "symbol": "Λ", "unit": "nm", "category": "热输运"},
     "carrier_type": {"key": "carrier_type", "cn": "载流子类型", "symbol": "", "unit": "", "category": "载流子"},
     "hall_coefficient": {"key": "hall_coefficient", "cn": "霍尔系数", "symbol": "R_H", "unit": "cm³/C", "category": "载流子"},
+    # ===== 电子性质补充 =====
+    "direct_band_gap": {"key": "direct_band_gap", "cn": "直接带隙", "symbol": "E_g^dir", "unit": "eV", "category": "能带结构"},
+    "indirect_band_gap": {"key": "indirect_band_gap", "cn": "间接带隙", "symbol": "E_g^ind", "unit": "eV", "category": "能带结构"},
+    "fermi_level": {"key": "fermi_level", "cn": "费米能级", "symbol": "E_F", "unit": "eV", "category": "能带结构"},
+    "work_function": {"key": "work_function", "cn": "功函数", "symbol": "Φ", "unit": "eV", "category": "能带结构"},
+    "defect_state": {"key": "defect_state", "cn": "缺陷态", "symbol": "", "unit": "", "category": "能带结构"},
+    "impurity_state": {"key": "impurity_state", "cn": "杂质态", "symbol": "", "unit": "", "category": "能带结构"},
+    "conductivity_type": {"key": "conductivity_type", "cn": "导电类型", "symbol": "", "unit": "", "category": "载流子"},
+    # ===== 热学性质补充 =====
+    "specific_heat": {"key": "specific_heat", "cn": "比热", "symbol": "C_p", "unit": "J/(g·K)", "category": "热输运"},
+    "thermal_expansion_coefficient": {"key": "thermal_expansion_coefficient", "cn": "热膨胀系数", "symbol": "α", "unit": "10⁻⁶/K", "category": "热输运"},
+    "melting_point": {"key": "melting_point", "cn": "熔点", "symbol": "T_m", "unit": "K", "category": "热输运"},
+    "phase_transition_temperature": {"key": "phase_transition_temperature", "cn": "相变温度", "symbol": "T_c", "unit": "K", "category": "热输运"},
+    "thermal_stability": {"key": "thermal_stability", "cn": "热稳定性", "symbol": "", "unit": "", "category": "热输运"},
+    "working_temperature_range": {"key": "working_temperature_range", "cn": "工作温度范围", "symbol": "", "unit": "", "category": "热输运"},
+    # ===== 光学性质 =====
+    "absorption_coefficient": {"key": "absorption_coefficient", "cn": "吸收系数", "symbol": "α", "unit": "cm⁻¹", "category": "光学"},
+    "optical_band_gap": {"key": "optical_band_gap", "cn": "光学带隙", "symbol": "E_g^opt", "unit": "eV", "category": "光学"},
+    "reflectance": {"key": "reflectance", "cn": "反射率", "symbol": "R", "unit": "%", "category": "光学"},
+    "refractive_index": {"key": "refractive_index", "cn": "折射率", "symbol": "n", "unit": "", "category": "光学"},
+    "photoluminescence": {"key": "photoluminescence", "cn": "光致发光", "symbol": "PL", "unit": "nm", "category": "光学"},
+    "uv_vis": {"key": "uv_vis", "cn": "紫外可见吸收", "symbol": "UV-vis", "unit": "nm", "category": "光学"},
+    "photoresponse_range": {"key": "photoresponse_range", "cn": "光响应范围", "symbol": "", "unit": "nm", "category": "光学"},
+    # ===== 力学性质 =====
+    "young_modulus": {"key": "young_modulus", "cn": "杨氏模量", "symbol": "E", "unit": "GPa", "category": "力学"},
+    "elastic_modulus": {"key": "elastic_modulus", "cn": "弹性模量", "symbol": "E", "unit": "GPa", "category": "力学"},
+    "hardness": {"key": "hardness", "cn": "硬度", "symbol": "H", "unit": "GPa", "category": "力学"},
+    "fracture_toughness": {"key": "fracture_toughness", "cn": "断裂韧性", "symbol": "K_IC", "unit": "MPa·m^1/2", "category": "力学"},
+    "tensile_strength": {"key": "tensile_strength", "cn": "抗拉强度", "symbol": "σ_ts", "unit": "MPa", "category": "力学"},
+    "compressive_strength": {"key": "compressive_strength", "cn": "抗压强度", "symbol": "σ_cs", "unit": "MPa", "category": "力学"},
+    "thermomechanical_stability": {"key": "thermomechanical_stability", "cn": "热机械稳定性", "symbol": "", "unit": "", "category": "力学"},
+    # ===== 化学稳定性 =====
+    "air_stability": {"key": "air_stability", "cn": "空气稳定性", "symbol": "", "unit": "", "category": "化学稳定性"},
+    "water_stability": {"key": "water_stability", "cn": "水稳定性", "symbol": "", "unit": "", "category": "化学稳定性"},
+    "oxidation_resistance": {"key": "oxidation_resistance", "cn": "抗氧化性", "symbol": "", "unit": "", "category": "化学稳定性"},
+    "corrosion_resistance": {"key": "corrosion_resistance", "cn": "抗腐蚀性", "symbol": "", "unit": "", "category": "化学稳定性"},
+    "acid_base_stability": {"key": "acid_base_stability", "cn": "酸碱稳定性", "symbol": "", "unit": "", "category": "化学稳定性"},
+    "chemical_compatibility": {"key": "chemical_compatibility", "cn": "化学相容性", "symbol": "", "unit": "", "category": "化学稳定性"},
+    "decomposition_temperature": {"key": "decomposition_temperature", "cn": "分解温度", "symbol": "T_d", "unit": "K", "category": "化学稳定性"},
+    "volatile_element": {"key": "volatile_element", "cn": "易挥发元素", "symbol": "", "unit": "", "category": "化学稳定性"},
 }
 
 # 归一化兜底：按名称子串匹配（大小写不敏感）
@@ -78,19 +118,103 @@ _PROPERTY_ALIAS_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"conversion.?efficien", re.I), "energy_conversion_efficiency"),
     (re.compile(r"exciton", re.I), "exciton_binding_energy"),
     (re.compile(r"thermoelectric", re.I), "thermoelectric_performance"),
+    # 电子补充
+    (re.compile(r"direct.?band.?gap", re.I), "direct_band_gap"),
+    (re.compile(r"indirect.?band.?gap", re.I), "indirect_band_gap"),
+    (re.compile(r"fermi.?level", re.I), "fermi_level"),
+    (re.compile(r"work.?function", re.I), "work_function"),
+    (re.compile(r"defect.?state|impurity.?state", re.I), "defect_state"),
+    (re.compile(r"conductivity.?type|conduction.?type", re.I), "conductivity_type"),
+    # 热学补充
+    (re.compile(r"specific.?heat|heat.?capacity", re.I), "specific_heat"),
+    (re.compile(r"thermal.?expansion|CTE|coefficient.?of.?thermal", re.I), "thermal_expansion_coefficient"),
+    (re.compile(r"melting.?point|melting.?temp", re.I), "melting_point"),
+    (re.compile(r"phase.?transition.?temp|curie.?temp|transition.?temp", re.I), "phase_transition_temperature"),
+    (re.compile(r"thermal.?stabilit|working.?temperature", re.I), "thermal_stability"),
+    # 光学
+    (re.compile(r"absorption.?coeff|absorptivity", re.I), "absorption_coefficient"),
+    (re.compile(r"optical.?band.?gap", re.I), "optical_band_gap"),
+    (re.compile(r"reflectan|reflectivity", re.I), "reflectance"),
+    (re.compile(r"refractive.?index", re.I), "refractive_index"),
+    (re.compile(r"photoluminescence|\bPL\b|emission.?spect", re.I), "photoluminescence"),
+    (re.compile(r"uv.?vis|ultraviolet", re.I), "uv_vis"),
+    (re.compile(r"photoresponse|light.?response", re.I), "photoresponse_range"),
+    # 力学
+    (re.compile(r"young.?modulus|young.?s", re.I), "young_modulus"),
+    (re.compile(r"elastic.?modulus", re.I), "elastic_modulus"),
+    (re.compile(r"hardness", re.I), "hardness"),
+    (re.compile(r"fracture.?tough", re.I), "fracture_toughness"),
+    (re.compile(r"tensile.?strength", re.I), "tensile_strength"),
+    (re.compile(r"compressive.?strength", re.I), "compressive_strength"),
+    (re.compile(r"thermomechanical", re.I), "thermomechanical_stability"),
+    # 化学稳定性
+    (re.compile(r"air.?stabilit|ambient.?stabilit", re.I), "air_stability"),
+    (re.compile(r"water.?stabilit|moisture.?stabilit|humidity.?stabilit", re.I), "water_stability"),
+    (re.compile(r"oxidation.?resist|anti.?oxidation|oxidation.?stabilit", re.I), "oxidation_resistance"),
+    (re.compile(r"corrosion.?resist|corrosion.?stabilit", re.I), "corrosion_resistance"),
+    (re.compile(r"acid.?base|alkaline.?stabilit|chemical.?compatib", re.I), "chemical_compatibility"),
+    (re.compile(r"decomposition.?temp|decompose", re.I), "decomposition_temperature"),
+    (re.compile(r"volatile.?element|volatil", re.I), "volatile_element"),
 ]
+
+
+# ===== 性质六大维度（材料性质画像的分组维度）=====
+# 用户研究主题 + 材料体系决定需要分析哪些维度，而非对所有材料输出全部字段。
+# dimension 是「大类」，category 是「细分类」（如 dimension=电子性质 下含电输运/载流子/能带结构）。
+PROPERTY_DIMENSIONS: list[tuple[str, str]] = [
+    ("structure", "基础结构"),
+    ("electronic", "电子性质"),
+    ("thermal", "热学性质"),
+    ("optical", "光学性质"),
+    ("mechanical", "力学性质"),
+    ("chemical_stability", "化学稳定性"),
+    ("performance", "目标性能"),
+    ("other", "其他"),
+]
+
+# category（细分类）→ dimension（大类）
+_CATEGORY_TO_DIMENSION: dict[str, str] = {
+    "热电优值": "performance",
+    "电输运": "electronic",
+    "热输运": "thermal",
+    "载流子": "electronic",
+    "能带结构": "electronic",
+    "稳定性": "chemical_stability",
+    "器件性能": "performance",
+    "光学": "optical",
+    "力学": "mechanical",
+    "化学稳定性": "chemical_stability",
+    "其他": "other",
+}
+
+# dimension → 中文标签
+DIMENSION_LABELS: dict[str, str] = {
+    "structure": "基础结构",
+    "electronic": "电子性质",
+    "thermal": "热学性质",
+    "optical": "光学性质",
+    "mechanical": "力学性质",
+    "chemical_stability": "化学稳定性",
+    "performance": "目标性能",
+    "other": "其他",
+}
+
+
+def dimension_of(category: str) -> str:
+    """由 category 推导六大维度（大类）。"""
+    return _CATEGORY_TO_DIMENSION.get(category or "", "other")
 
 
 def normalize_property(property_name: str, property_name_cn: str = "") -> dict:
     """把 LLM 抽取的性能名归一为标准性能。
 
     Returns:
-        {"key", "cn", "symbol", "unit", "category", "original"}
+        {"key", "cn", "symbol", "unit", "category", "dimension", "original"}
     """
     original = (property_name or "").strip()
     if not original:
         return {"key": "", "cn": property_name_cn or "", "symbol": "",
-                "unit": "", "category": "其他", "original": ""}
+                "unit": "", "category": "其他", "dimension": "other", "original": ""}
     # 1) 精确匹配
     canon = PROPERTY_CANON.get(original.lower())
     # 2) 中文名匹配（property_name 与 property_name_cn 任一命中即可，
@@ -110,6 +234,14 @@ def normalize_property(property_name: str, property_name_cn: str = "") -> dict:
             "德拜温度": "debye_temperature", "格林艾森参数": "gruneisen_parameter",
             "能量转换效率": "energy_conversion_efficiency", "激子结合能": "exciton_binding_energy",
             "热电性能": "thermoelectric_performance",
+            "杨氏模量": "young_modulus", "弹性模量": "elastic_modulus", "硬度": "hardness",
+            "断裂韧性": "fracture_toughness", "抗拉强度": "tensile_strength",
+            "抗压强度": "compressive_strength",
+            "吸收系数": "absorption_coefficient", "折射率": "refractive_index",
+            "反射率": "reflectance", "光致发光": "photoluminescence",
+            "比热": "specific_heat", "热膨胀系数": "thermal_expansion_coefficient",
+            "熔点": "melting_point", "分解温度": "decomposition_temperature",
+            "空气稳定性": "air_stability", "水稳定性": "water_stability",
         }
         matched = next((v for k, v in cn_map.items() if k in cn_lower), None)
         if matched:
@@ -122,8 +254,11 @@ def normalize_property(property_name: str, property_name_cn: str = "") -> dict:
                 break
     if canon is None:
         return {"key": original, "cn": property_name_cn or original,
-                "symbol": "", "unit": "", "category": "其他", "original": original}
-    return {**canon, "original": original}
+                "symbol": "", "unit": "", "category": "其他",
+                "dimension": "other", "original": original}
+    result = {**canon, "original": original}
+    result["dimension"] = dimension_of(result.get("category", "其他"))
+    return result
 
 
 # ===== 2. 合成方法分类 =====
@@ -263,6 +398,8 @@ def is_generic_material_name(name: str, formula: str = "") -> bool:
 
 
 # 性能指标类别 → 中文标签（前端分组用）
+# 深度分析扩展：新增光学/力学/化学稳定性类别（对应六大性质维度）
 PROPERTY_CATEGORIES = [
-    "热电优值", "电输运", "热输运", "载流子", "能带结构", "稳定性", "器件性能", "其他",
+    "热电优值", "电输运", "热输运", "载流子", "能带结构", "稳定性",
+    "光学", "力学", "化学稳定性", "器件性能", "其他",
 ]

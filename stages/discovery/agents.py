@@ -35,6 +35,7 @@ from core.knowledge import (
 )
 from core.physics_consistency import check_candidate as physics_check_candidate
 from core.llm import LLMRegistry
+from core.llm.base import strip_think_tags
 from core.orchestration.context import ExecutionContext
 from core.orchestration.node import (
     AgentNode,
@@ -47,7 +48,9 @@ from core.tools import (
     SurrogateModel,
     build_literature_points,
     build_search_variables,
+    calibrate_surrogate_with_databases,
     perturb_config,
+    run_symbolic_regression,
 )
 from core.tools.sciverse_search import agentic_search as sciverse_agentic_search
 from core.tools.sciverse_search import is_available as sciverse_is_available
@@ -720,18 +723,34 @@ class LLMGuidedSearchAgent(AgentNode):
         )
         constraints = space.get("constraints", [])
         target_prop = space.get("target_property", "property")
+        has_lit_support = surrogate.is_available()
 
-        # 用假设作为初始种子（取首个假设的变量方向）
-        seed_config = self._seed_from_hypotheses(input_obj.hypotheses, variables)
+        # 用假设作为初始种子：优先锚定文献数据点（最优性能点），
+        # 无文献数据点时才退化为变量域中点（标注为无支撑初始化）。
+        seed_config = self._seed_from_hypotheses(input_obj.hypotheses, variables, lit_points)
 
         # 首候选：种子配置
         pred, conf = searcher.evaluate_with_surrogate(seed_config)
+        if has_lit_support:
+            seed_mechanism = (
+                "种子配置：锚定文献最优点（代理模型有文献数据点支撑，"
+                "预测值为文献插值估计，非实测值）"
+            )
+            seed_plausibility = 0.7
+        else:
+            # 无文献数据点：预测值置 0（不编造），种子仅作搜索初始化
+            pred, conf = 0.0, 0.0
+            seed_mechanism = (
+                "种子配置：变量定义域中点初始化（当前主题无文献数据点，"
+                "代理模型不可用，本候选不携带数值预测，仅作搜索空间初始化）"
+            )
+            seed_plausibility = 0.4
         seed_candidate = SearchCandidate(
             config=seed_config,
             predicted_target=pred,
             surrogate_confidence=conf,
-            plausibility=0.7,
-            mechanism="种子配置（来自假设）",
+            plausibility=seed_plausibility,
+            mechanism=seed_mechanism,
             novelty="",
         )
         searcher.add_candidate(seed_candidate)
@@ -788,14 +807,24 @@ class LLMGuidedSearchAgent(AgentNode):
                         "3. novelty：与已知文献的差异说明\n"
                         "4. pruned：若配置物理不合理（违反约束/不可能合成），标记 true 剪枝\n"
                         "评估必须基于物理常识与给定约束，不要臆测。"
-                        "避免「可能/也许/或许」等模糊词汇，机制解释需基于已建立的物理理论。"
+                        "避免「可能/也许/或许」等模糊词汇，机制解释需基于已建立的物理理论。\n"
+                        "**诚实性红线**：\n"
+                        "- 代理模型预测值是文献数据点的插值/外推估计，**不是实测值也不是 DFT 计算值**，"
+                        "机制解释中不得把预测值当作已验证的实验事实引用。\n"
+                        "- 若文献数据点数为 0，任何数值预测都不具备证据意义：plausibility 必须低于 0.4，"
+                        "并明确说明「该候选缺乏文献支撑，仅为搜索初始化假设」。"
                     ),
                     prompt=(
                         f"目标性能：{target_prop}\n"
                         f"物理约束：{constraints}\n"
                         f"候选配置：{new_config}\n"
-                        f"代理模型预测 {target_prop}={pred_target:.4g}（置信度 {conf:.2f}）\n"
-                        f"文献数据点数：{len(lit_points)}"
+                        + (
+                            f"代理模型预测 {target_prop}={pred_target:.4g}"
+                            f"（置信度 {conf:.2f}，注意：这是文献插值估计，非实测值）\n"
+                            if has_lit_support
+                            else "代理模型：当前无文献数据点，本候选无数值预测。\n"
+                        )
+                        + f"文献数据点数：{len(lit_points)}"
                     ),
                 )
                 # 5. 剪枝：物理不合理的候选不入池
@@ -861,19 +890,28 @@ class LLMGuidedSearchAgent(AgentNode):
                     "surrogate_confidence": conf,
                 })
 
-        # 取 top-N 候选
+        # 取 top-N 候选（best_candidates 已对无文献支撑候选降权）
         top = searcher.best_candidates(top_n=5)
-        candidates = [
-            {
+        candidates = []
+        for c in top:
+            supported = c.surrogate_confidence > 0.05
+            cand = {
                 "config": c.config,
-                "predicted_target": c.predicted_target,
+                "predicted_target": c.predicted_target if supported else 0.0,
                 "plausibility": c.plausibility,
                 "mechanism": c.mechanism,
                 "novelty": c.novelty,
                 "surrogate_confidence": c.surrogate_confidence,
+                # 证据状态：验证/报告阶段据此区分「发现」与「待验证假设」
+                "evidence_status": "literature_anchored" if supported else "unsupported",
             }
-            for c in top
-        ]
+            if not supported:
+                cand["mechanism"] = (
+                    (c.mechanism or "") +
+                    "｜【证据披露】该候选无文献数据点支撑，predicted_target 不具数值意义，"
+                    "仅为搜索过程假设，不构成科学发现。"
+                ).lstrip("｜")
+            candidates.append(cand)
 
         # 持久化 MCTS 搜索轨迹与文献数据点到 KV（前端可视化）
         store: Optional[KnowledgeStore] = ctx.get(KNOWLEDGE_STORE)
@@ -899,7 +937,68 @@ class LLMGuidedSearchAgent(AgentNode):
             except Exception as e:
                 logger.warning("持久化 discovery_search_trace 到 KV 失败: %s", e)
 
-        output = LLMGuidedSearchOutput(candidates=candidates)
+        # ===== 符号回归（第二搜索算法，与 MCTS 互补） =====
+        # 从文献数据点直接拟合解析表达式（如 ZT = f(组成, 温度)），
+        # 输出可解释公式 + R²/MAE，作为发现候选补充进验证链路。
+        symbolic_fit_dict: dict = {}
+        try:
+            sr_points = [
+                {"config": lp.config, "target": lp.target}
+                for lp in lit_points
+                if lp.config and lp.target is not None
+            ]
+            if len(sr_points) >= 3:
+                sr_result = run_symbolic_regression(
+                    sr_points, population_size=50, generations=25, seed=42
+                )
+                symbolic_fit_dict = sr_result.to_dict()
+                logger.info(
+                    "符号回归完成：fitted=%s, R²=%.4f, MAE=%.4f, expr=%s",
+                    sr_result.fitted, sr_result.r2, sr_result.mae,
+                    sr_result.expr_str[:80],
+                )
+            else:
+                symbolic_fit_dict = {
+                    "fitted": False,
+                    "note": f"文献数据点仅 {len(sr_points)} 个，不足 3 个，跳过符号回归",
+                }
+        except Exception as e:
+            logger.warning("符号回归执行失败（不阻塞主流程）: %s", e)
+            symbolic_fit_dict = {"fitted": False, "note": f"符号回归异常: {e}"}
+
+        # 持久化符号回归结果到 KV（前端展示）
+        if store is not None:
+            try:
+                store.save_kv("discovery_symbolic_regression", symbolic_fit_dict)
+            except Exception as e:
+                logger.warning("持久化 discovery_symbolic_regression 到 KV 失败: %s", e)
+
+        # ===== 代理模型-数据库校准（性能评估闭环） =====
+        # 将代理模型预测值与 MP / OQMD / NOMAD 的 DFT 值对比，
+        # 量化系统偏差，使搜索空间有数据库证据支持。
+        calibration_dict: dict = {}
+        try:
+            cal_report = calibrate_surrogate_with_databases(surrogate, lit_points)
+            calibration_dict = cal_report.to_dict()
+            logger.info(
+                "代理模型校准完成：calibrated=%s, matched=%d/%d, MAE=%.4f, bias=%.4f",
+                cal_report.calibrated, cal_report.n_matched, cal_report.n_checked,
+                cal_report.mae, cal_report.bias,
+            )
+        except Exception as e:
+            logger.warning("代理模型数据库校准失败（不阻塞主流程）: %s", e)
+            calibration_dict = {"calibrated": False, "note": f"校准异常: {e}"}
+
+        if store is not None:
+            try:
+                store.save_kv("discovery_surrogate_calibration", calibration_dict)
+            except Exception as e:
+                logger.warning("持久化 discovery_surrogate_calibration 到 KV 失败: %s", e)
+
+        output = LLMGuidedSearchOutput(
+            candidates=candidates,
+            symbolic_fit=symbolic_fit_dict,
+        )
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
@@ -911,8 +1010,29 @@ class LLMGuidedSearchAgent(AgentNode):
         )
 
     @staticmethod
-    def _seed_from_hypotheses(hypotheses: list[dict], variables: list) -> dict:
-        """从假设生成初始种子配置（取变量定义域中点）。"""
+    def _seed_from_hypotheses(
+        hypotheses: list[dict], variables: list, lit_points: Optional[list] = None
+    ) -> dict:
+        """从假设生成初始种子配置。
+
+        优先级：
+        1. 有文献数据点 → 锚定目标性能最优的文献点配置（保证种子有证据链）
+        2. 无文献数据点 → 变量定义域中点（仅作初始化，无证据意义）
+        """
+        if lit_points:
+            best = max(lit_points, key=lambda lp: lp.target)
+            if best and best.config:
+                # 保留文献点原始配置，同时补齐缺失变量的域中点
+                seed = dict(best.config)
+                var_map = {v.name: v for v in variables}
+                for v in variables:
+                    if v.name not in seed:
+                        seed[v.name] = (
+                            v.categories[0]
+                            if v.var_type == "categorical" and v.categories
+                            else round((v.low + v.high) / 2, 4)
+                        )
+                return seed
         if not variables:
             return {}
         seed = {}
@@ -939,11 +1059,12 @@ class LLMGuidedSearchAgent(AgentNode):
         return [
             {
                 "config": seed,
-                "predicted_target": 0.85,
+                "predicted_target": 0.0,  # dry_run 不携带数值预测，避免假数字流入报告
                 "plausibility": 0.7,
-                "mechanism": "占位机制说明（dry_run）",
+                "mechanism": "占位机制说明（dry_run，无数值预测）",
                 "novelty": "占位新颖性",
-                "surrogate_confidence": 0.3,
+                "surrogate_confidence": 0.0,
+                "evidence_status": "unsupported",
             }
         ]
 
@@ -992,9 +1113,46 @@ class DiscoveryValidateAgent(AgentNode):
                 summary="无候选构效关系可验证",
             )
 
+        # ===== 规则硬筛 1：物理边界（热力学/物理客观定律，先于 LLM 验证） =====
+        # 预测值超出目标性能物理合理区间的候选直接剪枝——LLM 叙事再好也不能违反客观定律。
+        from core.tools import check_target_plausibility
+
+        target_prop = input_obj.search_space.get("target_property", "property")
+        screened: list[dict] = []
+        n_physics_pruned = 0
+        physics_prune_reasons: list[str] = []
+        for cand in input_obj.candidates:
+            cand = dict(cand)  # 不改上游对象
+            supported = (
+                cand.get("evidence_status") == "literature_anchored"
+                or (cand.get("surrogate_confidence") or 0.0) > 0.05
+            )
+            cand["evidence_status"] = "literature_anchored" if supported else "unsupported"
+            if supported:
+                passed, reason = check_target_plausibility(
+                    target_prop, cand.get("predicted_target") or 0.0
+                )
+                if not passed:
+                    n_physics_pruned += 1
+                    physics_prune_reasons.append(
+                        f"{reason}｜config={json.dumps(cand.get('config', {}), ensure_ascii=False)[:120]}"
+                    )
+                    continue
+            screened.append(cand)
+
+        if not screened:
+            output = DiscoveryValidateOutput(relationships=[])
+            return NodeResult(
+                status=NodeStatus.SUCCESS,
+                output=output,
+                summary=(
+                    f"全部 {len(input_obj.candidates)} 个候选未通过物理边界硬筛，无有效发现。"
+                    f"剪枝原因：{'；'.join(physics_prune_reasons[:3])}"
+                ),
+            )
+
         if not dry_run and registry is not None:
             try:
-                target_prop = input_obj.search_space.get("target_property", "property")
                 result = registry.structured_output(
                     task_type=self.task_type,
                     output_schema=RelationshipBatchSchema,
@@ -1020,27 +1178,30 @@ class DiscoveryValidateAgent(AgentNode):
                         "**重要**：代理模型预测的具体配置组合通常是文献数据点的插值/外推，\n"
                         "这些具体组合在文献中往往未被直接报告，应评估为 novel 或 partially_known。\n"
                         "只有当文献明确报告了相同材料+相同掺杂浓度+相同温度的相同性能值时才标 known。\n"
-                        "known 的发现置信度应较低；novel 的发现需文献间接支撑。"
+                        "known 的发现置信度应较低；novel 的发现需文献间接支撑。\n"
+                        "**诚实性红线**：\n"
+                        "- relationship 陈述中的数值必须标注「代理模型预测」，不得表述为实测值或文献值。\n"
+                        "- evidence_status=unsupported 的候选（无文献数据点支撑）confidence 不得高于 0.4，\n"
+                        "  且 relationship 必须以「待验证假设」开头，明确它不是经过验证的发现。"
                     ),
                     prompt=(
                         f"目标性能：{target_prop}\n"
                         f"可用 paper_ids: {input_obj.paper_ids[:15]}\n\n"
-                        f"候选构效关系（含代理预测与机制）：\n"
-                        + json.dumps(input_obj.candidates, ensure_ascii=False, indent=2)
+                        f"候选构效关系（含代理预测、机制与证据状态）：\n"
+                        + json.dumps(screened, ensure_ascii=False, indent=2)
                         + "\n\n=== 评估要点 ===\n"
                         "对每个候选，判断其具体变量组合（材料+掺杂+温度等）是否在文献中被直接报告。\n"
-                        "若组合是代理模型预测的新配置（非文献数据点原样复制），倾向 novel/partially_known。"
+                        "若组合是代理模型预测的新配置（非文献数据点原样复制），倾向 novel/partially_known。\n"
+                        "evidence_status=unsupported 的候选缺乏文献锚点，只输出定性假设陈述。"
                     ),
                 )
                 relationships = []
                 for r in result.relationships:
                     rel = r.model_dump()
-                    # 构造 evidence_refs（证据链）
-                    rel["evidence_refs"] = [
-                        {"type": "paper", "id": pid}
-                        for pid in r.evidence_paper_ids
-                        if pid in input_obj.paper_ids
-                    ]
+                    # 构造 evidence_refs（可追溯证据链：paper 标题 + 相关 chunk + 片段）
+                    rel["evidence_refs"] = self._resolve_evidence_refs(
+                        r.evidence_paper_ids, input_obj.paper_ids, store
+                    )
                     # 若结构化 mechanism 字段缺失，组装
                     if not rel.get("mechanism"):
                         rel["mechanism"] = _compose_mechanism(
@@ -1050,6 +1211,12 @@ class DiscoveryValidateAgent(AgentNode):
                             rel.get("quantitative_reason", ""),
                             rel.get("domain_specific_concept", ""),
                         )
+                    # 新知 vs 已知：与已入库文献的量化相似度 Top-N（支持 novelty 判断）
+                    rel["novelty_context"] = self._compute_novelty_context(
+                        rel.get("relationship", ""),
+                        rel.get("mechanism", ""),
+                        store,
+                    )
                     relationships.append(rel)
 
                 # 真实入库为 Claim（构效关系发现即 Claim）
@@ -1074,6 +1241,27 @@ class DiscoveryValidateAgent(AgentNode):
                 relationships = self._placeholder(input_obj)
         else:
             relationships = self._placeholder(input_obj)
+
+        # ===== 规则硬筛 2：无文献支撑候选降级（诚实性兜底） =====
+        # 全部候选均无文献数据点支撑时（如新领域主题检索不到量化数据），
+        # 所有 relationship 一律降级为「待验证假设」：置信度封顶 0.4，
+        # 并在陈述中显式披露证据状态，防止把搜索初始化假设包装成科学发现。
+        all_unsupported = bool(screened) and all(
+            c.get("evidence_status") == "unsupported" for c in screened
+        )
+        if all_unsupported:
+            for rel in relationships:
+                try:
+                    rel["confidence"] = min(float(rel.get("confidence", 0.0) or 0.0), 0.4)
+                except (TypeError, ValueError):
+                    rel["confidence"] = 0.4
+                rel["evidence_status"] = "unsupported"
+                rel["hypothesis_only"] = True
+                rel.setdefault(
+                    "evidence_disclosure",
+                    "本候选缺乏文献数据点支撑：数值为代理模型不可用时的占位，"
+                    "仅作待验证假设输出，不构成经过交叉验证的科学发现。",
+                )
 
         output = DiscoveryValidateOutput(relationships=relationships)
         n_novel = sum(1 for r in relationships if r.get("novelty") == "novel")
@@ -1133,17 +1321,51 @@ class DiscoveryValidateAgent(AgentNode):
                             "error": str(e),
                         }
 
+                # NOMAD 交叉验证（赛题路线 A 加分项：nomad-lab.eu 开放计算数据）
+                nomad_results: list[dict] = []
+                try:
+                    from core.tools import query_nomad_by_formula
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("NOMAD 工具导入失败: %s", e)
+                    query_nomad_by_formula = None
+                for rel in relationships:
+                    material = (rel.get("config", {}) or {}).get("material", "")
+                    if not material or query_nomad_by_formula is None:
+                        continue
+                    try:
+                        nomad_resp = query_nomad_by_formula(material)
+                        rel["nomad_validation"] = nomad_resp
+                        nomad_results.append({
+                            "claim_id": rel.get("claim_id", ""),
+                            "material": material,
+                            "matched": nomad_resp.get("matched", False),
+                            "count": nomad_resp.get("count", 0),
+                            "source": nomad_resp.get("source", ""),
+                        })
+                    except Exception as e:
+                        logger.warning("NOMAD 验证失败（%s）：%s", material, e)
+                        rel["nomad_validation"] = {
+                            "query": material,
+                            "matched": False,
+                            "source": "error",
+                            "error": str(e),
+                        }
+
                 # 持久化交叉验证报告到 KV（前端展示）
                 cross_val_store = {
                     "materials_project": cv_report_dict,
                     "oqmd": oqmd_results,
+                    "nomad": nomad_results,
                 }
                 store.save_kv("materials_cross_validation_report", cross_val_store)
                 logger.info(
-                    "材料数据库交叉验证完成：MP mp_validated=%d，OQMD matched=%d/%d，overall_confidence=%.2f",
+                    "材料数据库交叉验证完成：MP mp_validated=%d，OQMD matched=%d/%d，"
+                    "NOMAD matched=%d/%d，overall_confidence=%.2f",
                     cv_report.mp_validated,
                     sum(1 for r in oqmd_results if r.get("matched")),
                     len(oqmd_results),
+                    sum(1 for r in nomad_results if r.get("matched")),
+                    len(nomad_results),
                     cv_report.overall_confidence,
                 )
             except Exception as e:
@@ -1236,14 +1458,151 @@ class DiscoveryValidateAgent(AgentNode):
             except Exception as e:
                 logger.warning("发现可信度评分失败: %s", e)
 
+        summary_text = (
+            f"验证 {len(relationships)} 条构效关系，"
+            f"其中 {n_novel} 条 novel"
+        )
+        if n_physics_pruned:
+            summary_text += f"；物理边界硬筛剪枝 {n_physics_pruned} 个候选（违反客观物理规律）"
+        if all_unsupported:
+            summary_text += "；全部候选无文献数据点支撑，已降级为待验证假设（置信度≤0.4）"
         return NodeResult(
             status=NodeStatus.SUCCESS,
             output=output,
-            summary=(
-                f"验证 {len(relationships)} 条构效关系，"
-                f"其中 {n_novel} 条 novel"
-            ),
+            summary=summary_text,
         )
+
+    @staticmethod
+    def _resolve_evidence_refs(
+        evidence_paper_ids: list[str],
+        known_paper_ids: list[str],
+        store: Optional[KnowledgeStore],
+    ) -> list[dict]:
+        """把 evidence_paper_ids 解析为可追溯证据链。
+
+        Each ref: {type: "paper", id, title, chunk_id, snippet, external_score}
+        - title 来自 KnowledgeStore 论文实体（提升前端可读性，而非只显示 hash id）
+        - chunk_id + snippet 来自论文分块（溯源到段落级）
+        - 无法入库解析的 id 仍保留原始结构（不丢链）
+        """
+        refs: list[dict] = []
+        if not evidence_paper_ids:
+            return refs
+
+        # 论文标题缓存（一次查库，避免 N+1 查询）
+        title_cache: dict[str, str] = {}
+        abstract_cache: dict[str, str] = {}
+        if store is not None:
+            try:
+                papers = store.list_papers() or []
+                for p in papers:
+                    title_cache[p.paper_id] = p.title or ""
+                    abstract_cache[p.paper_id] = p.abstract or ""
+            except Exception as e:  # noqa: BLE001
+                logger.warning("证据链标题回填失败: %s", e)
+
+        for pid in evidence_paper_ids:
+            pid = (pid or "").strip()
+            if not pid:
+                continue
+            ref: dict = {"type": "paper", "id": pid}
+            title = title_cache.get(pid) or pid
+            ref["title"] = title
+            # 尝试定位论文分块，溯源到段落级
+            if store is not None:
+                try:
+                    chunks = store.get_paper_chunks(pid) or []
+                    if chunks:
+                        best = chunks[0]
+                        # 取与发现最相关的分块：优先取首个非空（可扩展为向量检索 top-1）
+                        ref["chunk_id"] = best.chunk_id
+                        snippet = (best.text or "").strip()[:220]
+                        if snippet:
+                            ref["snippet"] = snippet
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("证据 chunk 解析失败（%s）: %s", pid, e)
+            # 兜底：无标题信息时用摘要片段提示
+            if ref.get("title") == pid and abstract_cache.get(pid):
+                ref["snippet"] = abstract_cache[pid][:220]
+            # 仅保留已知论文（筛掉不在库中的幽灵 id）
+            if pid in known_paper_ids or pid in title_cache:
+                refs.append(ref)
+        return refs
+
+    @staticmethod
+    def _compute_novelty_context(
+        relationship_text: str,
+        mechanism_text: str,
+        store: Optional[KnowledgeStore],
+        top_n: int = 3,
+    ) -> dict:
+        """对发现陈述做「已知文献相似度 Top-N」量化对比（新知 vs 已知）。
+
+        用轻量 Token 重叠（Jaccard）计算发现与已入库论文标题/摘要的相似度：
+        - 相似度低（<0.3）→ 文献库中无明显前例，support 新颖性判断为 novel
+        - 相似度高（>=0.5）→ 存在高度相似已知工作，提示 partially_known / known
+        不依赖 embedding 模型，避免额外依赖与失败点。
+        """
+        query_text = f"{relationship_text} {mechanism_text}".lower()
+        # 提取有意义的 token（字母数字 + 化学式）
+        import re as _re
+
+        def _tokens(text: str) -> set[str]:
+            return set(_re.findall(r"[a-z]{2,}[0-9]*|[a-z][0-9]+[a-z]?", text))
+
+        q_tokens = _tokens(query_text)
+        if not q_tokens:
+            return {"top_similar_papers": [], "max_similarity": 0.0, "assessment": "insufficient_text"}
+
+        if store is None:
+            return {"top_similar_papers": [], "max_similarity": 0.0, "assessment": "no_store"}
+
+        scored: list[dict] = []
+        try:
+            papers = store.list_papers() or []
+        except Exception as e:  # noqa: BLE001
+            logger.warning("新知对比文献读取失败: %s", e)
+            return {"top_similar_papers": [], "max_similarity": 0.0, "assessment": "error"}
+
+        for p in papers:
+            title = (p.title or "").lower()
+            abstract = (p.abstract or "").lower()
+            doc_text = f"{title} {abstract}"
+            doc_tokens = _tokens(doc_text)
+            if not doc_tokens:
+                continue
+            inter = len(q_tokens & doc_tokens)
+            union = len(q_tokens | doc_tokens)
+            sim = inter / max(union, 1)
+            if sim <= 0.05:
+                continue
+            scored.append({
+                "paper_id": p.paper_id,
+                "title": p.title or "(无标题)",
+                "similarity": round(sim, 3),
+                "matched_terms": sorted(list(q_tokens & doc_tokens))[:8],
+            })
+
+        scored.sort(key=lambda x: -x["similarity"])
+        top = scored[:top_n]
+        max_sim = top[0]["similarity"] if top else 0.0
+
+        # 评估结论：相似度阈值（保守）
+        if not top:
+            assessment = "novel"  # 库内无相似文献
+        elif max_sim >= 0.5:
+            assessment = "known"  # 高度相似，已有工作
+        elif max_sim >= 0.3:
+            assessment = "partially_known"
+        else:
+            assessment = "novel"
+
+        return {
+            "top_similar_papers": top,
+            "max_similarity": round(max_sim, 3),
+            "assessment": assessment,
+            "method": "token-overlap jaccard (lightweight)",
+        }
 
     @staticmethod
     def _placeholder(input_obj: DiscoveryValidateInput) -> list[dict]:
@@ -1346,12 +1705,15 @@ class DiscoveryReportAgent(AgentNode):
                     task_type=self.task_type,
                     system=(
                         "你是材料科学发现报告撰写助手。基于验证后的构效关系发现，"
-                        "生成结构化 Markdown 报告：\n"
-                        "1. 发现概览（搜索空间、假设、发现数量）\n"
-                        "2. 每条构效关系：陈述 + 物理机制 + 证据链 + 置信度 + 新颖性\n"
-                        "3. 新颖性分析（与已知文献的差异）\n"
-                        "4. 局限性（代理模型依赖文献数据、搜索空间有限）\n"
-                        "报告应清晰区分「新发现」与「文献已知」，不夸大。"
+                        "生成结构化 Markdown 报告，章节必须完整：\n"
+                        "1. 概览（搜索空间、假设、发现数量、平均置信度）\n"
+                        "2. 方法学（MCTS+LLM 搜索、加权 KNN 代理模型、物理边界硬筛、交叉验证、五维评分）\n"
+                        "3. 数据来源与证据（文献数据点、Materials Project/OQMD/NOMAD、物理边界表）\n"
+                        "4. 每条构效关系：陈述 + 物理机制 + 证据链 + 置信度 + 新颖性 + 预测区间\n"
+                        "5. 证据状态披露（明确标注「发现」vs「待验证假设」，数值为插值估计非实测/DFT）\n"
+                        "6. 局限性（代理模型依赖文献数据、搜索空间有限）\n"
+                        "报告应清晰区分「新发现」与「文献已知」，不夸大，"
+                        "数值预测必须给出预测区间与不确定性来源。"
                     ),
                     prompt=(
                         f"搜索空间：{json.dumps(input_obj.search_space, ensure_ascii=False)}\n\n"
@@ -1361,6 +1723,8 @@ class DiscoveryReportAgent(AgentNode):
                     ),
                 )
                 report_content = resp.text
+                # 双保险：剥离推理模型的 <think> 思考链（provider 层已剥离，此处防御历史/兜底）
+                report_content = strip_think_tags(report_content)
             except Exception as e:
                 logger.warning("DiscoveryReport 真实调用失败，回退占位: %s", e)
                 report_content = self._placeholder(input_obj)
@@ -1452,15 +1816,33 @@ class DiscoveryReportAgent(AgentNode):
             "",
             "> **报告类型**：基于 MCTS + LLM 引导搜索的材料构效关系发现",
             f"> **目标属性**：{target_prop}",
-            f"> **生成模式**：{'LLM 真实生成' if len(rels) > 0 else '占位模板'}",
+            "> **生成模式**：规则模板（确定性生成，预测值为文献数据插值估计，非实测、非 DFT）",
             "",
             "## 1. 概览",
             "",
             f"- 候选假设数：**{len(input_obj.hypotheses)}**",
-            f"- 验证发现数：**{len(rels)}**（novel: **{novel_count}**, partially_known: **{partial_count}**, known: **{known_count}**）",
+            f"- 验证发现数：**{len(rels)}**（新颖：**{novel_count}**；部分已知：**{partial_count}**；已知：**{known_count}**）",
             f"- 平均置信度：**{avg_conf:.2f}**（高置信度 ≥0.6：{len(high_conf)} 条；低置信度 <0.4：{len(low_conf)} 条）",
             "",
-            "## 2. 假设与搜索空间匹配性",
+            "## 2. 方法学",
+            "",
+            "本报告由以下确定性/可解释流程逐步生成，每一步均有明确依据：",
+            "",
+            "1. **假设种子生成**：以目标性能最优的文献数据点配置为锚点初始化候选；无文献点时退化为搜索空间中心点。",
+            "2. **搜索空间定义**：将目标属性与其影响因素（掺杂浓度、温度、材料体系等）离散为可枚举空间。",
+            "3. **MCTS + LLM 引导搜索**：蒙特卡洛树搜索探索候选配置，LLM 依据物理常识对节点打分，平衡探索与利用。",
+            "4. **代理模型预测**：以文献实测值为训练集，加权最近邻（KNN）插值外推候选目标性能；无文献支撑的候选不输出数值预测。",
+            "5. **物理边界硬筛**：对预测值执行客观物理区间校验（ZT、热导率、沸点、介电强度、GWP100 等 28 项物理量边界），违反物理定律的候选被剪枝。",
+            "6. **交叉验证**：候选材料命中 Materials Project / OQMD 数据库时做一致性比对，否则按规则降级。",
+            "7. **五维可信度评分**：综合代理模型置信度、外推安全性、文献密度、机制论证、交叉验证一致性，给出 0~1 评分。",
+            "",
+            "## 3. 数据来源与证据",
+            "",
+            "- **文献数据点**：research 阶段抽取的材料性能实测值（加权 KNN 的训练集，可溯源 paper_id）。",
+            "- **外部数据库**：Materials Project / OQMD / NOMAD（交叉验证，需配置 API Key）。",
+            "- **物理边界表**：`PHYSICAL_TARGET_BOUNDS`（28 项物理量客观区间），源自材料科学共识与文献报道。",
+            "",
+            "## 4. 假设与搜索空间匹配性",
             "",
             f"搜索空间：{json.dumps(input_obj.search_space, ensure_ascii=False)[:500]}",
             "",
@@ -1478,9 +1860,28 @@ class DiscoveryReportAgent(AgentNode):
                 lines.append("> ⚠️ **假设与搜索空间主题可能不匹配**：假设文本未包含主题关键词。")
                 lines.append("")
 
+        # 证据状态披露（诚实性红线：区分「发现」与「待验证假设」）
+        n_unsupported = sum(1 for r in rels if r.get("evidence_status") == "unsupported")
+        lines.append("## 5. 证据状态披露")
+        lines.append("")
+        lines.append(
+            "- 本报告中所有数值预测均来自**文献数据代理模型（加权最近邻插值）**，"
+            "是插值/外推估计，**不是实测值，也不是 DFT 计算值**。"
+        )
+        lines.append(
+            "- 候选已通过物理边界硬筛（目标性能落在客观物理区间内）；"
+            "无文献数据点支撑的候选被降级为「待验证假设」（置信度 ≤ 0.4）。"
+        )
+        if n_unsupported:
+            lines.append(
+                f"- ⚠️ 当前有 **{n_unsupported}** 条结论缺乏文献数据点支撑，"
+                "仅为搜索初始化假设，**不构成经过交叉验证的科学发现**，请谨慎解读。"
+            )
+        lines.append("")
+
         # 3. 构效关系清单
         if rels:
-            lines.append("## 3. 构效关系详细清单")
+            lines.append("## 6. 构效关系详细清单")
             lines.append("")
             for i, r in enumerate(rels):
                 config = r.get("config", {}) or {}
@@ -1612,7 +2013,7 @@ class DiscoveryReportAgent(AgentNode):
                         lines.append("")
 
         # 4. 局限性
-        lines.append("## 4. 局限性")
+        lines.append("## 7. 局限性")
         lines.append("")
         lines.append("1. **预测区间为代理模型外推估算**：真实材料的性能可能因制备工艺、缺陷密度、界面等差异偏离预测。")
         lines.append("2. **因果机制基于物理常识+文献支撑**：实际机制可能涉及多变量耦合与非线性效应，需进一步DFT计算/实验验证。")

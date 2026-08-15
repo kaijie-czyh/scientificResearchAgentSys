@@ -1,0 +1,20 @@
+# Render Blueprint — 科研论文 Agent 系统后端
+# 在 Render 新建 Blueprint 时选择本仓库，或在 Dashboard -> New -> Blueprint 填入本文件路径
+services:
+  - type: web
+    name: scientific-research-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m web.api
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      # 端口：web/api.py 自动回落到 Render 注入的 $PORT，无需配置 SRA_WEB_PORT
+      # 真实密钥请到 Render Dashboard -> 本服务 -> Environment 配置（不在 yaml 里提交）
+      # - key: MINIMAX_API_KEY
+      #   sync: false
+      # - key: MINIMAX_BASE_URL
+      #   value: https://api.minimaxi.com/v1
+      # - key: SCIVERSE_API_TOKEN
+      #   sync: false

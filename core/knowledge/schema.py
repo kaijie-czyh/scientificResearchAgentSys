@@ -254,6 +254,45 @@ class Relation(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# ===== 证据等级（科研事实可信度分级）=====
+
+class EvidenceLevel(str, Enum):
+    """证据等级：所有性质数值与合成参数必须标注来源可信度。
+
+    分级（数据来源强度从高到低）：
+    - A：多个实验论文直接验证
+    - B：单篇实验论文直接验证
+    - C：多个文献间接支持
+    - D：理论/数据库预测（如 Materials Project / DFT）
+    - E：LLM 推断（非文献原始数据，仅供实验设计参考）
+    """
+
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    E = "E"
+
+
+# 证据等级 → 中文标签（前端展示用）
+EVIDENCE_LEVEL_LABELS: dict[str, str] = {
+    "A": "多篇实验论文直接验证",
+    "B": "单篇实验论文直接验证",
+    "C": "多个文献间接支持",
+    "D": "理论/数据库预测",
+    "E": "LLM 推断",
+}
+
+
+class PropertyDataKind(str, Enum):
+    """性质数值的数据类型：实验值 / 理论值 / 数据库预测 / LLM 推断。"""
+
+    EXPERIMENTAL = "experimental"    # 实验测量值
+    THEORETICAL = "theoretical"      # 理论计算值
+    DATABASE = "database"            # 数据库预测值（MP/OQMD/NOMAD）
+    INFERRED = "inferred"            # LLM 推断（非原始数据）
+
+
 # ===== 材料知识实体（Task 2：材料-性能-合成三元组）=====
 
 class Material(BaseModel):
@@ -261,6 +300,13 @@ class Material(BaseModel):
 
     满足赛题「知识抽取」要求：材料成分（化学式、元素组成、掺杂比例）、
     晶体结构（空间群、晶格参数、对称性）。
+
+    深度分析扩展（多维材料性质画像的基础结构维度）：
+    - material_type：材料类型（半导体/热电/钙钛矿/陶瓷/金属/高分子…）
+    - crystal_system：晶系（cubic/tetragonal/orthorhombic/hexagonal/monoclinic/triclinic）
+    - morphology：单晶/多晶/非晶
+    - phase_composition / is_multiphase：相组成与是否多相
+    - element_composition / element_ratio：元素组成与比例
     """
 
     material_id: EntityId
@@ -275,6 +321,14 @@ class Material(BaseModel):
     symmetry: str = ""
     # 组成描述（元素/掺杂比例，自由文本）
     composition: str = ""
+    # ===== 深度分析扩展：基础结构性质 =====
+    material_type: str = ""          # 材料类型（半导体/热电/钙钛矿/陶瓷/金属/高分子…）
+    crystal_system: str = ""         # 晶系（cubic/tetragonal/orthorhombic/hexagonal/monoclinic/triclinic）
+    morphology: str = ""             # 单晶/多晶/非晶
+    phase_composition: str = ""      # 相组成描述
+    is_multiphase: bool = False      # 是否存在多相结构
+    element_composition: str = ""    # 元素组成（如 "Bi, Te"）
+    element_ratio: str = ""          # 元素比例（如 "2:3"）
     # 来源论文（证据链溯源）
     paper_id: Optional[EntityId] = None
     paper_title: str = ""
@@ -290,7 +344,17 @@ class Material(BaseModel):
 
 
 class MaterialProperty(BaseModel):
-    """材料性能实体（性能指标）：ZT、功率因子、热导率等。"""
+    """材料性能实体（性能指标）：ZT、功率因子、热导率等。
+
+    深度分析扩展（性质 → 机制 → 目标性能）：
+    - mechanism：物理机制解释（如"晶格缺陷增强声子散射"）
+    - impact_on_target：对目标性能的影响（如"降低晶格热导率，有利于提升 ZT"）
+    - evidence_level：证据等级（A/B/C/D/E，见 EvidenceLevel）
+    - evidence_count：支撑文献数量
+    - data_type：实验值/理论值/数据库/推断（PropertyDataKind）
+    - test_temperature：测试温度（如 "300-500 K"）
+    - source_type：数据源（paper / materials_project / sciverse / llm_inference）
+    """
 
     property_id: EntityId
     material_id: EntityId  # 归属材料
@@ -300,6 +364,14 @@ class MaterialProperty(BaseModel):
     value_num: Optional[float] = None  # 数值部分（若可解析）
     unit: str = ""  # 单位（如 "W/mK"）
     condition: str = ""  # 测试条件（温度/压力等）
+    # ===== 深度分析扩展：机制 / 证据 / 数据类型 =====
+    mechanism: str = ""            # 物理机制解释
+    impact_on_target: str = ""     # 对目标性能的影响
+    evidence_level: str = "E"      # 证据等级 A/B/C/D/E
+    evidence_count: int = 0        # 支撑文献数量
+    data_type: str = ""            # experimental/theoretical/database/inferred
+    test_temperature: str = ""     # 测试温度（如 "300-500 K"）
+    source_type: str = ""          # paper/materials_project/sciverse/llm_inference
     paper_id: Optional[EntityId] = None
     paper_title: str = ""
     confidence: float = 0.0
@@ -310,7 +382,17 @@ class MaterialProperty(BaseModel):
 
 
 class MaterialSynthesis(BaseModel):
-    """材料合成方法实体（合成条件）：温度、压力、时间、前驱体、工艺步骤。"""
+    """材料合成方法实体（合成条件）：温度、压力、时间、前驱体、工艺步骤。
+
+    深度分析扩展（从「方法名称」升级为「实验流程 + 路线决策」）：
+    - 完整实验参数：前驱体比例/溶剂/pH/升温速率/搅拌/陈化/干燥/煅烧/冷却/后处理/设备/产率…
+    - workflow_steps：分步实验流程 [{step, operation, parameter, unit, source, is_literal}]
+    - risks：风险清单 [{risk, level, source, evidence}]
+    - reproducibility_score / reproducibility_factors：可复现性评分（0~100 + 因素分解）
+    - evidence_level / evidence_count：证据等级与文献数
+
+    硬约束：所有参数不得编造，无可靠来源时留空并标记 evidence_level=E（LLM 推断）。
+    """
 
     synthesis_id: EntityId
     material_id: EntityId  # 归属材料
@@ -320,7 +402,35 @@ class MaterialSynthesis(BaseModel):
     pressure: str = ""  # 压力条件
     atmosphere: str = ""  # 气氛（如 "Ar"、"N2"）
     duration: str = ""  # 时间
-    steps: str = ""  # 工艺步骤描述
+    steps: str = ""  # 工艺步骤描述（自由文本，与 workflow_steps 互补）
+    # ===== 深度分析扩展：完整实验参数 =====
+    precursor_ratio: str = ""      # 前驱体比例（如 "1:1"、"stoichiometric"）
+    solvent: str = ""              # 溶剂
+    solvent_ratio: str = ""        # 溶剂比例
+    heating_rate: str = ""         # 升温速率（如 "5 °C/min"）
+    ph: str = ""                   # pH 值
+    stirring: str = ""             # 搅拌条件（如 "600 rpm, 30 min"）
+    aging_time: str = ""           # 陈化时间
+    drying_temperature: str = ""   # 干燥温度
+    calcination_temperature: str = ""  # 煅烧/退火温度
+    calcination_time: str = ""     # 煅烧/退火时间
+    cooling_method: str = ""       # 冷却方式（自然冷却/淬火/随炉…）
+    post_treatment: str = ""       # 后处理
+    equipment: list[str] = Field(default_factory=list)  # 设备（如 "管式炉"、"高压釜"）
+    yield_: str = ""               # 产率（字段名避免关键字 yield）
+    phase_purity: str = ""         # 相纯度
+    particle_size: str = ""        # 粒径
+    # ===== 深度分析扩展：分步流程 / 风险 / 可复现性 / 证据 =====
+    workflow_steps: list[dict[str, Any]] = Field(default_factory=list)
+    #   [{step, operation, parameter, unit, source, is_literal}]
+    risks: list[dict[str, Any]] = Field(default_factory=list)
+    #   [{risk, level(Low/Medium/High), source, evidence}]
+    reproducibility_score: Optional[int] = None  # 可复现性评分 0~100
+    reproducibility_factors: dict[str, Any] = Field(default_factory=dict)
+    #   {param_completeness, precursor_completeness, equipment_completeness,
+    #    key_param_clarity, independent_sources, result_consistency}
+    evidence_level: str = "E"      # 证据等级 A/B/C/D/E
+    evidence_count: int = 0        # 独立支撑文献数
     paper_id: Optional[EntityId] = None
     paper_title: str = ""
     confidence: float = 0.0
@@ -349,6 +459,9 @@ class ResearchGap(BaseModel):
     detail: str = ""
     # 证据链：[{paper_id, title, snippet}]，可溯源
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # 数据库证据链（可选）：[{formula, mp:{...}, oqmd:{...}, nomad:{...}}]，
+    # 来自 Materials Project / OQMD / NOMAD 交叉查询，与 evidence 构成双证据链
+    db_evidence: list[dict[str, Any]] = Field(default_factory=list)
     # 关联材料（如 ["SnSe", "Mg3Sb2"]）
     related_materials: list[str] = Field(default_factory=list)
     # 可操作性：high / medium / low
@@ -390,3 +503,128 @@ class ResearchConflict(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     source_stage: str = "research"
+
+
+# ===== 材料深度分析结果模型（Task 2 深度分析扩展）=====
+# 这些是「分析层」的输出契约：由规则引擎（确定性）与 LLM 分析节点（语义）
+# 双通道产出，API 动态组装返回，不单独落库（避免与三元组实体重复持久化）。
+
+class PropertyMechanism(BaseModel):
+    """性质 → 机制 → 目标性能 的关系解释。
+
+    把「Band Gap = xxx」升级为「性质 → 物理机制 → 性能影响」的因果链。
+    """
+
+    property: str = ""            # 性质 key（如 thermal_conductivity）
+    property_cn: str = ""         # 性质中文名
+    value: str = ""               # 数值
+    unit: str = ""                # 单位
+    mechanism: str = ""           # 物理机制（如"晶格缺陷增强声子散射"）
+    impact_on_target: str = ""    # 对目标性能的影响
+    evidence_level: str = "E"     # 证据等级 A/B/C/D/E
+    evidence: list[str] = Field(default_factory=list)  # 支撑证据（paper_title/snippet）
+
+
+class TargetDecomposition(BaseModel):
+    """目标性能因果拆解。
+
+    如目标 ZT：ZT = S²σT/κ，拆解出 Seebeck/电导率/功率因子/热导率/温度，
+    并给出材料优势、瓶颈、最值得优化的变量（结合文献证据）。
+    """
+
+    target: str = ""              # 目标性能（如 ZT）
+    formula: str = ""             # 目标公式（如 "ZT = S²σT/κ"）
+    factors: list[dict[str, Any]] = Field(default_factory=list)
+    #   [{factor, factor_cn, value, unit, role}]
+    strengths: list[str] = Field(default_factory=list)   # 当前材料优势
+    bottlenecks: list[str] = Field(default_factory=list) # 当前材料瓶颈
+    optimization_priority: list[dict[str, Any]] = Field(default_factory=list)
+    #   [{priority, variable, reason}]
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ComparisonCell(BaseModel):
+    """对比矩阵单元格：多文献值时显示范围而非单选。"""
+
+    material: str = ""            # 材料名
+    value: str = ""               # 展示值（范围如 "0.8–1.2"）
+    unit: str = ""                # 统一后的单位
+    source: str = ""              # 数据源
+    data_type: str = ""           # experimental/theoretical/database/inferred
+    test_temperature: str = ""    # 测试温度
+    confidence: float = 0.0       # 置信度
+    evidence_level: str = "E"     # 证据等级
+    paper_count: int = 0          # 文献数量
+    missing: bool = False         # 数据缺失标记（不伪造）
+
+
+class CandidateRanking(BaseModel):
+    """材料候选排序条目（材料选择决策）。"""
+
+    material: str = ""            # 材料名
+    formula: str = ""             # 化学式
+    composite_score: float = 0.0  # 综合评分 0~100
+    dimensions: dict[str, Any] = Field(default_factory=dict)
+    #   {target_potential, evidence_strength, structure_match,
+    #    synthesis_feasibility, stability, novelty}（各维度评分与权重）
+    strengths: list[str] = Field(default_factory=list)  # 优势
+    risks: list[str] = Field(default_factory=list)      # 风险
+    reason: str = ""              # 推荐理由
+    evidence: list[str] = Field(default_factory=list)   # 评分依据（可溯源）
+
+
+class SynthesisRouteCompare(BaseModel):
+    """合成路线对比条目。"""
+
+    method: str = ""              # 方法名
+    method_category: str = ""     # 工艺类别
+    temperature: str = ""         # 温度
+    time: str = ""                # 时间
+    equipment: str = ""           # 设备
+    cost: str = ""                # 成本（低/中/高）
+    phase_purity: str = ""        # 相纯度（高/中/低）
+    particle_control: str = ""    # 粒径控制（高/中/低）
+    scale_difficulty: str = ""    # 放大难度（低/中/高）
+    recommendation_score: float = 0.0  # 推荐度 0~10
+    advantages: list[str] = Field(default_factory=list)  # 优势
+    risks: list[dict[str, Any]] = Field(default_factory=list)  # 风险 [{risk, level, source}]
+    reproducibility_score: Optional[int] = None  # 可复现性评分
+    evidence_level: str = "E"     # 证据等级
+    evidence: list[str] = Field(default_factory=list)  # 证据
+
+
+class SynthesisParameterSensitivity(BaseModel):
+    """合成参数敏感性分析结果。"""
+
+    high_impact: list[dict[str, Any]] = Field(default_factory=list)
+    #   [{parameter, reason, evidence}]
+    low_impact: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class MaterialProfile(BaseModel):
+    """材料性质画像：聚合一个材料的全部深度分析结果。
+
+    API /materials/{id}/profile 返回此结构，前端「材料画像页」消费。
+    """
+
+    material_id: EntityId = ""
+    name: str = ""                # 材料名
+    formula: str = ""             # 化学式
+    category: str = ""            # 材料体系
+    # 基础结构
+    structure: dict[str, Any] = Field(default_factory=dict)
+    # 性质分组：{电子性质: [...], 热学性质: [...], 光学性质: [...], 力学性质: [...], 化学稳定性: [...]}
+    properties: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    # 性质 → 机制 → 目标性能
+    mechanisms: list[dict[str, Any]] = Field(default_factory=list)
+    # 目标性能因果拆解
+    target_decomposition: dict[str, Any] = Field(default_factory=dict)
+    # 材料横向对比（同体系材料对比矩阵）
+    comparison: dict[str, Any] = Field(default_factory=dict)
+    # 候选排序（材料选择决策）
+    ranking: list[dict[str, Any]] = Field(default_factory=list)
+    # 合成路线（对比 + 推荐 + 风险 + 可复现性）
+    synthesis: dict[str, Any] = Field(default_factory=dict)
+    # 性质—合成联合分析（工艺→结构→性质→性能链路）
+    joint_analysis: dict[str, Any] = Field(default_factory=dict)
