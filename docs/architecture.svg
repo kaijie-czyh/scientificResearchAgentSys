@@ -1,361 +1,443 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1343" viewBox="0 0 1700 1343" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif"><rect width="1700" height="1343" fill="#fafbfc"/><defs>
-  <linearGradient id="research" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4e54c8"/><stop offset="1" stop-color="#8f94fb"/></linearGradient>
-  <linearGradient id="ideation" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#11998e"/><stop offset="1" stop-color="#38ef7d"/></linearGradient>
-  <linearGradient id="design" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ee0979"/><stop offset="1" stop-color="#ff6a00"/></linearGradient>
-  <linearGradient id="experiment" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fc4a1a"/><stop offset="1" stop-color="#f7b733"/></linearGradient>
-  <linearGradient id="writing" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#6a11cb"/><stop offset="1" stop-color="#2575fc"/></linearGradient>
-  <linearGradient id="discovery" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff6a00"/><stop offset="1" stop-color="#ee0979"/></linearGradient>
-  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/></marker>
-  <marker id="arrow-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#c8a415"/></marker>
-  <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#2575fc"/></marker>
-</defs><text x="850" y="35" text-anchor="middle" font-size="22" font-weight="700" fill="#1a1a2e">科研智能体系统架构图</text>
-<text x="850" y="58" text-anchor="middle" font-size="13" fill="#666">5 阶段流水线 · 41 个节点 · 物理一致性硬筛 · 5 维度可信度评分 · 双路交叉验证</text>
-<rect x="40" y="90" width="1620" height="80" rx="8" fill="#f0f4ff" stroke="#aab8d8"/>
-<text x="60" y="108" font-size="13" font-weight="600" fill="#1a1a2e">① 应用层 · Application Layer</text>
-<rect x="80" y="115" width="350" height="45" rx="6" fill="white" stroke="#4e54c8"/>
-<text x="95" y="132" font-size="12" font-weight="600" fill="#1a1a2e">Web Dashboard</text>
-<text x="95" y="147" font-size="10" fill="#666">FastAPI + 原生 JS</text>
-<text x="230" y="132" font-size="9" fill="#888">项目管理 / 报告 / 数据源合规 / 系统级指标</text>
-<rect x="480" y="115" width="350" height="45" rx="6" fill="white" stroke="#4e54c8"/>
-<text x="495" y="132" font-size="12" font-weight="600" fill="#1a1a2e">CLI 工具</text>
-<text x="495" y="147" font-size="10" fill="#666">python -m runtime.cli</text>
-<text x="630" y="132" font-size="9" fill="#888">批量执行 / 离线运行 / Golden Set 回归</text>
-<rect x="870" y="115" width="350" height="45" rx="6" fill="white" stroke="#4e54c8"/>
-<text x="885" y="132" font-size="12" font-weight="600" fill="#1a1a2e">HuggingFace Space</text>
-<text x="885" y="147" font-size="10" fill="#666">Static Mirror</text>
-<text x="1020" y="132" font-size="10" fill="#888">前端镜像（无需本地复现）</text>
-<rect x="1280" y="115" width="350" height="45" rx="6" fill="white" stroke="#4e54c8"/>
-<text x="1295" y="132" font-size="12" font-weight="600" fill="#1a1a2e">Replit 后端</text>
-<text x="1295" y="147" font-size="10" fill="#666">FastAPI Deploy</text>
-<text x="1430" y="132" font-size="10" fill="#888">云端后端 API 持续运行</text>
-<rect x="40" y="195" width="1620" height="470" rx="8" fill="#fefefe" stroke="#d0d4e0"/>
-<text x="60" y="213" font-size="13" font-weight="600" fill="#1a1a2e">② 智能体编排层 · Orchestration Layer（41 节点 + 5 检查点 + 1 物理硬筛）</text>
-<rect x="55" y="223" width="160" height="68" rx="6" fill="url(#research)" stroke="#444"/>
-<text x="135" y="248" text-anchor="middle" font-size="13" font-weight="700" fill="white">Research 调研</text>
-<text x="135" y="271" text-anchor="middle" font-size="11" fill="white">(10 节点)</text>
-<rect x="230" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="295" y="245" text-anchor="middle" font-size="11" font-weight="700" fill="white">topic_refine</text>
-<text x="295" y="265" text-anchor="middle" font-size="10" fill="white">主题精炼</text>
-<line x1="361" y1="251" x2="365" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="366" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="431" y="245" text-anchor="middle" font-size="9" font-weight="700" fill="white">subquery_decompose</text>
-<text x="431" y="265" text-anchor="middle" font-size="10" fill="white">子问题分解</text>
-<line x1="497" y1="251" x2="501" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="502" y="223" width="130" height="56" rx="5" fill="#ffe5e5" stroke="#d44" stroke-width="1.5" stroke-dasharray="3,2"/>
-<text x="567" y="247" text-anchor="middle" font-size="16" font-weight="700" fill="#d44">CP</text>
-<text x="567" y="263" text-anchor="middle" font-size="9" fill="#d44">人工检查点</text>
-<line x1="633" y1="251" x2="637" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="638" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="703" y="245" text-anchor="middle" font-size="11" font-weight="700" fill="white">topic_confirm</text>
-<text x="703" y="265" text-anchor="middle" font-size="10" fill="white">主题确认</text>
-<line x1="769" y1="251" x2="773" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="774" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="839" y="245" text-anchor="middle" font-size="11" font-weight="700" fill="white">paper_fetch</text>
-<text x="839" y="265" text-anchor="middle" font-size="10" fill="white">三源抓取</text>
-<line x1="905" y1="251" x2="909" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="910" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="975" y="245" text-anchor="middle" font-size="11" font-weight="700" fill="white">paper_filter</text>
-<text x="975" y="265" text-anchor="middle" font-size="10" fill="white">5维筛选</text>
-<line x1="1041" y1="251" x2="1045" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1046" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="1111" y="245" text-anchor="middle" font-size="11" font-weight="700" fill="white">paper_ingest</text>
-<text x="1111" y="265" text-anchor="middle" font-size="10" fill="white">PDF 解析</text>
-<line x1="1177" y1="251" x2="1181" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1182" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="1247" y="245" text-anchor="middle" font-size="8" font-weight="700" fill="white">material_extraction</text>
-<text x="1247" y="265" text-anchor="middle" font-size="10" fill="white">材料抽取</text>
-<line x1="1313" y1="251" x2="1317" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1318" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="1383" y="245" text-anchor="middle" font-size="11" font-weight="700" fill="white">cross_validate</text>
-<text x="1383" y="265" text-anchor="middle" font-size="10" fill="white">交叉验证</text>
-<line x1="1449" y1="251" x2="1453" y2="251" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1454" y="223" width="130" height="56" rx="5" fill="url(#research)" stroke="#444" stroke-width="0.5"/>
-<text x="1519" y="245" text-anchor="middle" font-size="11" font-weight="700" fill="white">research_gap</text>
-<text x="1519" y="265" text-anchor="middle" font-size="10" fill="white">Gap 识别</text>
-<rect x="55" y="313" width="160" height="68" rx="6" fill="url(#ideation)" stroke="#444"/>
-<text x="135" y="338" text-anchor="middle" font-size="13" font-weight="700" fill="white">Ideation 构思</text>
-<text x="135" y="361" text-anchor="middle" font-size="11" fill="white">(5 节点)</text>
-<rect x="230" y="313" width="130" height="56" rx="5" fill="url(#ideation)" stroke="#444" stroke-width="0.5"/>
-<text x="295" y="335" text-anchor="middle" font-size="11" font-weight="700" fill="white">brainstorm</text>
-<text x="295" y="355" text-anchor="middle" font-size="10" fill="white">思路生成</text>
-<line x1="361" y1="341" x2="365" y2="341" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="366" y="313" width="130" height="56" rx="5" fill="#ffe5e5" stroke="#d44" stroke-width="1.5" stroke-dasharray="3,2"/>
-<text x="431" y="337" text-anchor="middle" font-size="16" font-weight="700" fill="#d44">CP</text>
-<text x="431" y="353" text-anchor="middle" font-size="9" fill="#d44">人工检查点</text>
-<line x1="497" y1="341" x2="501" y2="341" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="502" y="313" width="130" height="56" rx="5" fill="url(#ideation)" stroke="#444" stroke-width="0.5"/>
-<text x="567" y="335" text-anchor="middle" font-size="11" font-weight="700" fill="white">idea_discuss</text>
-<text x="567" y="355" text-anchor="middle" font-size="10" fill="white">思路讨论</text>
-<line x1="633" y1="341" x2="637" y2="341" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="638" y="313" width="130" height="56" rx="5" fill="url(#ideation)" stroke="#444" stroke-width="0.5"/>
-<text x="703" y="335" text-anchor="middle" font-size="11" font-weight="700" fill="white">idea_validate</text>
-<text x="703" y="355" text-anchor="middle" font-size="10" fill="white">三维度验证</text>
-<line x1="769" y1="341" x2="773" y2="341" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="774" y="313" width="130" height="56" rx="5" fill="url(#ideation)" stroke="#444" stroke-width="0.5"/>
-<text x="839" y="335" text-anchor="middle" font-size="11" font-weight="700" fill="white">claim_draft</text>
-<text x="839" y="355" text-anchor="middle" font-size="10" fill="white">Claim 草拟</text>
-<rect x="55" y="403" width="160" height="68" rx="6" fill="url(#design)" stroke="#444"/>
-<text x="135" y="428" text-anchor="middle" font-size="13" font-weight="700" fill="white">Design 设计</text>
-<text x="135" y="451" text-anchor="middle" font-size="11" fill="white">(6 节点)</text>
-<rect x="230" y="403" width="130" height="56" rx="5" fill="url(#design)" stroke="#444" stroke-width="0.5"/>
-<text x="295" y="425" text-anchor="middle" font-size="11" font-weight="700" fill="white">atom_decompose</text>
-<text x="295" y="445" text-anchor="middle" font-size="10" fill="white">原子分解</text>
-<line x1="361" y1="431" x2="365" y2="431" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="366" y="403" width="130" height="56" rx="5" fill="url(#design)" stroke="#444" stroke-width="0.5"/>
-<text x="431" y="425" text-anchor="middle" font-size="9" font-weight="700" fill="white">method_formalize</text>
-<text x="431" y="445" text-anchor="middle" font-size="10" fill="white">方法形式化</text>
-<line x1="497" y1="431" x2="501" y2="431" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="502" y="403" width="130" height="56" rx="5" fill="#ffe5e5" stroke="#d44" stroke-width="1.5" stroke-dasharray="3,2"/>
-<text x="567" y="427" text-anchor="middle" font-size="16" font-weight="700" fill="#d44">CP</text>
-<text x="567" y="443" text-anchor="middle" font-size="9" fill="#d44">人工检查点</text>
-<line x1="633" y1="431" x2="637" y2="431" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="638" y="403" width="130" height="56" rx="5" fill="url(#design)" stroke="#444" stroke-width="0.5"/>
-<text x="703" y="425" text-anchor="middle" font-size="11" font-weight="700" fill="white">method_review</text>
-<text x="703" y="445" text-anchor="middle" font-size="10" fill="white">方法审稿</text>
-<line x1="769" y1="431" x2="773" y2="431" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="774" y="403" width="130" height="56" rx="5" fill="url(#design)" stroke="#444" stroke-width="0.5"/>
-<text x="839" y="425" text-anchor="middle" font-size="8" font-weight="700" fill="white">claim_evidence_link</text>
-<text x="839" y="445" text-anchor="middle" font-size="10" fill="white">Claim↔证据</text>
-<line x1="905" y1="431" x2="909" y2="431" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="910" y="403" width="130" height="56" rx="5" fill="url(#design)" stroke="#444" stroke-width="0.5"/>
-<text x="975" y="425" text-anchor="middle" font-size="9" font-weight="700" fill="white">method_artifact</text>
-<text x="975" y="445" text-anchor="middle" font-size="10" fill="white">Artifact</text>
-<rect x="55" y="493" width="160" height="68" rx="6" fill="url(#experiment)" stroke="#444"/>
-<text x="135" y="518" text-anchor="middle" font-size="13" font-weight="700" fill="white">Experiment 实验</text>
-<text x="135" y="541" text-anchor="middle" font-size="11" fill="white">(9 节点)</text>
-<rect x="230" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="295" y="515" text-anchor="middle" font-size="9" font-weight="700" fill="white">experiment_config</text>
-<text x="295" y="535" text-anchor="middle" font-size="10" fill="white">实验配置</text>
-<line x1="361" y1="521" x2="365" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="366" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="431" y="515" text-anchor="middle" font-size="11" font-weight="700" fill="white">code_generate</text>
-<text x="431" y="535" text-anchor="middle" font-size="10" fill="white">代码生成</text>
-<line x1="497" y1="521" x2="501" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="502" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="567" y="515" text-anchor="middle" font-size="11" font-weight="700" fill="white">code_review</text>
-<text x="567" y="535" text-anchor="middle" font-size="10" fill="white">代码审查</text>
-<line x1="633" y1="521" x2="637" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="638" y="493" width="130" height="56" rx="5" fill="#ffe5e5" stroke="#d44" stroke-width="1.5" stroke-dasharray="3,2"/>
-<text x="703" y="517" text-anchor="middle" font-size="16" font-weight="700" fill="#d44">CP</text>
-<text x="703" y="533" text-anchor="middle" font-size="9" fill="#d44">人工检查点</text>
-<line x1="769" y1="521" x2="773" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="774" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="839" y="515" text-anchor="middle" font-size="11" font-weight="700" fill="white">experiment_run</text>
-<text x="839" y="535" text-anchor="middle" font-size="10" fill="white">沙盒执行</text>
-<line x1="905" y1="521" x2="909" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="910" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="975" y="515" text-anchor="middle" font-size="9" font-weight="700" fill="white">experiment_review</text>
-<text x="975" y="535" text-anchor="middle" font-size="10" fill="white">结果审查</text>
-<line x1="1041" y1="521" x2="1045" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1046" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="1111" y="515" text-anchor="middle" font-size="11" font-weight="700" fill="white">anomaly_check</text>
-<text x="1111" y="535" text-anchor="middle" font-size="10" fill="white">异常检测</text>
-<line x1="1177" y1="521" x2="1181" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1182" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="1247" y="515" text-anchor="middle" font-size="11" font-weight="700" fill="white">claim_verify</text>
-<text x="1247" y="535" text-anchor="middle" font-size="10" fill="white">Claim 验证</text>
-<line x1="1313" y1="521" x2="1317" y2="521" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1318" y="493" width="130" height="56" rx="5" fill="url(#experiment)" stroke="#444" stroke-width="0.5"/>
-<text x="1383" y="515" text-anchor="middle" font-size="11" font-weight="700" fill="white">outcome_assess</text>
-<text x="1383" y="535" text-anchor="middle" font-size="10" fill="white">成败评估</text>
-<rect x="55" y="583" width="160" height="68" rx="6" fill="url(#writing)" stroke="#444"/>
-<text x="135" y="608" text-anchor="middle" font-size="13" font-weight="700" fill="white">Writing 写作</text>
-<text x="135" y="631" text-anchor="middle" font-size="11" fill="white">(7 节点)</text>
-<rect x="230" y="583" width="130" height="56" rx="5" fill="url(#writing)" stroke="#444" stroke-width="0.5"/>
-<text x="295" y="605" text-anchor="middle" font-size="9" font-weight="700" fill="white">provenance_check</text>
-<text x="295" y="625" text-anchor="middle" font-size="10" fill="white">溯源硬校验</text>
-<line x1="361" y1="611" x2="365" y2="611" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="366" y="583" width="130" height="56" rx="5" fill="#ffe5e5" stroke="#d44" stroke-width="1.5" stroke-dasharray="3,2"/>
-<text x="431" y="607" text-anchor="middle" font-size="16" font-weight="700" fill="#d44">CP</text>
-<text x="431" y="623" text-anchor="middle" font-size="9" fill="#d44">人工检查点</text>
-<line x1="497" y1="611" x2="501" y2="611" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="502" y="583" width="130" height="56" rx="5" fill="url(#writing)" stroke="#444" stroke-width="0.5"/>
-<text x="567" y="605" text-anchor="middle" font-size="11" font-weight="700" fill="white">style_learn</text>
-<text x="567" y="625" text-anchor="middle" font-size="10" fill="white">风格学习</text>
-<line x1="633" y1="611" x2="637" y2="611" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="638" y="583" width="130" height="56" rx="5" fill="url(#writing)" stroke="#444" stroke-width="0.5"/>
-<text x="703" y="605" text-anchor="middle" font-size="11" font-weight="700" fill="white">outline</text>
-<text x="703" y="625" text-anchor="middle" font-size="10" fill="white">大纲</text>
-<line x1="769" y1="611" x2="773" y2="611" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="774" y="583" width="130" height="56" rx="5" fill="url(#writing)" stroke="#444" stroke-width="0.5"/>
-<text x="839" y="605" text-anchor="middle" font-size="11" font-weight="700" fill="white">section_draft</text>
-<text x="839" y="625" text-anchor="middle" font-size="10" fill="white">章节填充</text>
-<line x1="905" y1="611" x2="909" y2="611" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="910" y="583" width="130" height="56" rx="5" fill="url(#writing)" stroke="#444" stroke-width="0.5"/>
-<text x="975" y="605" text-anchor="middle" font-size="11" font-weight="700" fill="white">review</text>
-<text x="975" y="625" text-anchor="middle" font-size="10" fill="white">模拟审稿</text>
-<line x1="1041" y1="611" x2="1045" y2="611" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="1046" y="583" width="130" height="56" rx="5" fill="url(#writing)" stroke="#444" stroke-width="0.5"/>
-<text x="1111" y="605" text-anchor="middle" font-size="11" font-weight="700" fill="white">revise</text>
-<text x="1111" y="625" text-anchor="middle" font-size="10" fill="white">终稿</text>
-<rect x="40" y="673" width="1620" height="100" rx="8" fill="#fff0f5" stroke="#ff6a00" stroke-width="1"/>
-<text x="60" y="688" font-size="12" font-weight="700" fill="#ff6a00">③ 独立子系统 · Discovery 构效关系发现 (6 节点 + 物理硬筛)</text>
-<rect x="230" y="700" width="130" height="56" rx="5" fill="url(#discovery)" stroke="#444"/>
-<text x="295" y="722" text-anchor="middle" font-size="9" font-weight="700" fill="white">hypothesis_seed</text>
-<text x="295" y="742" text-anchor="middle" font-size="10" fill="white">假设种子</text>
-<line x1="361" y1="728" x2="365" y2="728" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="366" y="700" width="130" height="56" rx="5" fill="url(#discovery)" stroke="#444"/>
-<text x="431" y="722" text-anchor="middle" font-size="11" font-weight="700" fill="white">search_space</text>
-<text x="431" y="742" text-anchor="middle" font-size="10" fill="white">搜索空间</text>
-<line x1="497" y1="728" x2="501" y2="728" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="502" y="700" width="130" height="56" rx="5" fill="url(#discovery)" stroke="#444"/>
-<text x="567" y="722" text-anchor="middle" font-size="9" font-weight="700" fill="white">llm_guided_search</text>
-<text x="567" y="742" text-anchor="middle" font-size="8" fill="white">MCTS+LLM 搜索</text>
-<line x1="633" y1="728" x2="637" y2="728" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="638" y="700" width="130" height="56" rx="5" fill="#fff3cd" stroke="#c8a415" stroke-width="2"/>
-<text x="703" y="722" text-anchor="middle" font-size="9" font-weight="700" fill="#7a5e00">★ physics_hard_filter</text>
-<text x="703" y="742" text-anchor="middle" font-size="9" fill="#7a5e00">118元素价态+18e</text>
-<line x1="769" y1="728" x2="773" y2="728" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="774" y="700" width="130" height="56" rx="5" fill="url(#discovery)" stroke="#444"/>
-<text x="839" y="722" text-anchor="middle" font-size="9" font-weight="700" fill="white">discovery_validate</text>
-<text x="839" y="742" text-anchor="middle" font-size="8" fill="white">双路 CV (MP+规则)</text>
-<line x1="905" y1="728" x2="909" y2="728" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-<rect x="910" y="700" width="130" height="56" rx="5" fill="url(#discovery)" stroke="#444"/>
-<text x="975" y="722" text-anchor="middle" font-size="9" font-weight="700" fill="white">discovery_report</text>
-<text x="975" y="742" text-anchor="middle" font-size="10" fill="white">5 维评分报告</text>
-<rect x="40" y="788" width="1620" height="80" rx="8" fill="#fffbf0" stroke="#c8a415" stroke-dasharray="3,3"/>
-<text x="60" y="806" font-size="12" font-weight="700" fill="#7a5e00">★ 跨阶段反馈弧：Research Gap → Discovery 假设种子 → Experiment 验证 → Writing 引用</text>
-<rect x="80" y="816" width="350" height="40" rx="5" fill="white" stroke="#c8a415" stroke-width="1.5"/>
-<text x="95" y="838" font-size="12" font-weight="600" fill="#c8a415">Research Gap</text>
-<text x="260" y="838" font-size="11" fill="#444">→ Discovery 假设种子</text>
-<rect x="480" y="816" width="350" height="40" rx="5" fill="white" stroke="#c8a415" stroke-width="1.5"/>
-<text x="495" y="838" font-size="12" font-weight="600" fill="#c8a415">Discovery 新发现</text>
-<text x="660" y="838" font-size="11" fill="#444">→ Experiment 验证</text>
-<rect x="880" y="816" width="350" height="40" rx="5" fill="white" stroke="#2575fc" stroke-width="1.5"/>
-<text x="895" y="838" font-size="12" font-weight="600" fill="#2575fc">Experiment 结果</text>
-<text x="1060" y="838" font-size="11" fill="#444">→ Writing 引用</text>
-<rect x="1280" y="816" width="350" height="40" rx="5" fill="white" stroke="#6a11cb" stroke-width="1.5"/>
-<text x="1295" y="838" font-size="12" font-weight="600" fill="#6a11cb">Provenance 校验</text>
-<text x="1460" y="838" font-size="11" fill="#444">→ 证据链 (manual/retrieved)</text>
-<rect x="40" y="888" width="1620" height="100" rx="8" fill="#fffaf0" stroke="#c8a415"/>
-<text x="60" y="906" font-size="13" font-weight="600" fill="#1a1a2e">④ 工具与 LLM 层 · Tooling &amp; LLM Layer</text>
-<rect x="60" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="153" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">任务路由</text>
-<text x="153" y="948" text-anchor="middle" font-size="9" fill="#666">config/tasks.yaml</text>
-<text x="153" y="960" text-anchor="middle" font-size="9" fill="#666">8 任务 / 6 Provider</text>
-<rect x="257" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="350" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">结构化输出</text>
-<text x="350" y="948" text-anchor="middle" font-size="9" fill="#666">function calling</text>
-<text x="350" y="960" text-anchor="middle" font-size="9" fill="#666">JSON schema</text>
-<rect x="454" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="547" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">向量检索</text>
-<text x="547" y="948" text-anchor="middle" font-size="9" fill="#666">ChromaVectorStore</text>
-<text x="547" y="960" text-anchor="middle" font-size="9" fill="#666">3 类查询接口</text>
-<rect x="651" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="744" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">物理一致性</text>
-<text x="744" y="948" text-anchor="middle" font-size="9" fill="#666">checker.py</text>
-<text x="744" y="960" text-anchor="middle" font-size="9" fill="#666">5 项检查</text>
-<rect x="848" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="941" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">5 维评分</text>
-<text x="941" y="948" text-anchor="middle" font-size="8" fill="#666">DiscoveryReliabilityScorer</text>
-<rect x="1045" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="1138" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">材料 CV</text>
-<text x="1138" y="948" text-anchor="middle" font-size="9" fill="#666">MP + 规则 + OQMD</text>
-<text x="1138" y="960" text-anchor="middle" font-size="9" fill="#666">双路降级</text>
-<rect x="1242" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="1335" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">冲突裁决</text>
-<text x="1335" y="948" text-anchor="middle" font-size="9" fill="#666">IF 60% + 分区 20%</text>
-<text x="1335" y="960" text-anchor="middle" font-size="9" fill="#666">+ 文献新度 20%</text>
-<rect x="1439" y="918" width="187" height="60" rx="5" fill="white" stroke="#c8a415"/>
-<text x="1532" y="934" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">指标聚合</text>
-<text x="1532" y="948" text-anchor="middle" font-size="9" fill="#666">metrics.py</text>
-<text x="1532" y="960" text-anchor="middle" font-size="9" fill="#666">9 类系统级指标</text>
-<rect x="40" y="998" width="1620" height="100" rx="8" fill="#f0fff4" stroke="#3a7"/>
-<text x="60" y="1016" font-size="13" font-weight="600" fill="#1a1a2e">⑤ 数据与知识层 · Data &amp; Knowledge Layer</text>
-<rect x="60" y="1028" width="253" height="60" rx="5" fill="white" stroke="#3a7"/>
-<text x="186" y="1044" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">KV 表</text>
-<text x="186" y="1058" text-anchor="middle" font-size="9" fill="#666">save_kv/get_kv</text>
-<text x="186" y="1070" text-anchor="middle" font-size="9" fill="#666">31 关键字段</text>
-<rect x="323" y="1028" width="253" height="60" rx="5" fill="white" stroke="#3a7"/>
-<text x="449" y="1044" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">Paper</text>
-<text x="449" y="1058" text-anchor="middle" font-size="9" fill="#666">保存/查询/去重</text>
-<text x="449" y="1070" text-anchor="middle" font-size="9" fill="#666">外部 ID 索引</text>
-<rect x="586" y="1028" width="253" height="60" rx="5" fill="white" stroke="#3a7"/>
-<text x="712" y="1044" text-anchor="middle" font-size="9" font-weight="600" fill="#1a1a2e">Material + Property</text>
-<text x="712" y="1058" text-anchor="middle" font-size="9" fill="#666">材料 + 性能 + 合成方法</text>
-<text x="712" y="1070" text-anchor="middle" font-size="9" fill="#666">Shannon 离子半径</text>
-<rect x="849" y="1028" width="253" height="60" rx="5" fill="white" stroke="#3a7"/>
-<text x="975" y="1044" text-anchor="middle" font-size="9" font-weight="600" fill="#1a1a2e">Claim / Idea / Gap</text>
-<text x="975" y="1058" text-anchor="middle" font-size="9" fill="#666">结构化实体</text>
-<text x="975" y="1070" text-anchor="middle" font-size="9" fill="#666">赛题要求</text>
-<rect x="1112" y="1028" width="253" height="60" rx="5" fill="white" stroke="#3a7"/>
-<text x="1238" y="1044" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">Conflict</text>
-<text x="1238" y="1058" text-anchor="middle" font-size="9" fill="#666">结构化冲突实体</text>
-<text x="1238" y="1070" text-anchor="middle" font-size="9" fill="#666">IF/分区/新度裁决</text>
-<rect x="1375" y="1028" width="253" height="60" rx="5" fill="white" stroke="#3a7"/>
-<text x="1501" y="1044" text-anchor="middle" font-size="9" font-weight="600" fill="#1a1a2e">Evidence Log</text>
-<text x="1501" y="1058" text-anchor="middle" font-size="8" fill="#666">manual/retrieved</text>
-<text x="1501" y="1070" text-anchor="middle" font-size="9" fill="#666">按阶段落库</text>
-<rect x="40" y="1108" width="1620" height="100" rx="8" fill="#fff0f0" stroke="#c84"/>
-<text x="60" y="1126" font-size="13" font-weight="600" fill="#1a1a2e">⑥ 外部数据源层 · External Data Sources（统一登记 · 许可证透明 · 三路降级）</text>
-<rect x="60" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="153" y="1156" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">arXiv</text>
-<text x="153" y="1180" text-anchor="middle" font-size="9" fill="#666">公开</text>
-<rect x="257" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="350" y="1156" text-anchor="middle" font-size="9" font-weight="600" fill="#1a1a2e">Semantic Scholar</text>
-<text x="350" y="1180" text-anchor="middle" font-size="9" fill="#666">公开</text>
-<rect x="454" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="547" y="1156" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">Sciverse</text>
-<text x="547" y="1180" text-anchor="middle" font-size="9" fill="#666">学术 token</text>
-<rect x="651" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="744" y="1156" text-anchor="middle" font-size="9" font-weight="600" fill="#1a1a2e">Materials Project</text>
-<text x="744" y="1180" text-anchor="middle" font-size="9" fill="#666">X-API-KEY</text>
-<rect x="848" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="941" y="1156" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">OQMD</text>
-<text x="941" y="1180" text-anchor="middle" font-size="9" fill="#666">公开</text>
-<rect x="1045" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="1138" y="1156" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">MinerU</text>
-<text x="1138" y="1180" text-anchor="middle" font-size="9" fill="#666">PDF 解析</text>
-<rect x="1242" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="1335" y="1156" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">NOMAD</text>
-<text x="1335" y="1180" text-anchor="middle" font-size="9" fill="#666">公开</text>
-<rect x="1439" y="1138" width="187" height="60" rx="5" fill="white" stroke="#c84"/>
-<text x="1532" y="1156" text-anchor="middle" font-size="9" font-weight="600" fill="#1a1a2e">LLM (6 Provider)</text>
-<text x="1532" y="1180" text-anchor="middle" font-size="9" fill="#666">OpenAI/Ant/DS/MM/vLLM</text>
-<rect x="40" y="1218" width="1620" height="80" rx="8" fill="#f5f0ff" stroke="#7a4cb8"/>
-<text x="60" y="1236" font-size="13" font-weight="600" fill="#1a1a2e">⑦ 系统级指标面板 · System Metrics Panel（赛题 §4.2 强支撑 · 9 类指标自动聚合）</text>
-<rect x="60" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="142" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">节点完成率</text>
-<text x="142" y="1280" text-anchor="middle" font-size="8" fill="#666">41 节点</text>
-<rect x="235" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="317" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">KV 覆盖率</text>
-<text x="317" y="1280" text-anchor="middle" font-size="8" fill="#666">31 字段</text>
-<rect x="410" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="492" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">文献抓取率</text>
-<text x="492" y="1280" text-anchor="middle" font-size="8" fill="#666">3 源</text>
-<rect x="585" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="667" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">5 维评分</text>
-<text x="667" y="1280" text-anchor="middle" font-size="8" fill="#666">P25/中位数/P75</text>
-<rect x="760" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="842" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">Gap 质量</text>
-<text x="842" y="1280" text-anchor="middle" font-size="8" fill="#666">4 维度</text>
-<rect x="935" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="1017" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">CV 一致性</text>
-<text x="1017" y="1280" text-anchor="middle" font-size="8" fill="#666">MP+规则</text>
-<rect x="1110" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="1192" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">证据链</text>
-<text x="1192" y="1280" text-anchor="middle" font-size="8" fill="#666">按阶段</text>
-<rect x="1285" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="1367" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">降级触发率</text>
-<text x="1367" y="1280" text-anchor="middle" font-size="8" fill="#666">三路</text>
-<rect x="1460" y="1246" width="165" height="44" rx="5" fill="white" stroke="#7a4cb8"/>
-<text x="1542" y="1263" text-anchor="middle" font-size="10" font-weight="600" fill="#1a1a2e">流水线效率</text>
-<text x="1542" y="1280" text-anchor="middle" font-size="8" fill="#666">耗时/LLM</text>
-<text x="60" y="1313" font-size="12" font-weight="700" fill="#1a1a2e">图例</text>
-<rect x="60" y="1321" width="14" height="14" rx="2" fill="#4e54c8" stroke="#666"/>
-<text x="82" y="1332" font-size="10">普通节点</text>
-<rect x="257" y="1321" width="14" height="14" rx="2" fill="#c8a415" stroke="#666"/>
-<text x="279" y="1332" font-size="10">物理硬筛</text>
-<rect x="454" y="1321" width="14" height="14" rx="2" fill="#d44" stroke="#666"/>
-<text x="476" y="1332" font-size="10">人工检查点</text>
-<rect x="651" y="1321" width="14" height="14" rx="2" fill="#ff6a00" stroke="#666"/>
-<text x="673" y="1332" font-size="10">跨阶段反馈</text>
-<rect x="848" y="1321" width="14" height="14" rx="2" fill="#c8a415" stroke="#666"/>
-<text x="870" y="1332" font-size="10">工具层</text>
-<rect x="1045" y="1321" width="14" height="14" rx="2" fill="#3a7" stroke="#666"/>
-<text x="1067" y="1332" font-size="10">数据层</text>
-<rect x="1242" y="1321" width="14" height="14" rx="2" fill="#c84" stroke="#666"/>
-<text x="1264" y="1332" font-size="10">外部数据源</text>
-<rect x="1439" y="1321" width="14" height="14" rx="2" fill="#7a4cb8" stroke="#666"/>
-<text x="1461" y="1332" font-size="10">系统级指标</text></svg>
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<svg font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.2" baseProfile="tiny" x="0" y="0" width="1700" height="1380" viewBox="0 0 1700 1380">
+<defs>
+<linearGradient id="writing" x1="0" y1="0" x2="1" y2="0" spreadMethod="pad" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#6a11cb"/><stop offset="1" stop-color="#2575fc"/></linearGradient>
+<linearGradient id="discovery" x1="0" y1="0" x2="1" y2="0" spreadMethod="pad" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#ff6a00"/><stop offset="1" stop-color="#ee0979"/></linearGradient>
+<linearGradient id="design" x1="0" y1="0" x2="1" y2="0" spreadMethod="pad" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#ee0979"/><stop offset="1" stop-color="#ff6a00"/></linearGradient>
+<linearGradient id="research" x1="0" y1="0" x2="1" y2="0" spreadMethod="pad" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#4e54c8"/><stop offset="1" stop-color="#8f94fb"/></linearGradient>
+<linearGradient id="ideation" x1="0" y1="0" x2="1" y2="0" spreadMethod="pad" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#11998e"/><stop offset="1" stop-color="#38ef7d"/></linearGradient>
+<linearGradient id="experiment" x1="0" y1="0" x2="1" y2="0" spreadMethod="pad" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#fc4a1a"/><stop offset="1" stop-color="#f7b733"/></linearGradient>
+</defs>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" markerUnits="strokeWidth" orient="auto"><path fill="#888888" d="M 0 0 L 10 5 L 0 10 L 0 0 Z"/></marker>
+<marker id="arrow-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" markerUnits="strokeWidth" orient="auto"><path fill="#c8a415" d="M 0 0 L 10 5 L 0 10 L 0 0 Z"/></marker>
+<marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" markerUnits="strokeWidth" orient="auto"><path fill="#2575fc" d="M 0 0 L 10 5 L 0 10 L 0 0 Z"/></marker>
+</defs>
+
+<rect fill="#fafbfc" x="0" y="0" width="1700" height="1380"/>
+
+<!-- ===== TITLE ===== -->
+<text fill="#1a1a2e" font-size="22" font-weight="700" text-anchor="middle" x="850" y="35"><tspan>科研智能体系统架构图</tspan></text>
+<text fill="#666666" font-size="13" text-anchor="middle" x="850" y="58"><tspan>6 子图 · 43 节点（含 5 检查点） · 物理边界内嵌校验 · 5 维度可信度评分 · 双路交叉验证</tspan></text>
+
+<!-- ===== 1. APPLICATION LAYER ===== -->
+<rect fill="#f0f4ff" stroke="#aab8d8" x="40" y="75" width="1620" height="85" ry="8"/>
+<text fill="#1a1a2e" font-size="13" font-weight="600" x="60" y="93"><tspan>① 应用层 · Application Layer</tspan></text>
+<rect fill="#ffffff" stroke="#4e54c8" x="80" y="108" width="350" height="45" rx="5.25" ry="5.85"/>
+<text fill="#1a1a2e" font-size="12" font-weight="600" x="95" y="125"><tspan>Web Dashboard</tspan></text>
+<text fill="#666666" font-size="10" x="95" y="140"><tspan>FastAPI + 原生 JS</tspan></text>
+<text fill="#888888" font-size="9" x="230" y="125"><tspan>项目管理 / 报告 / 数据源合规 / 系统级指标</tspan></text>
+<rect fill="#ffffff" stroke="#4e54c8" x="480" y="108" width="350" height="45" rx="5.25" ry="5.85"/>
+<text fill="#1a1a2e" font-size="12" font-weight="600" x="495" y="125"><tspan>CLI 工具</tspan></text>
+<text fill="#666666" font-size="10" x="495" y="140"><tspan>python -m runtime.cli</tspan></text>
+<text fill="#888888" font-size="9" x="630" y="125"><tspan>批量执行 / 离线运行 / Golden Set 回归</tspan></text>
+<rect fill="#ffffff" stroke="#4e54c8" x="870" y="108" width="350" height="45" rx="5.25" ry="5.85"/>
+<text fill="#1a1a2e" font-size="12" font-weight="600" x="885" y="125"><tspan>HuggingFace Space</tspan></text>
+<text fill="#666666" font-size="10" x="885" y="140"><tspan>Static Mirror</tspan></text>
+<text fill="#888888" font-size="10" x="1020" y="125"><tspan>前端镜像（无需本地复现）</tspan></text>
+<rect fill="#ffffff" stroke="#4e54c8" x="1280" y="108" width="350" height="45" rx="5.25" ry="5.85"/>
+<text fill="#1a1a2e" font-size="12" font-weight="600" x="1295" y="125"><tspan>Replit 后端</tspan></text>
+<text fill="#666666" font-size="10" x="1295" y="140"><tspan>FastAPI Deploy</tspan></text>
+<text fill="#888888" font-size="10" x="1430" y="125"><tspan>云端后端 API 持续运行</tspan></text>
+
+<!-- ===== 2. ORCHESTRATION LAYER ===== -->
+<rect fill="#fefefe" stroke="#d0d4e0" x="40" y="170" width="1620" height="445" ry="7"/>
+<text fill="#1a1a2e" font-size="13" font-weight="600" x="60" y="188"><tspan>② 智能体编排层 · Orchestration Layer（37 节点 + 5 检查点 · 5 阶段流水线）</tspan></text>
+
+<!-- ===== RESEARCH (10 nodes) ===== -->
+<rect fill="url(#research)" stroke="#444" x="55" y="203" width="160" height="68" rx="5.6" ry="5.78"/>
+<text fill="#fff" font-size="13" font-weight="700" text-anchor="middle" x="135" y="228"><tspan>Research 调研</tspan></text>
+<text fill="#fff" font-size="11" text-anchor="middle" x="135" y="251"><tspan>(10 节点)</tspan></text>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="230" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="295" y="225"><tspan>topic_refine</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="295" y="245"><tspan>主题精炼</tspan></text>
+<line stroke="#888" stroke-width="1" x1="361" y1="231" x2="365" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="366" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="431" y="225"><tspan>subquery_decompose</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="431" y="245"><tspan>子问题分解</tspan></text>
+<line stroke="#888" stroke-width="1" x1="497" y1="231" x2="501" y2="231" marker-end="url(#arrow)"/>
+<rect fill="#ffe5e5" stroke="#dd4444" stroke-width="1.5" stroke-dasharray="3,2" x="502" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#dd4444" font-size="16" font-weight="700" text-anchor="middle" x="567" y="227"><tspan>CP</tspan></text>
+<text fill="#dd4444" font-size="9" text-anchor="middle" x="567" y="243"><tspan>人工检查点</tspan></text>
+<line stroke="#888" stroke-width="1" x1="633" y1="231" x2="637" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#f0a050" stroke-width="2" x="638" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<circle cx="650" cy="215" r="7" fill="#f0a050"/><text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="650" y="219">H</text>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="703" y="228"><tspan>topic_confirm</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="703" y="248"><tspan>主题确认</tspan></text>
+<line stroke="#888" stroke-width="1" x1="769" y1="231" x2="773" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="774" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="839" y="225"><tspan>paper_fetch</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="839" y="245"><tspan>三源抓取</tspan></text>
+<line stroke="#888" stroke-width="1" x1="905" y1="231" x2="909" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="910" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="975" y="225"><tspan>paper_filter</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="975" y="245"><tspan>5维筛选</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1041" y1="231" x2="1045" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="1046" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="1111" y="225"><tspan>paper_ingest</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1111" y="245"><tspan>PDF解析</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1177" y1="231" x2="1181" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="1182" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="8" font-weight="700" text-anchor="middle" x="1247" y="225"><tspan>material_extraction</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1247" y="245"><tspan>材料抽取</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1313" y1="231" x2="1317" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="1318" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="1383" y="225"><tspan>cross_validate</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1383" y="245"><tspan>交叉验证</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1449" y1="231" x2="1453" y2="231" marker-end="url(#arrow)"/>
+<rect fill="url(#research)" stroke="#444" stroke-width="0.5" x="1454" y="203" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="1519" y="225"><tspan>research_gap</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1519" y="245"><tspan>Gap 识别</tspan></text>
+
+<!-- ===== IDEATION (5 nodes, CORRECTED CP) ===== -->
+<rect fill="url(#ideation)" stroke="#444" x="55" y="283" width="160" height="68" rx="5.6" ry="5.78"/>
+<text fill="#fff" font-size="13" font-weight="700" text-anchor="middle" x="135" y="308"><tspan>Ideation 构思</tspan></text>
+<text fill="#fff" font-size="11" text-anchor="middle" x="135" y="331"><tspan>(5 节点)</tspan></text>
+<rect fill="url(#ideation)" stroke="#444" stroke-width="0.5" x="230" y="283" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="295" y="305"><tspan>brainstorm</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="295" y="325"><tspan>思路生成</tspan></text>
+<line stroke="#888" stroke-width="1" x1="361" y1="311" x2="365" y2="311" marker-end="url(#arrow)"/>
+<!-- idea_discuss (Human) - CP moved AFTER this -->
+<rect fill="url(#ideation)" stroke="#f0a050" stroke-width="2" x="366" y="283" width="130" height="56" rx="4.55" ry="4.76"/>
+<circle cx="378" cy="295" r="7" fill="#f0a050"/><text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="378" y="299">H</text>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="431" y="308"><tspan>idea_discuss</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="431" y="328"><tspan>思路讨论</tspan></text>
+<line stroke="#888" stroke-width="1" x1="497" y1="311" x2="501" y2="311" marker-end="url(#arrow)"/>
+<!-- CP (corrected: after idea_discuss, before idea_validate) -->
+<rect fill="#ffe5e5" stroke="#dd4444" stroke-width="1.5" stroke-dasharray="3,2" x="502" y="283" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#dd4444" font-size="16" font-weight="700" text-anchor="middle" x="567" y="307"><tspan>CP</tspan></text>
+<text fill="#dd4444" font-size="9" text-anchor="middle" x="567" y="323"><tspan>验证前检查点</tspan></text>
+<line stroke="#888" stroke-width="1" x1="633" y1="311" x2="637" y2="311" marker-end="url(#arrow)"/>
+<rect fill="url(#ideation)" stroke="#444" stroke-width="0.5" x="638" y="283" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="703" y="305"><tspan>idea_validate</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="703" y="325"><tspan>三维度验证</tspan></text>
+<line stroke="#888" stroke-width="1" x1="769" y1="311" x2="773" y2="311" marker-end="url(#arrow)"/>
+<rect fill="url(#ideation)" stroke="#444" stroke-width="0.5" x="774" y="283" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="839" y="305"><tspan>claim_draft</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="839" y="325"><tspan>Claim 草拟</tspan></text>
+
+<!-- ===== DESIGN (6 nodes) ===== -->
+<rect fill="url(#design)" stroke="#444" x="55" y="363" width="160" height="68" rx="5.6" ry="5.78"/>
+<text fill="#fff" font-size="13" font-weight="700" text-anchor="middle" x="135" y="388"><tspan>Design 设计</tspan></text>
+<text fill="#fff" font-size="11" text-anchor="middle" x="135" y="411"><tspan>(6 节点)</tspan></text>
+<rect fill="url(#design)" stroke="#444" stroke-width="0.5" x="230" y="363" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="295" y="385"><tspan>atom_decompose</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="295" y="405"><tspan>原子分解</tspan></text>
+<line stroke="#888" stroke-width="1" x1="361" y1="391" x2="365" y2="391" marker-end="url(#arrow)"/>
+<rect fill="url(#design)" stroke="#444" stroke-width="0.5" x="366" y="363" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="431" y="385"><tspan>method_formalize</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="431" y="405"><tspan>方法形式化</tspan></text>
+<line stroke="#888" stroke-width="1" x1="497" y1="391" x2="501" y2="391" marker-end="url(#arrow)"/>
+<rect fill="#ffe5e5" stroke="#dd4444" stroke-width="1.5" stroke-dasharray="3,2" x="502" y="363" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#dd4444" font-size="16" font-weight="700" text-anchor="middle" x="567" y="387"><tspan>CP</tspan></text>
+<text fill="#dd4444" font-size="9" text-anchor="middle" x="567" y="403"><tspan>人工检查点</tspan></text>
+<line stroke="#888" stroke-width="1" x1="633" y1="391" x2="637" y2="391" marker-end="url(#arrow)"/>
+<rect fill="url(#design)" stroke="#f0a050" stroke-width="2" x="638" y="363" width="130" height="56" rx="4.55" ry="4.76"/>
+<circle cx="650" cy="375" r="7" fill="#f0a050"/><text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="650" y="379">H</text>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="703" y="388"><tspan>method_review</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="703" y="408"><tspan>方法审稿</tspan></text>
+<line stroke="#888" stroke-width="1" x1="769" y1="391" x2="773" y2="391" marker-end="url(#arrow)"/>
+<rect fill="url(#design)" stroke="#444" stroke-width="0.5" x="774" y="363" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="8" font-weight="700" text-anchor="middle" x="839" y="385"><tspan>claim_evidence_link</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="839" y="405"><tspan>Claim↔证据</tspan></text>
+<line stroke="#888" stroke-width="1" x1="905" y1="391" x2="909" y2="391" marker-end="url(#arrow)"/>
+<rect fill="url(#design)" stroke="#444" stroke-width="0.5" x="910" y="363" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="975" y="385"><tspan>method_artifact</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="975" y="405"><tspan>Artifact</tspan></text>
+
+<!-- ===== EXPERIMENT (9 nodes, corrected name) ===== -->
+<rect fill="url(#experiment)" stroke="#444" x="55" y="443" width="160" height="68" rx="5.6" ry="5.78"/>
+<text fill="#fff" font-size="13" font-weight="700" text-anchor="middle" x="135" y="468"><tspan>Experiment 实验</tspan></text>
+<text fill="#fff" font-size="11" text-anchor="middle" x="135" y="491"><tspan>(9 节点)</tspan></text>
+<rect fill="url(#experiment)" stroke="#444" stroke-width="0.5" x="230" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="295" y="465"><tspan>experiment_config</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="295" y="485"><tspan>实验配置</tspan></text>
+<line stroke="#888" stroke-width="1" x1="361" y1="471" x2="365" y2="471" marker-end="url(#arrow)"/>
+<rect fill="url(#experiment)" stroke="#444" stroke-width="0.5" x="366" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="431" y="465"><tspan>code_generate</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="431" y="485"><tspan>代码生成</tspan></text>
+<line stroke="#888" stroke-width="1" x1="497" y1="471" x2="501" y2="471" marker-end="url(#arrow)"/>
+<rect fill="url(#experiment)" stroke="#444" stroke-width="0.5" x="502" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="567" y="465"><tspan>code_review</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="567" y="485"><tspan>代码审查</tspan></text>
+<line stroke="#888" stroke-width="1" x1="633" y1="471" x2="637" y2="471" marker-end="url(#arrow)"/>
+<rect fill="#ffe5e5" stroke="#dd4444" stroke-width="1.5" stroke-dasharray="3,2" x="638" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#dd4444" font-size="16" font-weight="700" text-anchor="middle" x="703" y="467"><tspan>CP</tspan></text>
+<text fill="#dd4444" font-size="9" text-anchor="middle" x="703" y="483"><tspan>人工检查点</tspan></text>
+<line stroke="#888" stroke-width="1" x1="769" y1="471" x2="773" y2="471" marker-end="url(#arrow)"/>
+<rect fill="url(#experiment)" stroke="#f0a050" stroke-width="2" x="774" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<circle cx="786" cy="455" r="7" fill="#f0a050"/><text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="786" y="459">H</text>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="839" y="458"><tspan>experiment_review</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="839" y="478"><tspan>实验审查</tspan></text>
+<line stroke="#888" stroke-width="1" x1="905" y1="471" x2="909" y2="471" marker-end="url(#arrow)"/>
+<!-- experiment_run (Tool) -->
+<rect fill="url(#experiment)" stroke="#66bb6a" stroke-width="2" x="910" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<circle cx="922" cy="455" r="7" fill="#66bb6a"/><text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="922" y="459">T</text>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="975" y="458"><tspan>experiment_run</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="975" y="478"><tspan>沙盒执行</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1041" y1="471" x2="1045" y2="471" marker-end="url(#arrow)"/>
+<rect fill="url(#experiment)" stroke="#444" stroke-width="0.5" x="1046" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="1111" y="465"><tspan>anomaly_check</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1111" y="485"><tspan>异常检测</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1177" y1="471" x2="1181" y2="471" marker-end="url(#arrow)"/>
+<rect fill="url(#experiment)" stroke="#444" stroke-width="0.5" x="1182" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="1247" y="465"><tspan>claim_verify</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1247" y="485"><tspan>Claim 验证</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1313" y1="471" x2="1317" y2="471" marker-end="url(#arrow)"/>
+<!-- corrected: experiment_outcome_assess -->
+<rect fill="url(#experiment)" stroke="#444" stroke-width="0.5" x="1318" y="443" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="7" font-weight="700" text-anchor="middle" x="1383" y="465"><tspan>experiment_outcome_assess</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1383" y="485"><tspan>成败评估</tspan></text>
+
+<!-- ===== WRITING (7 nodes, CORRECTED CP) ===== -->
+<rect fill="url(#writing)" stroke="#444" x="55" y="523" width="160" height="68" rx="5.6" ry="5.78"/>
+<text fill="#fff" font-size="13" font-weight="700" text-anchor="middle" x="135" y="548"><tspan>Writing 写作</tspan></text>
+<text fill="#fff" font-size="11" text-anchor="middle" x="135" y="571"><tspan>(7 节点)</tspan></text>
+<!-- provenance_check (Tool) -->
+<rect fill="url(#writing)" stroke="#66bb6a" stroke-width="2" x="230" y="523" width="130" height="56" rx="4.55" ry="4.76"/>
+<circle cx="242" cy="535" r="7" fill="#66bb6a"/><text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="242" y="539">T</text>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="295" y="538"><tspan>provenance_check</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="295" y="558"><tspan>溯源硬校验</tspan></text>
+<line stroke="#888" stroke-width="1" x1="361" y1="551" x2="365" y2="551" marker-end="url(#arrow)"/>
+<rect fill="url(#writing)" stroke="#444" stroke-width="0.5" x="366" y="523" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="431" y="545"><tspan>style_learn</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="431" y="565"><tspan>风格学习</tspan></text>
+<line stroke="#888" stroke-width="1" x1="497" y1="551" x2="501" y2="551" marker-end="url(#arrow)"/>
+<rect fill="url(#writing)" stroke="#444" stroke-width="0.5" x="502" y="523" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="567" y="545"><tspan>outline</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="567" y="565"><tspan>大纲</tspan></text>
+<line stroke="#888" stroke-width="1" x1="633" y1="551" x2="637" y2="551" marker-end="url(#arrow)"/>
+<!-- CP corrected: after outline, before section_draft -->
+<rect fill="#ffe5e5" stroke="#dd4444" stroke-width="1.5" stroke-dasharray="3,2" x="638" y="523" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#dd4444" font-size="16" font-weight="700" text-anchor="middle" x="703" y="547"><tspan>CP</tspan></text>
+<text fill="#dd4444" font-size="9" text-anchor="middle" x="703" y="563"><tspan>草稿前检查点</tspan></text>
+<line stroke="#888" stroke-width="1" x1="769" y1="551" x2="773" y2="551" marker-end="url(#arrow)"/>
+<rect fill="url(#writing)" stroke="#444" stroke-width="0.5" x="774" y="523" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="839" y="545"><tspan>section_draft</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="839" y="565"><tspan>章节填充</tspan></text>
+<line stroke="#888" stroke-width="1" x1="905" y1="551" x2="909" y2="551" marker-end="url(#arrow)"/>
+<rect fill="url(#writing)" stroke="#444" stroke-width="0.5" x="910" y="523" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="975" y="545"><tspan>review</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="975" y="565"><tspan>模拟审稿</tspan></text>
+<line stroke="#888" stroke-width="1" x1="1041" y1="551" x2="1045" y2="551" marker-end="url(#arrow)"/>
+<!-- revise (Human) -->
+<rect fill="url(#writing)" stroke="#f0a050" stroke-width="2" x="1046" y="523" width="130" height="56" rx="4.55" ry="4.76"/>
+<circle cx="1058" cy="535" r="7" fill="#f0a050"/><text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="1058" y="539">H</text>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="1111" y="545"><tspan>revise</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="1111" y="565"><tspan>终稿</tspan></text>
+
+<!-- ===== 3. DISCOVERY (CORRECTED: cp_before_search, no separate physics node) ===== -->
+<rect fill="#fff0f5" stroke="#ff6a00" stroke-width="1" x="40" y="625" width="1620" height="100" ry="8"/>
+<text fill="#ff6a00" font-size="12" font-weight="700" x="60" y="643"><tspan>③ 独立子系统 · Discovery 构效关系发现（6 节点 · 物理边界内嵌于 discovery_validate）</tspan></text>
+<rect fill="url(#discovery)" stroke="#444" x="230" y="655" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="295" y="677"><tspan>hypothesis_seed</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="295" y="697"><tspan>假设种子</tspan></text>
+<line stroke="#888" stroke-width="1" x1="361" y1="683" x2="365" y2="683" marker-end="url(#arrow)"/>
+<rect fill="url(#discovery)" stroke="#444" stroke-width="0.5" x="366" y="655" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="11" font-weight="700" text-anchor="middle" x="431" y="677"><tspan>search_space</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="431" y="697"><tspan>搜索空间</tspan></text>
+<line stroke="#888" stroke-width="1" x1="497" y1="683" x2="501" y2="683" marker-end="url(#arrow)"/>
+<!-- checkpoint_save -->
+<rect fill="url(#discovery)" stroke="#444" stroke-width="0.5" x="502" y="655" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="567" y="673"><tspan>checkpoint_save</tspan></text>
+<text fill="#fff" font-size="7" text-anchor="middle" x="567" y="687"><tspan>检查点保存</tspan></text>
+<text fill="#fff" font-size="7" text-anchor="middle" x="567" y="699"><tspan>状态落库·中断恢复</tspan></text>
+<line stroke="#888" stroke-width="1" x1="633" y1="683" x2="637" y2="683" marker-end="url(#arrow)"/>
+<rect fill="url(#discovery)" stroke="#444" stroke-width="0.5" x="638" y="655" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="703" y="677"><tspan>llm_guided_search</tspan></text>
+<text fill="#fff" font-size="8" text-anchor="middle" x="703" y="697"><tspan>MCTS+LLM 搜索</tspan></text>
+<line stroke="#888" stroke-width="1" x1="769" y1="683" x2="773" y2="683" marker-end="url(#arrow)"/>
+<!-- discovery_validate: now notes embedded physics filter -->
+<rect fill="url(#discovery)" stroke="#444" stroke-width="0.5" x="774" y="655" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="839" y="673"><tspan>discovery_validate</tspan></text>
+<text fill="#fff" font-size="7" text-anchor="middle" x="839" y="687"><tspan>双路CV + 物理边界硬筛</tspan></text>
+<text fill="#fff" font-size="7" text-anchor="middle" x="839" y="699"><tspan>(TARGET_BOUNDS 内嵌)</tspan></text>
+<line stroke="#888" stroke-width="1" x1="905" y1="683" x2="909" y2="683" marker-end="url(#arrow)"/>
+<rect fill="url(#discovery)" stroke="#444" stroke-width="0.5" x="910" y="655" width="130" height="56" rx="4.55" ry="4.76"/>
+<text fill="#fff" font-size="9" font-weight="700" text-anchor="middle" x="975" y="677"><tspan>discovery_report</tspan></text>
+<text fill="#fff" font-size="10" text-anchor="middle" x="975" y="697"><tspan>5维评分报告</tspan></text>
+
+<!-- ===== CROSS-STAGE FEEDBACK ===== -->
+<rect fill="#fffbf0" stroke="#c8a415" stroke-dasharray="3,3" x="40" y="735" width="1620" height="80" ry="8"/>
+<text fill="#7a5e00" font-size="12" font-weight="700" x="60" y="753"><tspan>★ 跨阶段反馈弧：Research Gap → Discovery 假设种子 → Experiment 验证 → Writing 引用</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" stroke-width="1.5" x="80" y="763" width="350" height="40" rx="3.5" ry="5"/>
+<text fill="#c8a415" font-size="12" font-weight="600" x="95" y="785"><tspan>Research Gap</tspan></text>
+<text fill="#444" font-size="11" x="260" y="785"><tspan>→ Discovery 假设种子</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" stroke-width="1.5" x="480" y="763" width="350" height="40" rx="3.5" ry="5"/>
+<text fill="#c8a415" font-size="12" font-weight="600" x="495" y="785"><tspan>Discovery 新发现</tspan></text>
+<text fill="#444" font-size="11" x="660" y="785"><tspan>→ Experiment 验证</tspan></text>
+<rect fill="#ffffff" stroke="#2575fc" stroke-width="1.5" x="880" y="763" width="350" height="40" rx="3.5" ry="5"/>
+<text fill="#2575fc" font-size="12" font-weight="600" x="895" y="785"><tspan>Experiment 结果</tspan></text>
+<text fill="#444" font-size="11" x="1060" y="785"><tspan>→ Writing 引用</tspan></text>
+<rect fill="#ffffff" stroke="#6a11cb" stroke-width="1.5" x="1280" y="763" width="350" height="40" rx="3.5" ry="5"/>
+<text fill="#6a11cb" font-size="12" font-weight="600" x="1295" y="785"><tspan>Provenance 校验</tspan></text>
+<text fill="#444" font-size="11" x="1460" y="785"><tspan>→ 证据链 (manual/retrieved)</tspan></text>
+
+<!-- ===== 4. TOOLING & LLM LAYER (CORRECTED + EXPANDED) ===== -->
+<rect fill="#fffaf0" stroke="#c8a415" x="40" y="825" width="1620" height="130" ry="8"/>
+<text fill="#1a1a2e" font-size="13" font-weight="600" x="60" y="843"><tspan>④ 工具与 LLM 层 · Tooling &amp; LLM Layer</tspan></text>
+<!-- Row 1 (8 boxes, corrected) -->
+<rect fill="#ffffff" stroke="#c8a415" x="60" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="153" y="872"><tspan>任务路由</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="153" y="886"><tspan>config/tasks.yaml</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="153" y="898"><tspan>31 任务 / 6 Provider</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" x="257" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="350" y="872"><tspan>结构化输出</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="350" y="886"><tspan>function calling</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="350" y="898"><tspan>JSON schema</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" x="454" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="547" y="872"><tspan>向量检索</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="547" y="886"><tspan>ChromaVectorStore</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="547" y="898"><tspan>add / query / delete / count</tspan></text>
+<!-- CORRECTED: materials_search.py -->
+<rect fill="#ffffff" stroke="#c8a415" x="651" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="744" y="872"><tspan>物理边界检查</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="744" y="886"><tspan>materials_search.py</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="744" y="898"><tspan>TARGET_BOUNDS 区间</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" x="848" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="941" y="872"><tspan>5 维评分</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="941" y="886"><tspan>DiscoveryReliabilityScorer</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" x="1045" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="1138" y="872"><tspan>材料 CV</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1138" y="886"><tspan>MP + 规则 + OQMD</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1138" y="898"><tspan>双路降级</tspan></text>
+<!-- conflict resolution: IF/zone/year weighting -->
+<rect fill="#ffffff" stroke="#c8a415" x="1242" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="1335" y="872"><tspan>冲突裁决</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="1335" y="886"><tspan>IF×60% + 分区×20%</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="1335" y="898"><tspan>+ 发表新度×20%</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" x="1439" y="855" width="187" height="56" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="1532" y="872"><tspan>指标聚合</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1532" y="886"><tspan>metrics.py</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1532" y="898"><tspan>9 类系统级指标</tspan></text>
+<!-- Row 2 (NEW: 4 additional tools) -->
+<rect fill="#ffffff" stroke="#c8a415" stroke-dasharray="2,2" x="60" y="917" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="255" y="937"><tspan>符号回归 · symbolic_regression.py — 公式发现</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" stroke-dasharray="2,2" x="460" y="917" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="655" y="937"><tspan>材料库缺口分析 · materials_db_gap.py — MP/OQMD/NOMAD 覆盖度</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" stroke-dasharray="2,2" x="860" y="917" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1055" y="937"><tspan>趋势分析 · trend_analyzer.py — 关键词增长率分类</tspan></text>
+<rect fill="#ffffff" stroke="#c8a415" stroke-dasharray="2,2" x="1260" y="917" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1455" y="937"><tspan>期刊质量 · journal_quality.py — IF + 中科院分区</tspan></text>
+
+<!-- ===== 5. DATA & KNOWLEDGE LAYER (EXPANDED) ===== -->
+<rect fill="#f0fff4" stroke="#33aa77" x="40" y="965" width="1620" height="130" ry="8"/>
+<text fill="#1a1a2e" font-size="13" font-weight="600" x="60" y="983"><tspan>⑤ 数据与知识层 · Data &amp; Knowledge Layer（14 张 SQLite 表）</tspan></text>
+<!-- Row 1 (6 boxes, corrected) -->
+<rect fill="#ffffff" stroke="#33aa77" x="60" y="995" width="253" height="56" rx="3.795" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="186" y="1012"><tspan>KV 表</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="186" y="1026"><tspan>save_kv / get_kv</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="186" y="1038"><tspan>~16 key</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" x="323" y="995" width="253" height="56" rx="3.795" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="449" y="1012"><tspan>Paper + Chunk</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="449" y="1026"><tspan>保存/查询/去重</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="449" y="1038"><tspan>外部 ID 索引</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" x="586" y="995" width="253" height="56" rx="3.795" ry="4.8"/>
+<text fill="#1a1a2e" font-size="9" font-weight="600" text-anchor="middle" x="712" y="1012"><tspan>Material+Property+Synthesis</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="712" y="1026"><tspan>材料+性能+合成方法</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="712" y="1038"><tspan>Shannon 离子半径</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" x="849" y="995" width="253" height="56" rx="3.795" ry="4.8"/>
+<text fill="#1a1a2e" font-size="9" font-weight="600" text-anchor="middle" x="975" y="1012"><tspan>Claim / Idea / Gap</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="975" y="1026"><tspan>结构化实体</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="975" y="1038"><tspan>赛题要求</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" x="1112" y="995" width="253" height="56" rx="3.795" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="1238" y="1012"><tspan>Conflict</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1238" y="1026"><tspan>结构化冲突实体</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1238" y="1038"><tspan>共识+冲突比裁决</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" x="1375" y="995" width="253" height="56" rx="3.795" ry="4.8"/>
+<text fill="#1a1a2e" font-size="9" font-weight="600" text-anchor="middle" x="1501" y="1012"><tspan>Evidence Log</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="1501" y="1026"><tspan>manual / retrieved</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1501" y="1038"><tspan>按阶段落库</tspan></text>
+<!-- Row 2 (NEW: 4 additional entities) -->
+<rect fill="#ffffff" stroke="#33aa77" stroke-dasharray="2,2" x="60" y="1057" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="255" y="1077"><tspan>Experiment — 5 种状态 · 验证 Claim</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" stroke-dasharray="2,2" x="460" y="1057" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="655" y="1077"><tspan>Artifact — 6 种类型 · 版本化产出物</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" stroke-dasharray="2,2" x="860" y="1057" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1055" y="1077"><tspan>Relations — 10 种关系类型 · 实体 DAG</tspan></text>
+<rect fill="#ffffff" stroke="#33aa77" stroke-dasharray="2,2" x="1260" y="1057" width="390" height="30" rx="4" ry="4.8"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1455" y="1077"><tspan>MaterialAnalysis — 规则引擎 · 机制库（不调用 LLM）</tspan></text>
+
+<!-- ===== 6. EXTERNAL DATA SOURCES ===== -->
+<rect fill="#fff0f0" stroke="#cc8844" x="40" y="1105" width="1620" height="100" ry="8"/>
+<text fill="#1a1a2e" font-size="13" font-weight="600" x="60" y="1123"><tspan>⑥ 外部数据源层 · External Data Sources（统一登记 · 许可证透明 · 三路降级）</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="60" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="153" y="1153"><tspan>arXiv</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="153" y="1177"><tspan>公开</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="257" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="9" font-weight="600" text-anchor="middle" x="350" y="1153"><tspan>Semantic Scholar</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="350" y="1177"><tspan>公开</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="454" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="547" y="1153"><tspan>Sciverse</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="547" y="1177"><tspan>学术 token</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="651" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="9" font-weight="600" text-anchor="middle" x="744" y="1153"><tspan>Materials Project</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="744" y="1177"><tspan>X-API-KEY</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="848" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="941" y="1153"><tspan>OQMD</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="941" y="1177"><tspan>公开</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="1045" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="1138" y="1153"><tspan>MinerU</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1138" y="1177"><tspan>PDF 解析</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="1242" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="11" font-weight="600" text-anchor="middle" x="1335" y="1153"><tspan>NOMAD</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1335" y="1177"><tspan>公开</tspan></text>
+<rect fill="#ffffff" stroke="#cc8844" x="1439" y="1135" width="187" height="60" rx="4.675" ry="4.8"/>
+<text fill="#1a1a2e" font-size="9" font-weight="600" text-anchor="middle" x="1532" y="1153"><tspan>LLM (6 Provider)</tspan></text>
+<text fill="#666" font-size="9" text-anchor="middle" x="1532" y="1177"><tspan>OpenAI/Ant/DS/MM/vLLM</tspan></text>
+
+<!-- ===== 7. SYSTEM METRICS PANEL ===== -->
+<rect fill="#f5f0ff" stroke="#7a4cb8" x="40" y="1215" width="1620" height="80" ry="8"/>
+<text fill="#1a1a2e" font-size="13" font-weight="600" x="60" y="1233"><tspan>⑦ 系统级指标面板 · System Metrics Panel（赛题 §4.2 强支撑 · 9 类指标自动聚合）</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="60" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="142" y="1260"><tspan>节点完成率</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="142" y="1277"><tspan>43 节点</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="235" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="317" y="1260"><tspan>KV 覆盖率</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="317" y="1277"><tspan>~16 key</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="410" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="492" y="1260"><tspan>文献抓取率</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="492" y="1277"><tspan>3 源</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="585" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="667" y="1260"><tspan>5 维评分</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="667" y="1277"><tspan>P25/中位数/P75</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="760" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="842" y="1260"><tspan>Gap 质量</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="842" y="1277"><tspan>4 维度</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="935" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1017" y="1260"><tspan>CV 一致性</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="1017" y="1277"><tspan>MP+规则</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="1110" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1192" y="1260"><tspan>证据链</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="1192" y="1277"><tspan>按阶段</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="1285" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1367" y="1260"><tspan>降级触发率</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="1367" y="1277"><tspan>三路</tspan></text>
+<rect fill="#ffffff" stroke="#7a4cb8" x="1460" y="1243" width="165" height="44" rx="4.95" ry="4.84"/>
+<text fill="#1a1a2e" font-size="10" font-weight="600" text-anchor="middle" x="1542" y="1260"><tspan>流水线效率</tspan></text>
+<text fill="#666" font-size="8" text-anchor="middle" x="1542" y="1277"><tspan>耗时/LLM</tspan></text>
+
+<!-- ===== LEGEND (UPDATED) ===== -->
+<text fill="#1a1a2e" font-size="12" font-weight="700" x="60" y="1318"><tspan>图例</tspan></text>
+<rect fill="#4e54c8" stroke="#666" x="60" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="82" y="1337"><tspan>AgentNode</tspan></text>
+<rect fill="#4e54c8" stroke="#f0a050" stroke-width="2" x="180" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="202" y="1337"><tspan>HumanNode (H)</tspan></text>
+<rect fill="#4e54c8" stroke="#66bb6a" stroke-width="2" x="330" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="352" y="1337"><tspan>ToolNode (T)</tspan></text>
+<rect fill="#ffe5e5" stroke="#dd4444" stroke-width="1.5" stroke-dasharray="3,2" x="470" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="492" y="1337"><tspan>检查点 (CP)</tspan></text>
+<rect fill="#c8a415" stroke="#666" x="580" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="602" y="1337"><tspan>物理边界内嵌</tspan></text>
+<rect fill="#ff6a00" stroke="#666" x="710" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="732" y="1337"><tspan>跨阶段反馈</tspan></text>
+<rect fill="#c8a415" stroke="#666" x="960" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="982" y="1337"><tspan>工具层</tspan></text>
+<rect fill="#33aa77" stroke="#666" x="1040" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="1062" y="1337"><tspan>数据层 (14表)</tspan></text>
+<rect fill="#cc8844" stroke="#666" x="1160" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="1182" y="1337"><tspan>外部数据源</tspan></text>
+<rect fill="#7a4cb8" stroke="#666" x="1270" y="1326" width="14" height="14" rx="1.96" ry="1.96"/>
+<text font-size="10" x="1292" y="1337"><tspan>系统级指标</tspan></text>
+
+</svg>
