@@ -18,14 +18,14 @@ SciFinder-Agent 是一个面向**小数据-强物理约束体系**（热电材�
 
 ## 📋 项目状态
 
-| 维度 | 状态 |
-|------|------|
-| 节点数 | **43 个**（37 个流水线节点 + 6 个 Discovery 子模块节点） |
-| 测试 | **326 passed**（pytest 单元 + 集成 + 端到端） |
-| 部署 | **三层**：GitHub（源码） / Replit（后端） / HuggingFace Space（前端镜像） |
-| LLM Provider | 默认 **MiniMax-M3**（兼容 OpenAI API，可切换 Anthropic / vLLM / 自托管） |
-| 数据源 | **8 个外部源**：arXiv / Semantic Scholar / Sciverse / Materials Project / OQMD / NOMAD / MinerU / LLM Provider |
-| 许可证 | 暂未开源（赛后考虑 Apache 2.0 / MIT）|
+| 维度           | 状态                                                                                                        |
+| ------------ | --------------------------------------------------------------------------------------------------------- |
+| 节点数          | **43 个**（37 个流水线节点 + 6 个 Discovery 子模块节点）                                                                 |
+| 测试           | **326 passed**（pytest 单元 + 集成 + 端到端）                                                                      |
+| 部署           | **三层**：GitHub（源码） / Replit（后端） / HuggingFace Space（前端镜像）                                                  |
+| LLM Provider | 默认 **MiniMax-M3**（兼容 OpenAI API，可切换 Anthropic / vLLM / 自托管）                                               |
+| 数据源          | **8 个外部源**：arXiv / Semantic Scholar / Sciverse / Materials Project / OQMD / NOMAD / MinerU / LLM Provider |
+| 许可证          | 暂未开源（赛后考虑 Apache 2.0 / MIT）                                                                               |
 
 ## 🏗️ 架构一览
 
@@ -46,7 +46,7 @@ SciFinder-Agent 是一个面向**小数据-强物理约束体系**（热电材�
 
 ### 方式一：HuggingFace Space 在线体验（推荐）
 
-打开 [https://huggingface.co/spaces/xindong09280929/scientific-research-agent-demo](https://huggingface.co/spaces/xindong09280929/scientific-research-agent-demo)，输入研究主题（如"half-Heusler 热电材料"），一键启动流水线，全程可视化。
+打开 <https://huggingface.co/spaces/xindong09280929/scientific-research-agent-demo>，输入研究主题（如"half-Heusler 热电材料"），一键启动流水线，全程可视化。
 
 > ⚠️ 演示环境为**内存驻留**：Space 实例休眠或重启后需重新创建项目。
 
@@ -95,13 +95,13 @@ SRA_WEB_SKIP_GUARD=1 python -m pytest tests/test_stages_graphs.py tests/test_nod
 
 杜绝 LLM 物理幻觉——在 Discovery 子模块的 `LLMGuidedSearchAgent` 与 `DiscoveryValidateAgent` **双层嵌入**硬筛：
 
-| 检查维度 | 实现 |
-|----------|------|
-| 化学式合法性 | 118 元素周期表 + 解析器（含 MA / FA / PEA 等有机阳离子识别）|
-| 电中性 | DFS 回溯价态组合 + 金属间化合物判定 + 18 电子规则（half-Heusler 等） |
-| Goldschmidt 容忍因子 | 钙钛矿型 ABO3 计算 t，判定稳定区间 0.825~1.059 |
-| 物理量范围 | 14 项性能指标（ZT / Seebeck / 热导 / 电导 / 带隙 / 形成能 ...）的物理可达范围 |
-| 工艺范围 | 合成温度（0~4000K）、压力（0~200 GPa）的物理可达范围 |
+| 检查维度             | 实现                                                     |
+| ---------------- | ------------------------------------------------------ |
+| 化学式合法性           | 118 元素周期表 + 解析器（含 MA / FA / PEA 等有机阳离子识别）              |
+| 电中性              | DFS 回溯价态组合 + 金属间化合物判定 + 18 电子规则（half-Heusler 等）        |
+| Goldschmidt 容忍因子 | 钙钛矿型 ABO3 计算 t，判定稳定区间 0.825\~1.059                     |
+| 物理量范围            | 14 项性能指标（ZT / Seebeck / 热导 / 电导 / 带隙 / 形成能 ...）的物理可达范围 |
+| 工艺范围             | 合成温度（0\~4000K）、压力（0\~200 GPa）的物理可达范围                   |
 
 **实测**：Bi₂Te₃ / SnSe / ZrNiSn / Cs₀.₀₅FA₀.₉₅PbI₃ 全部通过；Novec-7100（未知元素 No）、Bi₂Te₃ ZT=50（超范围）、合成温度 < 0K（违反热力学）一律拒绝。
 
@@ -121,29 +121,29 @@ SRA_WEB_SKIP_GUARD=1 python -m pytest tests/test_stages_graphs.py tests/test_nod
 
 ### 4. 🔍 性质数据"证据等级 A-E"
 
-| 等级 | 含义 |
-|------|------|
-| A | 多篇实验文献交叉验证 |
-| B | 单篇高质量实验 |
-| C | 多篇计算 / 综述交叉 |
-| D | 单篇计算 |
-| E | LLM 推断（标"暂无可靠文献数据"） |
+| 等级 | 含义                  |
+| -- | ------------------- |
+| A  | 多篇实验文献交叉验证          |
+| B  | 单篇高质量实验             |
+| C  | 多篇计算 / 综述交叉         |
+| D  | 单篇计算                |
+| E  | LLM 推断（标"暂无可靠文献数据"） |
 
 ## 📊 系统级指标面板（赛题 §4.2 强支撑）
 
 通过 `GET /api/metrics/system` 自动聚合 9 类指标：
 
-| 指标 | 字段 |
-|------|------|
-| 节点完成率 | success / total 节点数 |
-| KV 覆盖率 | 31 关键字段的实际填充率 |
-| 文献抓取率 | arXiv / S2 / Sciverse 三源命中率 |
-| 5 维评分分布 | P25 / 中位数 / P75 |
-| Gap 质量分布 | 4 维度 |
-| CV 一致性 | Materials Project + 规则两路一致率 |
-| 证据链 | 按阶段 manual / retrieved 占比 |
-| 降级触发率 | 三路（MP / Sciverse / LLM）降级触发比例 |
-| 流水线效率 | 平均耗时 / LLM 调用次数 |
+| 指标       | 字段                            |
+| -------- | ----------------------------- |
+| 节点完成率    | success / total 节点数           |
+| KV 覆盖率   | 31 关键字段的实际填充率                 |
+| 文献抓取率    | arXiv / S2 / Sciverse 三源命中率   |
+| 5 维评分分布  | P25 / 中位数 / P75               |
+| Gap 质量分布 | 4 维度                          |
+| CV 一致性   | Materials Project + 规则两路一致率   |
+| 证据链      | 按阶段 manual / retrieved 占比     |
+| 降级触发率    | 三路（MP / Sciverse / LLM）降级触发比例 |
+| 流水线效率    | 平均耗时 / LLM 调用次数               |
 
 **当前真实数据**（基于 202 个项目 / 289 papers）：569 个 claims / 41 个 gaps / 9 类指标均产出可计算数值。
 
@@ -156,29 +156,29 @@ python tools/export_metrics_report.py --prefix metrics_real
 
 ## 🛠 技术栈
 
-| 层 | 选型 | 理由 |
-|----|------|------|
-| 后端 | Python 3.10 + FastAPI + SQLAlchemy + SQLite | 异步友好、轻量部署、零外部数据库依赖 |
-| 前端 | 原生 HTML/CSS/JS 单页应用 | 零构建、零框架依赖、文件可直接静态托管 |
-| LLM | **MiniMax-M3** 默认（兼容 OpenAI API）| 国内可用 + 1M 上下文；可切换 Anthropic / vLLM / 自托管 |
-| 向量检索 | ChromaDB 本地持久化 | 内置 SQLite 存储，免外部向量库 |
-| 数值计算 | numpy + scipy | 物理规则计算的底层依赖 |
-| 测试 | pytest | 326 项测试覆盖单元 + 集成 + 端到端 |
+| 层    | 选型                                          | 理由                                       |
+| ---- | ------------------------------------------- | ---------------------------------------- |
+| 后端   | Python 3.10 + FastAPI + SQLAlchemy + SQLite | 异步友好、轻量部署、零外部数据库依赖                       |
+| 前端   | 原生 HTML/CSS/JS 单页应用                         | 零构建、零框架依赖、文件可直接静态托管                      |
+| LLM  | **MiniMax-M3** 默认（兼容 OpenAI API）            | 国内可用 + 1M 上下文；可切换 Anthropic / vLLM / 自托管 |
+| 向量检索 | ChromaDB 本地持久化                              | 内置 SQLite 存储，免外部向量库                      |
+| 数值计算 | numpy + scipy                               | 物理规则计算的底层依赖                              |
+| 测试   | pytest                                      | 326 项测试覆盖单元 + 集成 + 端到端                   |
 
 ## 🔐 数据来源合规声明
 
 所有外部数据来源均集中登记于 `core/tools/data_provenance.py`，包含来源名称、URL、数据类型、获取方式、许可证与最后访问时间。主办方发放的 **WAYB/WAYC 蛋白组学数据包**与本项目"材料科学文献驱动"方向不直接对接，故不纳入核心数据使用，仅在附录"未来工作：跨学科扩展候选"中列出。
 
-| 来源 | 类型 | 许可证 |
-|------|------|--------|
-| arXiv | 学术预印本 | 公开 |
-| Semantic Scholar | 学术检索 | 公开（可选 token）|
-| Sciverse | 深度解析文献 | 学术 token |
-| Materials Project | 材料结构与性能 | X-API-KEY |
-| OQMD | 开放量子材料 | 公开 |
-| NOMAD | 材料档案 | 公开 |
-| MinerU | PDF 解析 | token |
-| LLM Provider (6) | 文本生成 | OpenAI 兼容 |
+| 来源                | 类型      | 许可证          |
+| ----------------- | ------- | ------------ |
+| arXiv             | 学术预印本   | 公开           |
+| Semantic Scholar  | 学术检索    | 公开（可选 token） |
+| Sciverse          | 深度解析文献  | 学术 token     |
+| Materials Project | 材料结构与性能 | X-API-KEY    |
+| OQMD              | 开放量子材料  | 公开           |
+| NOMAD             | 材料档案    | 公开           |
+| MinerU            | PDF 解析  | token        |
+| LLM Provider (6)  | 文本生成    | OpenAI 兼容    |
 
 ## 🔧 部署自定义
 
@@ -229,11 +229,9 @@ scientificResearchAgentSys/
 
 ## 📞 联系方式
 
-- GitHub: [https://github.com/kaijie-czyh/scientificResearchAgentSys](https://github.com/kaijie-czyh/scientificResearchAgentSys)
-- HuggingFace Space: [https://huggingface.co/spaces/xindong09280929/scientific-research-agent-demo](https://huggingface.co/spaces/xindong09280929/scientific-research-agent-demo)
+- GitHub: <https://github.com/kaijie-czyh/scientificResearchAgentSys>
+- HuggingFace Space: <https://huggingface.co/spaces/xindong09280929/scientific-research-agent-demo>
 - 赛事方向：2026 GOAI 世界人工智能开源大赛 · 赛道三「前沿探索（AI for Research）」
 
----
+***
 
-> 最后更新：2026-08-15（v2.2 · 合并 PR #4 feat/code-update-v2 后）
-> 项目代号：`SciFinder-Agent`（英文品牌名）/ 材构发现智能体（中文品牌名）
