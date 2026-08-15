@@ -2257,6 +2257,87 @@ def get_materials_cross_validation(project_id: str) -> dict:
     return {"project_id": project_id, "report": report}
 
 
+# =========================================================================
+# LaTeX 报告生成（前后端对齐·PDF + TEX 源码下载）
+# -------------------------------------------------------------------------
+# 调研报告与构效分析报告的 LaTeX/PDF 由 tools/latex_report.py 编译生成，
+# 落盘到 projects/{id}/artifacts/latex/{kind}/，再通过下列 4 个端点暴露
+# 给前端下载。前端按钮在 web/static/app.js 的 sidebar 下载区触发。
+# =========================================================================
+
+
+@app.post("/api/projects/{project_id}/latex-report/{kind}")
+def generate_latex_report(project_id: str, kind: str) -> dict:
+    """生成 LaTeX/PDF 报告（executes pdflatex + bibtex + pdflatex ×2）。
+
+    kind: research | discovery | both
+    """
+    _require_project(project_id)
+    if kind not in ("research", "discovery", "both"):
+        raise HTTPException(status_code=400, detail="kind 必须为 research/discovery/both")
+
+    try:
+        from tools.latex_report import build_research_report, build_discovery_report
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"无法导入报告生成器：{e}")
+
+    try:
+        if kind == "research":
+            res = build_research_report(project_id)
+            return {"project_id": project_id, "kind": kind, **res}
+        elif kind == "discovery":
+            res = build_discovery_report(project_id)
+            return {"project_id": project_id, "kind": kind, **res}
+        else:
+            r1 = build_research_report(project_id)
+            r2 = build_discovery_report(project_id)
+            return {"project_id": project_id, "kind": kind, "research": r1, "discovery": r2}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"生成报告失败：{e}")
+
+
+def _latex_report_path(project_id: str, kind: str, ext: str) -> Path:
+    """返回项目级 LaTeX 报告路径（不存在抛 404）。"""
+    base = _CONFIG.paths.project_dir(project_id) / "artifacts" / "latex" / kind
+    if kind == "research":
+        return base / ("report.pdf" if ext == "pdf" else "report.tex")
+    return base / ("discover_report.pdf" if ext == "pdf" else "discover_report.tex")
+
+
+@app.get("/api/projects/{project_id}/download/{kind}-latex-report.{ext}")
+def download_latex_report(project_id: str, kind: str, ext: str) -> FileResponse:
+    """下载 LaTeX 报告（PDF 或 TEX 源码）。
+
+    kind: research | discovery
+    ext: pdf | tex
+    """
+    _require_project(project_id)
+    if kind not in ("research", "discovery"):
+        raise HTTPException(status_code=400, detail="kind 必须为 research/discovery")
+    if ext not in ("pdf", "tex"):
+        raise HTTPException(status_code=400, detail="ext 必须为 pdf/tex")
+
+    path = _latex_report_path(project_id, kind, ext)
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"{kind} 报告的 {ext.upper()} 尚未生成，请先调用 "
+                f"POST /api/projects/{project_id}/latex-report/{kind}"
+            ),
+        )
+
+    media_type = "application/pdf" if ext == "pdf" else "application/x-tex"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
 @app.get("/api/projects/{project_id}/download/cross-validation")
 def download_cross_validation(project_id: str, format: str = "md") -> Response:
     """下载 Materials Project 交叉验证报告（赛题路线 A 硬要求可提交材料）。

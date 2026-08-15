@@ -284,6 +284,66 @@
             ]);
             list.appendChild(btn);
         });
+
+        // ----- LaTeX 报告（前后端对齐版）-----
+        // 4 个按钮：调研报告 PDF / 调研报告 .tex / 构效报告 PDF / 构效报告 .tex
+        const latexDivider = el("div", { class: "download-divider" });
+        list.appendChild(latexDivider);
+        list.appendChild(el("div", {
+            class: "sidebar-download-section-title",
+            text: "LaTeX 报告（编译器）",
+        }));
+        const latexItems = [
+            { kind: "research", ext: "pdf", label: "文献调研（PDF）", icon: "��" },
+            { kind: "research", ext: "tex", label: "文献调研（.tex）", icon: "��" },
+            { kind: "discovery", ext: "pdf", label: "构效分析（PDF）", icon: "��" },
+            { kind: "discovery", ext: "tex", label: "构效分析（.tex）", icon: "��" },
+        ];
+        latexItems.forEach(li => {
+            const btn = el("button", {
+                class: "sidebar-download-item",
+                "data-tooltip": `${li.label}（点击先编译再下载）`,
+                onclick: () => downloadLatexReport(li.kind, li.ext),
+            }, [
+                el("span", { class: "sidebar-download-icon", text: li.icon }),
+                el("span", { text: li.label }),
+            ]);
+            list.appendChild(btn);
+        });
+    }
+
+    async function downloadLatexReport(kind, ext) {
+        if (!state.currentProjectId) {
+            showToast("请先选择项目", "error");
+            return;
+        }
+        const pid = state.currentProjectId;
+        showToast(`正在编译 ${kind} 报告（${ext.toUpperCase()}）...`, "info");
+        try {
+            const gen = await api("POST", `/api/projects/${pid}/latex-report/${kind}`);
+            if (gen.error) {
+                showToast(`编译失败：${gen.error}`, "error");
+                return;
+            }
+            // 触发浏览器下载
+            const url = `/api/projects/${pid}/download/${kind}-latex-report.${ext}`;
+            const resp = await fetch(url);
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+            const blob = await resp.blob();
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `${kind}-latex-report.${ext}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+            showToast(`已下载 ${kind} 报告 ${ext.toUpperCase()}`, "success");
+        } catch (e) {
+            showToast(`下载失败：${e.message || e}`, "error");
+        }
     }
 
     async function api(method, path, body) {
